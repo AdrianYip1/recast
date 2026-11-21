@@ -225,6 +225,8 @@ void Visualizer::finishLightingDetection() {
 		light.position = { fitted.position.x, fitted.position.y, fitted.position.z };
 		light.direction = { fitted.direction.x, fitted.direction.y, fitted.direction.z };
 		light.intensity = { job.fit.intensities[i].x, job.fit.intensities[i].y, job.fit.intensities[i].z };
+		if (fitted.directional) light.angular_radius_deg = fitted.size * 180.0f / enginemath::PI;
+		else light.radius = fitted.size;
 		scene.lights.push_back(light);
 		directionalCount += fitted.directional ? 1 : 0;
 	}

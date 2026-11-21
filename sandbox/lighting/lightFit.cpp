@@ -106,28 +106,55 @@ namespace {
 		}
 	};
 
+	constexpr int SHAPE_SAMPLES = 32;
+
+	// Evenly spread points: on the unit sphere (point lights) or on a cap of the given angle around +z (directional)
+	Vec3 fibonacciPoint(int k, double capCosine) {
+		double golden = PI * (3.0 - std::sqrt(5.0));
+		double z = 1.0 - (1.0 - capCosine) * (k + 0.5) / SHAPE_SAMPLES;
+		double r = std::sqrt(std::max(0.0, 1.0 - z * z));
+		return Vec3(static_cast<float>(r * std::cos(golden * k)), static_cast<float>(r * std::sin(golden * k)), static_cast<float>(z));
+	}
+
+	Vec3 aroundAxis(const Vec3& local, const Vec3& axis) {
+		Vec3 tangent = (std::abs(axis.x) > 0.5f ? axis.cross(Vec3(0.0f, 1.0f, 0.0f)) : axis.cross(Vec3(1.0f, 0.0f, 0.0f))).normalized();
+		Vec3 bitangent = axis.cross(tangent);
+		return tangent * local.x + bitangent * local.y + axis * local.z;
+	}
+
+	// Fraction of the light's shape visible from the sample
+	double visibility(const Occluders& occluders, const Vec3& origin, const recast::FitLight& light) {
+		int count = light.size > 0.0f ? SHAPE_SAMPLES : 1;
+		int visible = 0;
+		for (int k = 0; k < count; k++) {
+			if (light.directional) {
+				Vec3 direction = light.size > 0.0f ? aroundAxis(fibonacciPoint(k, std::cos(light.size)), -light.direction) : -light.direction;
+				visible += occluders.blocked(origin, direction, 1e30f, true) ? 0 : 1;
+			}
+			else {
+				Vec3 target = light.size > 0.0f ? light.position + fibonacciPoint(k, -1.0) * light.size : light.position;
+				Vec3 toLight = target - origin;
+				float distance = std::sqrt(toLight.dot(toLight));
+				visible += occluders.blocked(origin, toLight / distance, distance - 1e-3f, false) ? 0 : 1;
+			}
+		}
+		return static_cast<double>(visible) / count;
+	}
+
 	double lightTerm(const Occluders& occluders, const recast::LightingSample& sample, const recast::FitLight& light) {
 		Vec3 origin = sample.point + sample.normal * 1e-3f;
 
 		if (light.directional) {
-			Vec3 toLight = -light.direction;
-			double cosine = sample.normal.dot(toLight);
+			double cosine = sample.normal.dot(-light.direction);
 			if (cosine <= 0.0) return 0.0;
-			if (occluders.blocked(origin, toLight, 1e30f, true)) return 0.0;
-			return cosine;
+			return cosine * visibility(occluders, origin, light);
 		}
 
 		Vec3 toLight = light.position - sample.point;
 		double distanceSquared = std::max(static_cast<double>(toLight.dot(toLight)), 1e-6);
-		double distance = std::sqrt(distanceSquared);
-		Vec3 direction = toLight / static_cast<float>(distance);
-
-		double cosine = sample.normal.dot(direction);
+		double cosine = sample.normal.dot(toLight / static_cast<float>(std::sqrt(distanceSquared)));
 		if (cosine <= 0.0) return 0.0;
-
-		if (occluders.blocked(origin, direction, static_cast<float>(distance - 1e-3), false)) return 0.0;
-
-		return cosine / distanceSquared;
+		return cosine / distanceSquared * visibility(occluders, origin, light);
 	}
 
 	struct ProxySolution {
@@ -527,6 +554,50 @@ recast::LightingFit recast::autoFitLighting(const SceneFile& scene, const Linear
 	}
 
 	refine(scene, samples, lights, 0.03f);
+
+	for (FitLight& light : lights) {
+		std::vector<float> sizes = light.directional
+			? std::vector<float>{ 0.0f, 0.25f, 0.5f, 1.0f, 2.0f, 4.0f, 8.0f }
+			: std::vector<float>{ 0.0f, 0.02f, 0.05f, 0.1f, 0.2f, 0.35f };
+		if (light.directional) {
+			for (float& size : sizes) size = enginemath::toRad(size);
+		}
+		auto residualAt = [&](float size) {
+			light.size = size;
+			return residualFor(scene, samples, lights);
+		};
+
+		size_t best = 0;
+		double bestResidual = 1e300;
+		for (size_t i = 0; i < sizes.size(); i++) {
+			double residual = residualAt(sizes[i]);
+			if (residual < bestResidual) {
+				bestResidual = residual;
+				best = i;
+			}
+		}
+
+		// Golden-section search between the neighbours of the best candidate
+		double low = sizes[best > 0 ? best - 1 : 0];
+		double high = sizes[std::min(best + 1, sizes.size() - 1)];
+		const double ratio = (std::sqrt(5.0) - 1.0) * 0.5;
+		double a = high - ratio * (high - low), b = low + ratio * (high - low);
+		double residualA = residualAt(static_cast<float>(a)), residualB = residualAt(static_cast<float>(b));
+		for (int iteration = 0; iteration < 8; iteration++) {
+			if (residualA < residualB) {
+				high = b; b = a; residualB = residualA;
+				a = high - ratio * (high - low);
+				residualA = residualAt(static_cast<float>(a));
+			}
+			else {
+				low = a; a = b; residualA = residualB;
+				b = low + ratio * (high - low);
+				residualB = residualAt(static_cast<float>(b));
+			}
+		}
+		double refined = residualA < residualB ? a : b;
+		light.size = std::min(residualA, residualB) < bestResidual ? static_cast<float>(refined) : sizes[best];
+	}
 	return fitLightIntensities(scene, samples, lights);
 }
 
@@ -534,11 +605,11 @@ std::vector<recast::FitLight> recast::fitLightsFromScene(const SceneFile& scene)
 	std::vector<FitLight> lights;
 	for (const SceneLight& light : scene.lights) {
 		if (light.type == "point") {
-			lights.push_back({ .directional = false, .position = Vec3(light.position[0], light.position[1], light.position[2]) });
+			lights.push_back({ .directional = false, .position = Vec3(light.position[0], light.position[1], light.position[2]), .size = light.radius });
 		}
 		else if (light.type == "directional") {
 			Vec3 direction(light.direction[0], light.direction[1], light.direction[2]);
-			lights.push_back({ .directional = true, .direction = direction.normalized() });
+			lights.push_back({ .directional = true, .direction = direction.normalized(), .size = enginemath::toRad(light.angular_radius_deg) });
 		}
 	}
 	return lights;

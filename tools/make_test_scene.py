@@ -10,7 +10,7 @@ Outputs (in the target folder):
   photo_with_object.hdr  ground truth with the object physically present
   ground_truth.json      true light + object placement (for evaluation only, the engine doesn't read it)
 
-usage: python tools/make_test_scene.py data/sample [--light=directional]
+usage: python tools/make_test_scene.py data/sample [--light=directional] [--light-size=S]  (S: metres for the point light, degrees for the sun)
 """
 import json
 import struct
@@ -37,6 +37,7 @@ LIGHT_INTENSITY = np.array([3.4, 3.2, 2.9])
 SUN_DIRECTION = np.array([-0.55, -0.75, -0.35]) / np.linalg.norm([-0.55, -0.75, -0.35])
 SUN_IRRADIANCE = np.array([1.9, 1.8, 1.6])
 LIGHT_TYPE = "point"
+LIGHT_SIZE = 0.0  # point: radius in metres, directional: angular radius in degrees (soft shadows)
 AMBIENT = np.array([0.10, 0.11, 0.13])
 
 CAN_RADIUS = 0.12
@@ -155,24 +156,52 @@ def intersect_can(origins, directions):
     return t, normal, u, v, is_side
 
 
+def light_shape_offsets(count=64):
+    """Evenly spread unit vectors: the whole sphere for a point light, a cap of LIGHT_SIZE degrees around +z for the sun"""
+    if LIGHT_SIZE <= 0:
+        return np.array([[0.0, 0.0, 1.0]]) if LIGHT_TYPE == "directional" else np.zeros((1, 3))
+    k = np.arange(count) + 0.5
+    cap = np.cos(np.radians(LIGHT_SIZE)) if LIGHT_TYPE == "directional" else -1.0
+    z = 1 - (1 - cap) * k / count
+    r = np.sqrt(np.maximum(0, 1 - z * z))
+    phi = np.pi * (3 - np.sqrt(5)) * np.arange(count)
+    return np.stack([r * np.cos(phi), r * np.sin(phi), z], axis=-1)
+
+
 def direct_light(points, normals, with_can):
+    shadow_origins = points + normals * 1e-3
     if LIGHT_TYPE == "directional":
         light_dir = np.broadcast_to(-SUN_DIRECTION, points.shape)
         distance = np.full(points.shape[:-1], np.inf)
+        axis = -SUN_DIRECTION
+        tangent = np.cross(axis, [0.0, 1.0, 0.0])
+        tangent /= np.linalg.norm(tangent)
+        frame = np.stack([tangent, np.cross(axis, tangent), axis])
     else:
         to_light = LIGHT_POS - points
         distance = np.linalg.norm(to_light, axis=-1)
         light_dir = to_light / np.maximum(distance, 1e-6)[..., None]
 
-    shadow_origins = points + normals * 1e-3
-    blocked = intersect_box(shadow_origins, light_dir)[0] < distance
-    if with_can:
-        blocked |= intersect_can(shadow_origins, light_dir)[0] < distance
+    offsets = light_shape_offsets()
+    visible = np.zeros(points.shape[:-1])
+    for offset in offsets:
+        if LIGHT_TYPE == "directional":
+            sample_dir = np.broadcast_to(offset @ frame, points.shape)
+            sample_distance = distance
+        else:
+            to_sample = LIGHT_POS + offset * LIGHT_SIZE - shadow_origins
+            sample_distance = np.linalg.norm(to_sample, axis=-1)
+            sample_dir = to_sample / np.maximum(sample_distance, 1e-6)[..., None]
+        blocked = intersect_box(shadow_origins, sample_dir)[0] < sample_distance
+        if with_can:
+            blocked |= intersect_can(shadow_origins, sample_dir)[0] < sample_distance
+        visible += ~blocked
+    visible /= len(offsets)
 
     cosine = np.clip(np.sum(normals * light_dir, axis=-1), 0.0, None)
     if LIGHT_TYPE == "directional":
-        return SUN_IRRADIANCE * (cosine * ~blocked)[..., None]
-    return LIGHT_INTENSITY * (cosine * ~blocked / np.maximum(distance, 1e-3) ** 2)[..., None]
+        return SUN_IRRADIANCE * (cosine * visible)[..., None]
+    return LIGHT_INTENSITY * (cosine * visible / np.maximum(distance, 1e-3) ** 2)[..., None]
 
 
 def can_albedo_at(cu, cv, is_side):
@@ -337,10 +366,13 @@ def write_can_glb(path):
 
 
 def main():
-    global LIGHT_TYPE
+    global LIGHT_TYPE, LIGHT_SIZE
     arguments = [a for a in sys.argv[1:] if not a.startswith("--")]
     if "--light=directional" in sys.argv[1:]:
         LIGHT_TYPE = "directional"
+    for argument in sys.argv[1:]:
+        if argument.startswith("--light-size="):
+            LIGHT_SIZE = float(argument.split("=", 1)[1])
     out = Path(arguments[0] if arguments else "data/sample")
     out.mkdir(parents=True, exist_ok=True)
 
@@ -368,9 +400,10 @@ def main():
     (out / "scene.json").write_text(json.dumps(scene, indent=2) + "\n")
 
     ground_truth = {
-        "light": ({"type": "directional", "direction": SUN_DIRECTION.tolist(), "intensity": SUN_IRRADIANCE.tolist()}
+        "light": ({"type": "directional", "direction": SUN_DIRECTION.tolist(), "intensity": SUN_IRRADIANCE.tolist(),
+                   "angular_radius_deg": LIGHT_SIZE}
                   if LIGHT_TYPE == "directional" else
-                  {"type": "point", "position": LIGHT_POS.tolist(), "intensity": LIGHT_INTENSITY.tolist()}),
+                  {"type": "point", "position": LIGHT_POS.tolist(), "intensity": LIGHT_INTENSITY.tolist(), "radius": LIGHT_SIZE}),
         "ambient": AMBIENT.tolist(),
         "object_transform": object_transform,
         "photo_with_object": "photo_with_object.hdr",

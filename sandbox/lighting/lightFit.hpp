@@ -31,10 +31,12 @@ namespace recast {
 
 	// Point: falls off with distance squared. Directional: parallel rays, no falloff, `direction` is the way the light travels.
 	// Directional lights are only shadowed by boxes: planes are assumed open towards a distant source (sun through an opening)
+	// size: point = radius in metres, directional = angular radius in radians (soft shadow edges)
 	struct FitLight {
 		bool directional = false;
 		enginemath::Vec3 position;
 		enginemath::Vec3 direction = enginemath::Vec3(0.0f, -1.0f, 0.0f);
+		float size = 0.0f;
 	};
 
 	struct LightingFit {
@@ -51,7 +53,8 @@ namespace recast {
 	std::vector<enginemath::Vec3> detectBrightSpots(const SceneFile& scene, const LinearImage& photo, int maxSpots = 4);
 
 	// Finds lights from scratch: tries point lights (bright spot seeds + grid search) and directional lights, keeps the
-	// better model, and adds more lights (up to maxLights) only while each one lowers the residual by at least 5%
+	// better model, and adds more lights (up to maxLights) only while each one lowers the residual by at least 5%.
+	// Each light's size is then picked to match how soft the photo's shadow edges are
 	LightingFit autoFitLighting(const SceneFile& scene, const LinearImage& photo, const std::vector<LightingSample>& samples,
 								std::vector<FitLight>& lights, int maxLights = 3);
 
