@@ -19,6 +19,7 @@ foto::Render::~Render() {
 // GPU -> submitting/executing command buffer
 void foto::Render::drawFrame(Device& device, Swapchain& swapchain, Pipeline& pipeline) {
 	vkWaitForFences(device.getDevice(), 1, &inFlightFence, VK_TRUE, UINT64_MAX);
+	vkResetFences(device.getDevice(), 1, &inFlightFence);
 
 	u32 imageIdx;
 	vkAcquireNextImageKHR(device.getDevice(), swapchain.getSwapchain(), UINT64_MAX, imageAvailableSem, VK_NULL_HANDLE, &imageIdx);
@@ -132,7 +133,7 @@ void foto::Render::recordCommandBuffer(Swapchain& swapchain,Pipeline& pipeline, 
 	};
 
 	VkRenderingInfo rendering = {
-		.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+		.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
 		.renderArea = {
 			.offset = {0, 0},
 			.extent = swapchain.getExtent()

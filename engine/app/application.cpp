@@ -34,5 +34,6 @@ void foto::Application::run() {
 
 		render->drawFrame(*device, *swapchain, *pipeline);
 	}
+	vkDeviceWaitIdle(device->getDevice());
 	onShutdown();
 }
