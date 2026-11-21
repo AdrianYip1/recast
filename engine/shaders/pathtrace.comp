@@ -100,7 +100,8 @@ vec3 causticIrradiance(ivec2 pixel, Hit hit, vec3 direction) {
 	return flux / area;
 }
 
-vec3 radiance(ivec2 pixel, vec2 viewportUV, vec2 pixelUV, inout uint state, out float objectCoverage) {
+// illumination: the sample without its texture (photo pixel for the room, albedo for objects), for the denoiser
+vec3 radiance(ivec2 pixel, vec2 viewportUV, vec2 pixelUV, inout uint state, out float objectCoverage, out vec3 light, out vec4 surface) {
 	vec4 target = inverse(frame.proj * frame.view) * vec4(viewportUV * 2.0 - 1.0, 0.5, 1.0);
 	vec3 origin = frame.cameraPos.xyz;
 	vec3 direction = normalize(target.xyz / target.w - origin);
@@ -109,13 +110,24 @@ vec3 radiance(ivec2 pixel, vec2 viewportUV, vec2 pixelUV, inout uint state, out 
 	vec3 photo = photoAt(pixelUV);
 	Hit hit = traceClosest(origin, direction, MASK_ALL);
 	objectCoverage = hit.found && hit.dynamic ? 1.0 : 0.0;
+	light = vec3(1.0);
+	surface = vec4(0.0);
 	if (!hit.found) return photo;
-	if (hit.dynamic) return shadeObject(hit, -direction, state, lightSeed);
+
+	float distance = length(hit.position - origin);
+	if (hit.dynamic) {
+		vec3 color = shadeObject(hit, -direction, state, lightSeed);
+		light = color / max(albedoOf(hit), vec3(0.02));
+		surface = vec4(hit.normal, -distance);
+		return color;
+	}
+	surface = vec4(hit.normal, distance);
 
 	vec3 withoutObjects = frame.ambient.rgb + directIrradiance(hit.position, hit.normal, MASK_STATIC, lightSeed);
 	vec3 withObjects = ambientLight(hit.position, hit.normal, state, lightSeed) + directIrradiance(hit.position, hit.normal, MASK_ALL, lightSeed)
 					 + causticIrradiance(pixel, hit, direction);
-	return photo * withObjects / max(withoutObjects, vec3(1e-4));
+	light = withObjects / max(withoutObjects, vec3(1e-4));
+	return photo * light;
 }
 
 void main() {
@@ -135,9 +147,16 @@ void main() {
 		vec2 jitter = push.sampleIndex == 0u ? vec2(0.5) : vec2(random(state), random(state));
 		vec2 viewportUV = (vec2(pixel) + jitter - frame.viewport.xy) / frame.viewport.zw;
 		float coverage;
-		vec3 color = radiance(pixel, viewportUV, pixelUV, state, coverage);
+		vec3 light;
+		vec4 surface;
+		vec3 color = radiance(pixel, viewportUV, pixelUV, state, coverage, light, surface);
 		sum += vec4(color, coverage);
 		imageStore(accumulation, pixel, sum);
+
+		vec4 lightSum = push.sampleIndex == 0u ? vec4(0.0) : imageLoad(illumination, pixel);
+		float luminance = dot(light, vec3(0.2126, 0.7152, 0.0722));
+		imageStore(illumination, pixel, lightSum + vec4(light, luminance * luminance));
+		if (push.sampleIndex == 0u) imageStore(guide, pixel, surface);
 	}
 	float samples = float(push.trace != 0u ? push.sampleIndex + 1u : push.sampleIndex);
 	imageStore(outputImage, pixel, sum / max(samples, 1.0));

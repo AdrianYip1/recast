@@ -209,9 +209,12 @@ void foto::Render::createTraceImages() {
 	VkExtent2D extent = swapchain.getExtent();
 	causticImage = std::make_unique<Image>(device, VkExtent2D{ extent.width * 3, extent.height }, VK_FORMAT_R32_UINT,
 										   VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+	illuminationImage = std::make_unique<Image>(device, extent, VK_FORMAT_R32G32B32A32_SFLOAT, VK_IMAGE_USAGE_STORAGE_BIT);
+	guideImage = std::make_unique<Image>(device, extent, VK_FORMAT_R32G32B32A32_SFLOAT, VK_IMAGE_USAGE_STORAGE_BIT);
 	device.immediateSubmit(_commandPool, [&](VkCommandBuffer commandBuffer) {
-		Image::transitionLayout(commandBuffer, accumulationImage->getImage(), VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
-		Image::transitionLayout(commandBuffer, causticImage->getImage(), VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
+		for (Image* image : { accumulationImage.get(), causticImage.get(), illuminationImage.get(), guideImage.get() }) {
+			Image::transitionLayout(commandBuffer, image->getImage(), VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
+		}
 	});
 
 	for (size i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
@@ -221,6 +224,8 @@ void foto::Render::createTraceImages() {
 			.writeImage(2, hdrImage->getView(), VK_NULL_HANDLE, VK_IMAGE_LAYOUT_GENERAL, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
 			.writeBuffer(3, geometryBuffers[i]->getBuffer(), sizeof(GpuGeometry) * MAX_TRACE_GEOMETRIES, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER)
 			.writeImage(4, causticImage->getView(), VK_NULL_HANDLE, VK_IMAGE_LAYOUT_GENERAL, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
+			.writeImage(5, illuminationImage->getView(), VK_NULL_HANDLE, VK_IMAGE_LAYOUT_GENERAL, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
+			.writeImage(6, guideImage->getView(), VK_NULL_HANDLE, VK_IMAGE_LAYOUT_GENERAL, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
 			.update(device, traceSets[i]);
 	}
 	traceKey.clear();
@@ -385,6 +390,7 @@ void foto::Render::recordPathTrace(VkCommandBuffer commandBuffer, std::span<cons
 	vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pathTracePipeline->getPipelineLayout(), 0, 2, sets, 0, nullptr);
 	vkCmdPushConstants(commandBuffer, pathTracePipeline->getPipelineLayout(), TRACE_PUSH_RANGE.stageFlags, 0, sizeof(TracePush), &push);
 	vkCmdDispatch(commandBuffer, (extent.width + 7) / 8, (extent.height + 7) / 8, 1);
+
 	if (traceSamples < MAX_TRACE_SAMPLES) traceSamples++;
 
 	VkImageMemoryBarrier2 hdrToSampled = {

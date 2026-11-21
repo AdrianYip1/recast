@@ -26,6 +26,11 @@ layout(std430, set = 1, binding = 3) readonly buffer Geometries {
 	Geometry geometries[];
 };
 
+// Denoising inputs (see denoise.comp): rgb = summed illumination (the part of each sample that isn't texture), a = summed
+// squared luminance of it. Guide: the pixel's surface normal and distance, negative distance on objects, 0 = nothing hit
+layout(set = 1, binding = 5, rgba32f) uniform image2D illumination;
+layout(set = 1, binding = 6, rgba32f) uniform image2D guide;
+
 // Caustic photons landing on each framebuffer pixel, summed since the last reset: 3 columns per pixel (rgb) in photonUnit()s
 layout(set = 1, binding = 4, r32ui) uniform uimage2D caustics;
 

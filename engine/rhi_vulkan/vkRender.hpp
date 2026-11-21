@@ -120,6 +120,8 @@ namespace foto {
 		std::vector<std::unique_ptr<Buffer>> geometryBuffers;
 		std::unique_ptr<Image> accumulationImage;
 		std::unique_ptr<Image> causticImage; // R32_UINT, 3 columns (rgb) per framebuffer pixel
+		std::unique_ptr<Image> illuminationImage;
+		std::unique_ptr<Image> guideImage;
 
 		std::vector<VkSemaphore> imageAvailableSem;
 		std::vector<VkSemaphore> renderFinishedSem;
