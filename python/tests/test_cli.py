@@ -52,6 +52,19 @@ def test_pipeline_end_to_end(tmp_path):
     assert lighting["sh_order"] == 1 and len(lighting["sh"]) == 4
     assert (sdir / "gbuffer" / "ids.png").exists()
 
+    # the engine saves scene.json after the object is dragged: only its own keys, every proxy
+    # field filled in, floats through f32. Python must keep working on that file.
+    assert json.loads((sdir / "preprocess.json").read_text())["lensfun"] is False
+    engine_keys = {"version", "photo", "image_size", "camera", "scale_reference", "object",
+                   "proxies", "lights", "lighting"}
+    saved = {k: v for k, v in json.loads((sdir / "scene.json").read_text()).items() if k in engine_keys}
+    for p in saved["proxies"]:
+        p.update({k: p.get(k, d) for k, d in (("point", [0, 0, 0]), ("normal", [0, 1, 0]),
+                                                ("min", [0, 0, 0]), ("max", [0, 0, 0]))})
+    (sdir / "scene.json").write_text(json.dumps(saved))
+    main(["light", "--name", "t", "--data-root", str(root), "--python-gbuffer"])
+    assert Scene.load(sdir / "scene.json").object.path == "object.glb"
+
     # stage D: the engine's render.jpg is the photo itself, compared with itself
     save_jpg(sdir / "render.jpg", np.full((240, 320, 3), 0.3))
     main(["eval", "--name", "t", "--data-root", str(root), "--truth", str(tmp_path / "room.jpg")])

@@ -24,7 +24,10 @@ from .camera import solve_camera
 from .gbuffer import load_gbuffer, save_gbuffer
 from .io import Photo, linear_to_srgb, load_image_linear, load_photo, save_jpg
 from .lighting import fit_scene_lighting
-from .scene import PHOTO_NAME, Lighting, Scene, floor_proxy, render_gbuffer, update_scene_file
+from .scene import (PHOTO_NAME, Lighting, Scene, floor_proxy, render_gbuffer, update_scene_file,
+                    write_json_atomic)
+
+PREPROCESS_FILE = "preprocess.json"
 from .vanishing import assign_axes, detect_segments, find_vanishing_points, vp_from_segments
 
 DEFAULT_DATA_ROOT = Path(__file__).resolve().parents[2] / "data"
@@ -105,6 +108,9 @@ def cmd_scene(args) -> None:
     scale_ref = {"kind": "camera_height", "metres": args.camera_height}
     preprocess_info = {"lensfun": settings["lensfun"], "k1": args.k1, "k2": args.k2,
                        "focal_px": settings["focal_px"]}
+    # the engine rewrites scene.json with only its own keys when the object is moved,
+    # so the undistortion settings eval needs also live in a file only Python writes
+    write_json_atomic(out / PREPROCESS_FILE, preprocess_info)
 
     path = out / "scene.json"
     if path.exists() and not args.overwrite:
@@ -175,7 +181,9 @@ def cmd_eval(args) -> None:
     # (.hdr truths are synthetic renders: already linear, no EXIF)
     truth_photo = Photo(load_image_linear(truth_path)) if Path(truth_path).suffix.lower() == ".hdr" \
         else load_photo(truth_path)
-    truth = np.clip(linear_to_srgb(preprocess(truth_photo, data.get("preprocess", {}))), 0, 1)
+    pre_path = out / PREPROCESS_FILE
+    settings = json.loads(pre_path.read_text()) if pre_path.exists() else data.get("preprocess", {})
+    truth = np.clip(linear_to_srgb(preprocess(truth_photo, settings)), 0, 1)
     if truth.shape != render.shape:
         truth = cv2.resize(truth, (render.shape[1], render.shape[0]), interpolation=cv2.INTER_AREA)
 
