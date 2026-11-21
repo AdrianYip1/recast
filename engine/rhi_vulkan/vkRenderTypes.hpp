@@ -72,8 +72,11 @@ namespace foto {
 		f32 metallic = 0.0f;
 		u32 baseColorTexture = DEFAULT_TEXTURE;
 		f32 specular = 1.0f; // KHR_materials_specular factor: 0 = no gloss at all (a purely diffuse surface)
+		f32 transmission = 0.0f; // KHR_materials_transmission: 1 = clear glass (path tracing only)
+		f32 ior = 1.5f;          // KHR_materials_ior
+		f32 _pad[2] = {};
 	};
-	static_assert(sizeof(Material) == 48);
+	static_assert(sizeof(Material) == 64);
 
 	// One mesh drawn with one transform. Every submesh uses its own material unless overridden.
 	// pipeline = nullptr uses the default scene pipeline. mesh = nullptr draws a fullscreen triangle (needs a pipeline).
