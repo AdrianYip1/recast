@@ -440,6 +440,7 @@ recast::LightingFit recast::fitLightIntensities(const SceneFile& scene, const st
 		}
 		fit.intensities.push_back(intensity);
 	}
+
 	return fit;
 }
 
@@ -555,6 +556,22 @@ recast::LightingFit recast::autoFitLighting(const SceneFile& scene, const Linear
 
 	refine(scene, samples, lights, 0.03f);
 
+	// Light sizes only change samples near shadow edges, so search on those plus a thin spread of the rest
+	// (which keeps every surface's least squares solve stable)
+	Occluders occluders(scene.proxies);
+	std::vector<LightingSample> sizeSamples;
+	for (size_t s = 0; s < samples.size(); s++) {
+		bool edge = false;
+		Vec3 origin = samples[s].point + samples[s].normal * 1e-3f;
+		for (const FitLight& light : lights) {
+			FitLight widest = light;
+			widest.size = light.directional ? enginemath::toRad(8.0f) : 0.35f;
+			double visible = visibility(occluders, origin, widest);
+			edge = edge || (visible > 0.0 && visible < 1.0) || visible != visibility(occluders, origin, light);
+		}
+		if (edge || s % 8 == 0) sizeSamples.push_back(samples[s]);
+	}
+
 	for (FitLight& light : lights) {
 		std::vector<float> sizes = light.directional
 			? std::vector<float>{ 0.0f, 0.25f, 0.5f, 1.0f, 2.0f, 4.0f, 8.0f }
@@ -564,7 +581,7 @@ recast::LightingFit recast::autoFitLighting(const SceneFile& scene, const Linear
 		}
 		auto residualAt = [&](float size) {
 			light.size = size;
-			return residualFor(scene, samples, lights);
+			return residualFor(scene, sizeSamples, lights);
 		};
 
 		size_t best = 0;
@@ -597,6 +614,11 @@ recast::LightingFit recast::autoFitLighting(const SceneFile& scene, const Linear
 		}
 		double refined = residualA < residualB ? a : b;
 		light.size = std::min(residualA, residualB) < bestResidual ? static_cast<float>(refined) : sizes[best];
+		bestResidual = std::min({ bestResidual, residualA, residualB });
+
+		// Sharp unless softening clearly explains the photo better
+		float chosen = light.size;
+		light.size = residualAt(0.0f) <= bestResidual * 1.002 ? 0.0f : chosen;
 	}
 	return fitLightIntensities(scene, samples, lights);
 }
