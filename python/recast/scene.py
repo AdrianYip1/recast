@@ -146,16 +146,21 @@ class AreaLight:
 class Lighting:
     sh_order: int = 1                       # 1 -> 4 coefficients, 2 -> 9
     sh: np.ndarray | None = None            # (4 or 9, 3) radiance SH
+    ambient: tuple[float, float, float] | None = None   # the engine's, from its light detection
 
     def to_dict(self) -> dict:
-        return {"sh_order": self.sh_order,
-                "sh": [] if self.sh is None else [_vec(row) for row in np.asarray(self.sh)]}
+        d = {"sh_order": self.sh_order,
+             "sh": [] if self.sh is None else [_vec(row) for row in np.asarray(self.sh)]}
+        if self.ambient is not None:
+            d["ambient"] = _vec(self.ambient)
+        return d
 
     @classmethod
     def from_dict(cls, d: dict | None) -> "Lighting":
         d = d or {}
         sh = d.get("sh") or None
-        return cls(int(d.get("sh_order", 1)), None if sh is None else np.asarray(sh, dtype=np.float64))
+        ambient = tuple(d["ambient"]) if d.get("ambient") is not None else None
+        return cls(int(d.get("sh_order", 1)), None if sh is None else np.asarray(sh, dtype=np.float64), ambient)
 
 
 @dataclass
@@ -185,6 +190,8 @@ class Scene:
     object: ObjectPlacement | None = None
     proxies: list[Proxy] = field(default_factory=list)
     lights: list[AreaLight] = field(default_factory=list)
+    # the engine's point/directional lights (detected or placed by hand), kept exactly as written
+    engine_lights: list[dict] = field(default_factory=list)
     lighting: Lighting = field(default_factory=Lighting)
     extra: dict = field(default_factory=dict)  # keys we don't own, kept as-is
 
@@ -210,7 +217,7 @@ class Scene:
             "camera": self.camera.to_dict(),
             "scale_reference": self.scale_reference,
             "proxies": [p.to_dict() for p in self.proxies],
-            "lights": [l.to_dict() for l in self.lights],
+            "lights": [l.to_dict() for l in self.lights] + [dict(l) for l in self.engine_lights],
             "lighting": self.lighting.to_dict(),
         })
         # no object yet -> leave the key out: the engine's loader rejects "object": null
@@ -232,6 +239,7 @@ class Scene:
             object=ObjectPlacement.from_dict(d["object"]) if (d.get("object") or {}).get("path") else None,
             proxies=[proxy_from_dict(p) for p in d.get("proxies", [])],
             lights=[AreaLight.from_dict(l) for l in d.get("lights", []) if l.get("type", "area") == "area"],
+            engine_lights=[l for l in d.get("lights", []) if l.get("type", "area") != "area"],
             lighting=Lighting.from_dict(d.get("lighting")),
             extra={k: v for k, v in d.items() if k not in known},
         )

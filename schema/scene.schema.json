@@ -81,21 +81,33 @@
       }
     },
     "lights": {
+      "description": "area lights (Python, clicked) and the engine's point/directional lights (detected, or added and edited by hand); the engine writes every field on its lights, only its type's are used",
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["type", "corners", "radiance"],
+        "required": ["type"],
         "properties": {
-          "type": { "const": "area" },
+          "type": { "enum": ["area", "point", "directional"] },
           "corners": { "type": "array", "items": { "$ref": "#/$defs/vec3" }, "minItems": 4, "maxItems": 4 },
-          "radiance": { "$ref": "#/$defs/rgb" }
-        }
+          "radiance": { "$ref": "#/$defs/rgb" },
+          "position": { "$ref": "#/$defs/vec3" },
+          "direction": { "$ref": "#/$defs/vec3" },
+          "intensity": { "$ref": "#/$defs/rgb" },
+          "radius": { "type": "number", "minimum": 0 },
+          "angular_radius_deg": { "type": "number", "minimum": 0 }
+        },
+        "allOf": [
+          { "if": { "properties": { "type": { "const": "area" } } }, "then": { "required": ["corners", "radiance"] } },
+          { "if": { "properties": { "type": { "const": "point" } } }, "then": { "required": ["position", "intensity"] } },
+          { "if": { "properties": { "type": { "const": "directional" } } }, "then": { "required": ["direction", "intensity"] } }
+        ]
       }
     },
     "lighting": {
       "type": "object",
       "required": ["sh_order", "sh"],
       "properties": {
+        "ambient": { "$ref": "#/$defs/rgb", "description": "engine: ambient light from its detection" },
         "sh_order": { "enum": [1, 2] },
         "sh": {
           "description": "radiance SH, (order+1)^2 rows of RGB; empty until stage C has run",

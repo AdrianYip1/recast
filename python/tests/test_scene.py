@@ -117,3 +117,45 @@ def test_no_object_key_is_left_out_for_the_engine(tmp_path):
     p.write_text(json.dumps(dict(d, object=None)))
     update_scene_file(p, photo="photo.jpg")
     assert "object" not in json.loads(p.read_text())
+
+
+def test_engine_lights_ambient_and_object_size_survive_python(tmp_path):
+    """What the engine saves after lights are added/edited by hand and the object resized:
+    Python stage C and a load/save round trip must keep all of it, and the schema accept it."""
+    import json
+    import jsonschema
+    from pathlib import Path
+    from recast.cli import main
+    from recast.io import save_jpg
+    from synthetic import look_at_camera
+
+    cam = look_at_camera(width=160, height=120, focal_px=130.0, yaw_deg=10, pitch_deg=-20)
+    sdir = tmp_path / "data" / "t"
+    sdir.mkdir(parents=True)
+    save_jpg(sdir / "photo.jpg", np.full((120, 160, 3), 0.4))
+    Scene(cam, proxies=[floor_proxy(0)]).save(sdir / "scene.json")
+    data = json.loads((sdir / "scene.json").read_text())
+    unused = {"corners": [[0, 0, 0]] * 4, "radiance": [0, 0, 0], "radius": 0.0, "angular_radius_deg": 0.0}
+    point = {**unused, "type": "point", "position": [0.3, 2.0, 2.5], "direction": [0, -1, 0],
+             "intensity": [4.0, 3.5, 3.0], "radius": 0.05}
+    sun = {**unused, "type": "directional", "position": [0, 0, 0], "direction": [0.4, -0.8, 0.2],
+           "intensity": [1.5, 1.5, 1.4], "angular_radius_deg": 0.5}
+    data["lights"] = [point, sun]
+    data["lighting"]["ambient"] = [0.11, 0.12, 0.13]
+    data["object"] = {"path": "object.glb", "transform": {"position": [0, 0, 2], "rotation_y_deg": 30, "scale": 1.7}}
+    (sdir / "scene.json").write_text(json.dumps(data))
+
+    main(["light", "--name", "t", "--data-root", str(tmp_path / "data"), "--python-gbuffer"])
+    after = json.loads((sdir / "scene.json").read_text())
+    assert after["lights"] == [point, sun]
+    assert after["lighting"]["ambient"] == [0.11, 0.12, 0.13] and len(after["lighting"]["sh"]) == 4
+    assert after["object"]["transform"]["scale"] == 1.7
+
+    again = Scene.from_dict(after).to_dict()
+    assert again["lights"] == [point, sun] and again["lighting"]["ambient"] == [0.11, 0.12, 0.13]
+
+    schema = json.loads((Path(__file__).resolve().parents[2] / "schema" / "scene.schema.json").read_text())
+    jsonschema.validate(after, schema)
+    bad = dict(after, lights=[{"type": "point", "intensity": [1, 1, 1]}])     # no position
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(bad, schema)

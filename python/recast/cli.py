@@ -149,7 +149,10 @@ def cmd_light(args) -> None:
         if light.get("type", "area") == "area" and j < len(rad):
             light["radiance"] = [float(v) for v in rad[j]]
             j += 1
-    update_scene_file(path, lighting=Lighting(args.order, sh).to_dict(), lights=lights)
+    # only the SH is ours: keep the engine's ambient (and anything else it stores there)
+    lighting = dict(data.get("lighting") or {})
+    lighting.update(Lighting(args.order, sh).to_dict())
+    update_scene_file(path, lighting=lighting, lights=lights)
     print(f"updated lighting in {path}")
 
 
