@@ -421,7 +421,11 @@ foto::u32 Visualizer::photoOwnerAt(const Vec3& point) const {
 
 // Light markers sit at point lights, and 2 m back along a directional light from the middle of the room
 Vec3 Visualizer::markerPosition(const recast::SceneLight& light) const {
-	if (light.type == "directional") return shadowCenter - Vec3(light.direction[0], light.direction[1], light.direction[2]).normalized() * 4.0f;
+	if (light.type == "directional") {
+		// where the sun is in the sky, seen from the camera (so it sits under the cursor while dragged)
+		Vec3 eye(scene.camera.position[0], scene.camera.position[1], scene.camera.position[2]);
+		return eye - Vec3(light.direction[0], light.direction[1], light.direction[2]).normalized() * 10.0f;
+	}
 	return Vec3(light.position[0], light.position[1], light.position[2]);
 }
 
@@ -474,11 +478,11 @@ bool Visualizer::updateLightEditing() {
 			Vec3 at = origin + direction * t;
 			recast::SceneLight& light = scene.lights[selectedLight];
 			if (light.type == "directional") {
-				Vec3 toCenter = shadowCenter - at;
-				if (toCenter.dot(toCenter) > 1e-6f) {
-					toCenter.normalize();
-					light.direction = { toCenter.x, toCenter.y, toCenter.z };
-				}
+				// the sun goes where the cursor points, kept above the horizon
+				Vec3 sky = direction;
+				sky.y = std::max(sky.y, 0.05f);
+				sky.normalize();
+				light.direction = { -sky.x, -sky.y, -sky.z };
 			}
 			else {
 				light.position = { at.x, at.y, at.z };
@@ -543,6 +547,22 @@ void Visualizer::addLight() {
 void Visualizer::drawLightEditor() {
 	ImGui::TextDisabled("drag a light to move it, scroll over it to move it nearer or further");
 	if (scene.lights.size() < foto::MAX_LIGHTS && ImGui::Button("add light")) addLight();
+	if (scene.lights.size() < foto::MAX_LIGHTS) {
+		ImGui::SameLine();
+		if (ImGui::Button("add sun")) {
+			recast::SceneLight sun;
+			sun.type = "directional";
+			Vec3 travels = Vec3(0.3f, -0.5f, 0.8f).normalized(); // from the far side of the room, 30 degrees up
+			sun.direction = { travels.x, travels.y, travels.z };
+			sun.intensity = { 2.0f, 1.9f, 1.7f };
+			for (const recast::SceneLight& existing : scene.lights) {
+				if (existing.type == "directional") sun.intensity = existing.intensity;
+			}
+			scene.lights.push_back(sun);
+			selectedLight = static_cast<int>(scene.lights.size()) - 1;
+			unsavedChanges = true;
+		}
+	}
 	if (!detectedLights.empty()) {
 		if (scene.lights.size() < foto::MAX_LIGHTS) ImGui::SameLine();
 		if (ImGui::Button("reset lights")) {
@@ -561,6 +581,26 @@ void Visualizer::drawLightEditor() {
 		selectedLight = -1;
 		unsavedChanges = true;
 		return;
+	}
+
+	if (light.type == "directional") {
+		// where the sun is in the sky: around (0 = straight ahead of the camera, positive = to its right) and above the
+		// horizon, in degrees
+		const auto& r = scene.camera.rotation;
+		Vec3 ahead = Vec3(-r[0][2], 0.0f, -r[2][2]);
+		ahead = ahead.dot(ahead) > 1e-6f ? ahead.normalized() : Vec3(0.0f, 0.0f, -1.0f);
+		Vec3 right = ahead.cross(Vec3(0.0f, 1.0f, 0.0f));
+		Vec3 sky = -Vec3(light.direction[0], light.direction[1], light.direction[2]).normalized();
+		float height = enginemath::toDeg(std::asin(std::clamp(sky.y, -1.0f, 1.0f)));
+		float around = enginemath::toDeg(std::atan2(sky.dot(right), sky.dot(ahead)));
+		bool changed = ImGui::SliderFloat("sun direction", &around, -180.0f, 180.0f, "%.0f deg");
+		changed |= ImGui::SliderFloat("sun height", &height, 2.0f, 89.0f, "%.0f deg");
+		if (changed) {
+			float h = enginemath::toRad(height), a = enginemath::toRad(around);
+			Vec3 toSun = (ahead * std::cos(a) + right * std::sin(a)) * std::cos(h) + Vec3(0.0f, std::sin(h), 0.0f);
+			light.direction = { -toSun.x, -toSun.y, -toSun.z };
+			unsavedChanges = true;
+		}
 	}
 
 	// a sun shines from where the light is, towards the middle of the room; a point light goes back to that spot
@@ -956,8 +996,9 @@ void Visualizer::loadProxyLabels() {
 		for (const auto& object : detect.value("objects", nlohmann::json::array())) {
 			std::string label = object.value("label", "object");
 			const auto& ids = object.value("proxy_ids", nlohmann::json::array());
+			bool seatBack = object.value("shape", ids.size() == 2 ? "seat_back" : "box") == "seat_back";
 			for (size_t k = 0; k < ids.size(); k++) {
-				proxyLabels[ids[k].get<foto::u32>()] = ids.size() == 1 ? label : label + (k == 0 ? " (seat)" : " (back)");
+				proxyLabels[ids[k].get<foto::u32>()] = seatBack ? label + (k == 0 ? " (seat)" : " (back)") : label;
 			}
 
 			std::string maskPath = object.value("mask", "");
@@ -1068,6 +1109,20 @@ int Visualizer::boxUnderCursor(const Vec3& origin, const Vec3& direction) const 
 	return best;
 }
 
+// Boxes of one detected object (its outline slices, or a seat and back) move, select and delete together
+bool Visualizer::sameGroup(int a, int b) const {
+	if (a < 0 || b < 0) return false;
+	if (a == b) return true;
+	auto maskA = proxyMaskIds.find(scene.proxies[a].id), maskB = proxyMaskIds.find(scene.proxies[b].id);
+	return maskA != proxyMaskIds.end() && maskB != proxyMaskIds.end() && maskA->second == maskB->second;
+}
+
+int Visualizer::groupSize(int index) const {
+	int count = 0;
+	for (size_t i = 0; i < scene.proxies.size(); i++) count += sameGroup(index, static_cast<int>(i)) ? 1 : 0;
+	return count;
+}
+
 // Click a box to select it and drag to slide it across the floor; drag the dots on the selected box to
 // resize it, or the dot on a selected wall (pick walls in the list) to move the wall in or out
 bool Visualizer::updateRoomEditing() {
@@ -1086,7 +1141,7 @@ bool Visualizer::updateRoomEditing() {
 	bool haveSelection = selectedProxy >= 0 && selectedProxy < static_cast<int>(scene.proxies.size());
 
 	hoveredHandle = -1;
-	if (haveSelection && !draggingProxy) {
+	if (haveSelection && !draggingProxy && groupSize(selectedProxy) == 1) {
 		const recast::Proxy& selected = scene.proxies[selectedProxy];
 		Vec3 handle;
 		if (selected.type == "box") {
@@ -1112,6 +1167,7 @@ bool Visualizer::updateRoomEditing() {
 			draggingProxy = true;
 			draggingHandle = -1;
 			proxyAtGrab = scene.proxies[selectedProxy];
+			roomAtGrab = scene.proxies;
 			float t = 0.0f;
 			recast::rayAabb(origin, direction, Vec3(proxyAtGrab.min[0], proxyAtGrab.min[1], proxyAtGrab.min[2]),
 							Vec3(proxyAtGrab.max[0], proxyAtGrab.max[1], proxyAtGrab.max[2]), t);
@@ -1143,9 +1199,12 @@ bool Visualizer::updateRoomEditing() {
 		float t = (proxyGrab.y - origin.y) / direction.y;
 		if (t > 0.0f) {
 			Vec3 delta = origin + direction * t - proxyGrab;
-			for (int a : { 0, 2 }) {
-				proxy.min[a] = proxyAtGrab.min[a] + delta[a];
-				proxy.max[a] = proxyAtGrab.max[a] + delta[a];
+			for (size_t i = 0; i < scene.proxies.size() && i < roomAtGrab.size(); i++) {
+				if (!sameGroup(selectedProxy, static_cast<int>(i))) continue;
+				for (int a : { 0, 2 }) {
+					scene.proxies[i].min[a] = roomAtGrab[i].min[a] + delta[a];
+					scene.proxies[i].max[a] = roomAtGrab[i].max[a] + delta[a];
+				}
 			}
 		}
 	}
@@ -1158,7 +1217,9 @@ void Visualizer::drawRoomOverlay() {
 	ImDrawList* list = ImGui::GetForegroundDrawList();
 	for (size_t i = 0; i < scene.proxies.size(); i++) {
 		const recast::Proxy& proxy = scene.proxies[i];
-		bool selected = static_cast<int>(i) == selectedProxy, hovered = static_cast<int>(i) == hoveredProxy;
+		bool selected = sameGroup(static_cast<int>(i), selectedProxy), hovered = sameGroup(static_cast<int>(i), hoveredProxy);
+		bool firstOfGroup = true;
+		for (size_t j = 0; j < i; j++) firstOfGroup &= !sameGroup(static_cast<int>(i), static_cast<int>(j));
 		if (proxy.type == "box") {
 			ImU32 color = selected ? SELECTED_COLOR : hovered ? HOVER_COLOR : EDGE_COLOR;
 			float thickness = selected ? 2.5f : hovered ? 2.0f : 1.2f;
@@ -1170,14 +1231,14 @@ void Visualizer::drawRoomOverlay() {
 				}
 			}
 			ImVec2 at;
-			if (projectToScreen(Vec3((lo.x + hi.x) * 0.5f, hi.y, (lo.z + hi.z) * 0.5f), at)) {
+			if (firstOfGroup && projectToScreen(Vec3((lo.x + hi.x) * 0.5f, hi.y, (lo.z + hi.z) * 0.5f), at)) {
 				std::string name = proxyName(i);
 				ImVec2 size = ImGui::CalcTextSize(name.c_str());
 				ImVec2 corner0(at.x - size.x * 0.5f - 3.0f, at.y - size.y - 8.0f);
 				list->AddRectFilled(corner0, ImVec2(corner0.x + size.x + 6.0f, corner0.y + size.y + 2.0f), IM_COL32(0, 0, 0, 150), 3.0f);
 				list->AddText(ImVec2(corner0.x + 3.0f, corner0.y + 1.0f), color, name.c_str());
 			}
-			if (selected) {
+			if (static_cast<int>(i) == selectedProxy && groupSize(selectedProxy) == 1) {
 				std::array<Vec3, 6> handles = boxHandles(proxy);
 				for (int h = 0; h < 6; h++) {
 					ImVec2 screen;
@@ -1215,8 +1276,11 @@ void Visualizer::drawRoomEditor() {
 		for (size_t i = 0; i < scene.proxies.size(); i++) {
 			const recast::Proxy& proxy = scene.proxies[i];
 			if (proxy.type != "box" && !isWall(proxy)) continue;
+			bool firstOfGroup = true;
+			for (size_t j = 0; j < i; j++) firstOfGroup &= !sameGroup(static_cast<int>(i), static_cast<int>(j));
+			if (!firstOfGroup) continue;
 			std::string label = proxyName(i) + "##" + std::to_string(i);
-			if (ImGui::Selectable(label.c_str(), static_cast<int>(i) == selectedProxy)) selectedProxy = static_cast<int>(i);
+			if (ImGui::Selectable(label.c_str(), sameGroup(static_cast<int>(i), selectedProxy))) selectedProxy = static_cast<int>(i);
 			if (ImGui::IsItemHovered()) hoveredProxy = static_cast<int>(i);
 		}
 		ImGui::EndListBox();
@@ -1236,7 +1300,11 @@ void Visualizer::drawRoomEditor() {
 	bool haveSelection = selectedProxy >= 0 && selectedProxy < static_cast<int>(scene.proxies.size());
 	ImGui::BeginDisabled(!haveSelection);
 	if (ImGui::Button("delete") && haveSelection) {
-		scene.proxies.erase(scene.proxies.begin() + selectedProxy);
+		std::vector<recast::Proxy> kept;
+		for (size_t i = 0; i < scene.proxies.size(); i++) {
+			if (!sameGroup(selectedProxy, static_cast<int>(i))) kept.push_back(scene.proxies[i]);
+		}
+		scene.proxies = kept;
 		selectedProxy = -1;
 		proxyMeshesDirty = true;
 		unsavedChanges = true;

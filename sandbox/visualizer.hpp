@@ -130,6 +130,9 @@ private:
 	std::array<enginemath::Vec3, 6> boxHandles(const recast::Proxy& box) const;
 	bool wallHandle(const recast::Proxy& wall, enginemath::Vec3& handle) const;
 	int boxUnderCursor(const enginemath::Vec3& origin, const enginemath::Vec3& direction) const;
+	std::vector<recast::Proxy> roomAtGrab; // every box as it was when a drag started (a whole object moves together)
+	bool sameGroup(int a, int b) const;
+	int groupSize(int index) const;
 	void drawRoomOverlay();
 	enginemath::Vec3 proxyGrab;
 	recast::Proxy proxyAtGrab;
