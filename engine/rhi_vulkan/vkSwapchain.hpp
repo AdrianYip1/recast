@@ -20,8 +20,8 @@ namespace foto {
 		VkFormat getFormat() { return _format; };
 		VkExtent2D getExtent() { return _extent; };
 
-		std::vector<VkImage> getImages() { return images; };
-		std::vector<VkImageView> getImageViews() { return imageViews; };
+		std::vector<VkImage>& getImages() { return images; };
+		std::vector<VkImageView>& getImageViews() { return imageViews; };
 
 		void recreate();
 

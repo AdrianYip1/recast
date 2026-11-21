@@ -17,6 +17,7 @@ namespace foto {
 	class Pipeline {
 	public:
 		Pipeline(Device& device, const GraphicsPipelineConfig& graphicsPipelineConfig);
+		// have overloads for other pipelines
 		~Pipeline();
 		Pipeline(const Pipeline& other) = delete;
 		Pipeline& operator=(const Pipeline& other) = delete;
