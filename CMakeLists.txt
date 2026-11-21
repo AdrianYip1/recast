@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.15)
-project(mr_poop VERSION 0.1.0 LANGUAGES CXX)
+project(foto VERSION 0.1.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -20,6 +20,15 @@ find_package(Vulkan REQUIRED)
 add_library(stb INTERFACE)
 target_include_directories(stb INTERFACE external/stb)
 
-add_executable(mr_poop src/main.cpp)
+add_library(foto_engine STATIC
+    engine/platform/window.cpp)
 
-target_link_libraries(mr_poop PRIVATE enginemath::enginemath glfw Vulkan::Vulkan stb)
+target_include_directories(foto_engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+
+target_link_libraries(foto_engine
+    PUBLIC enginemath::enginemath
+    PRIVATE glfw)
+
+add_executable(foto src/main.cpp)
+
+target_link_libraries(foto PRIVATE foto_engine glfw Vulkan::Vulkan stb)
