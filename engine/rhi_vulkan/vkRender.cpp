@@ -1,16 +1,39 @@
 #include "vkRender.hpp"
 
 foto::Render::Render(Device& device, Swapchain& swapchain, Pipeline& pipeline) :
-	device(device.getDevice()), _commandPool(createCommandPool(device)), 
+	_device(device.getDevice()), _commandPool(createCommandPool(device)), 
 	commandBuffer(createCommandBuffer(device, _commandPool))
 {
-
+	createSyncObjects(_device);
 };
 
 foto::Render::~Render() {
-	vkDestroyCommandPool(device, _commandPool, nullptr);
+	vkDestroySemaphore(_device, imageAvailableSem, nullptr);
+	vkDestroySemaphore(_device, renderFinishedSem, nullptr);
+	vkDestroyFence(_device, inFlightFence, nullptr);
+
+	vkDestroyCommandPool(_device, _commandPool, nullptr);
 };
 
+void foto::Render::drawFrame() {
+
+}
+
+void foto::Render::createSyncObjects(VkDevice _device) {
+	VkSemaphoreCreateInfo semaphoreCreateInfo = {
+		.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO
+	};
+
+	VkFenceCreateInfo fenceCreateInfo = {
+		.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO
+	};
+
+	if (vkCreateSemaphore(_device, &semaphoreCreateInfo, nullptr, &imageAvailableSem) != VK_SUCCESS ||
+		vkCreateSemaphore(_device, &semaphoreCreateInfo, nullptr, &renderFinishedSem) != VK_SUCCESS ||
+		vkCreateFence(_device, &fenceCreateInfo, nullptr, &inFlightFence) != VK_SUCCESS) {
+		throw std::runtime_error("ERROR: vkRender.cpp -> createSyncObjects()");
+	}
+}
 
 void foto::Render::recordCommandBuffer(Swapchain& swapchain,Pipeline& pipeline, VkCommandBuffer commandBuffer, u32 imageIdx) {
 	VkCommandBufferBeginInfo beginInfo = {
