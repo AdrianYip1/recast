@@ -11,7 +11,7 @@
 
 #include "vkBuffer.hpp"
 #include "vkMesh.hpp"
-#include "vkUbo.hpp"
+#include "vkRenderTypes.hpp"
 #include "vkDescriptorHelper.hpp"
 
 namespace foto {
@@ -29,7 +29,7 @@ namespace foto {
 		Render& operator=(const Render& other) = delete;
 
 		// Returns true if the swapchain is out of date / suboptimal and must be recreated
-		bool drawFrame(std::span<Mesh* const> meshes, const Ubo& ubo);
+		bool drawFrame(std::span<const DrawItem> items, const FrameUbo& frameUbo);
 
 		// Call after Swapchain::recreate() (image count may change)
 		void onSwapchainRecreated();
@@ -63,7 +63,7 @@ namespace foto {
 
 		void createSyncObjects(VkDevice device, size swapchainImageCount);
 		void createRenderFinishedSems(VkDevice device, size swapchainImageCount);
-		void recordCommandBuffer(VkCommandBuffer commandBuffer, u32 imageIdx, std::span<Mesh* const> meshes);
+		void recordCommandBuffer(VkCommandBuffer commandBuffer, u32 imageIdx, std::span<const DrawItem> items);
 		static VkCommandPool createCommandPool(Device& device);
 		static std::vector<VkCommandBuffer> createCommandBuffers(Device& device, VkCommandPool commandPool);
 		static std::vector<std::unique_ptr<Buffer>> createUniformBuffers(Device& device);

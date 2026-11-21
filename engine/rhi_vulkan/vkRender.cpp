@@ -14,7 +14,7 @@ foto::Render::Render(Device& device, Swapchain& swapchain, Pipeline& pipeline) :
 	// Point binding 0 of each frame's set at that frame's uniform buffer
 	for (size i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
 		DescriptorWriter()
-			.writeBuffer(0, uniformBuffers[i]->getBuffer(), sizeof(Ubo))
+			.writeBuffer(0, uniformBuffers[i]->getBuffer(), sizeof(FrameUbo))
 			.update(device, descriptorSets[i]);
 	}
 
@@ -41,7 +41,7 @@ void foto::Render::setTexture(u32 binding, Image& texture, Sampler& sampler) {
 
 // CPU -> recording command buffer
 // GPU -> submitting/executing command buffer
-bool foto::Render::drawFrame(std::span<Mesh* const> meshes, const Ubo& ubo) {
+bool foto::Render::drawFrame(std::span<const DrawItem> items, const FrameUbo& frameUbo) {
 	vkWaitForFences(device.getDevice(), 1, &inFlightFence[currentFrame], VK_TRUE, UINT64_MAX);
 
 	u32 imageIdx;
@@ -57,11 +57,11 @@ bool foto::Render::drawFrame(std::span<Mesh* const> meshes, const Ubo& ubo) {
 	vkResetFences(device.getDevice(), 1, &inFlightFence[currentFrame]);
 
 	// Update uniforms
-	uniformBuffers[currentFrame]->upload(&ubo, sizeof(ubo));
+	uniformBuffers[currentFrame]->upload(&frameUbo, sizeof(frameUbo));
 
 	VkCommandBuffer commandBuffer = commandBuffers[currentFrame];
 	vkResetCommandBuffer(commandBuffer, 0);
-	recordCommandBuffer(commandBuffer, imageIdx, meshes);
+	recordCommandBuffer(commandBuffer, imageIdx, items);
 
 	// Submit info
 	VkSemaphore waitSemaphore[] = { imageAvailableSem[currentFrame] };
@@ -164,7 +164,7 @@ void foto::Render::createRenderFinishedSems(VkDevice device, size swapchainImage
 	}
 }
 
-void foto::Render::recordCommandBuffer(VkCommandBuffer commandBuffer, u32 imageIdx, std::span<Mesh* const> meshes) {
+void foto::Render::recordCommandBuffer(VkCommandBuffer commandBuffer, u32 imageIdx, std::span<const DrawItem> items) {
 	VkCommandBufferBeginInfo beginInfo = {
 		.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
 	};
@@ -277,11 +277,22 @@ void foto::Render::recordCommandBuffer(VkCommandBuffer commandBuffer, u32 imageI
 	};
 	vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 
-	// Meshes: bind once, draw each submesh
-	for (Mesh* mesh : meshes) {
-		mesh->bind(commandBuffer);
+	// Draw list: rebind buffers only when the mesh changes, one push + draw per submesh
+	Mesh* boundMesh = nullptr;
+	for (const DrawItem& item : items) {
+		if (!item.mesh) continue;
 
-		for (const Submesh& submesh : mesh->getSubmeshes()) {
+		if (item.mesh != boundMesh) {
+			item.mesh->bind(commandBuffer);
+			boundMesh = item.mesh;
+		}
+
+		for (const Submesh& submesh : item.mesh->getSubmeshes()) {
+			DrawPush push = {
+				.model = item.transform,
+				.materialIndex = (item.materialOverride != NO_MATERIAL_OVERRIDE) ? item.materialOverride : submesh.materialIndex
+			};
+			vkCmdPushConstants(commandBuffer, pipeline.getPipelineLayout(), DRAW_PUSH_RANGE.stageFlags, 0, sizeof(DrawPush), &push);
 			vkCmdDrawIndexed(commandBuffer, submesh.indexCount, 1, submesh.firstIndex, 0, 0);
 		}
 	}
@@ -356,7 +367,7 @@ std::vector<std::unique_ptr<foto::Buffer>> foto::Render::createUniformBuffers(De
 
 	// HOST_VISIBLE: rewritten from the CPU every frame, so no staging buffer
 	for (size i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
-		buffers.push_back(std::make_unique<Buffer>(device, sizeof(Ubo), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+		buffers.push_back(std::make_unique<Buffer>(device, sizeof(FrameUbo), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT));
 	}
 

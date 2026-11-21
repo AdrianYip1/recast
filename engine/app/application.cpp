@@ -13,6 +13,9 @@
 #include "../rhi_vulkan/vkImage.hpp"
 #include "../rhi_vulkan/vkDescriptorHelper.hpp"
 
+using enginemath::Vec3;
+using enginemath::Mat4;
+
 // pos, normal, uv. +Y is up (proj flips Y), uv (0,0) is the texture's top-left
 static const std::vector<foto::Vertex> vertices = {
 	{{-0.5f, -0.5f, 0.0f}, {0.0f, 0.0f, 1.0f}, {0.0f, 1.0f}},
@@ -35,11 +38,12 @@ foto::Application::Application(const ApplicationConfig& config) :
 				.colorFormat = swapchain->getFormat(),
 				.depthFormat = Render::DEPTH_FORMAT,
 				.descriptorSetLayouts = {
-					// set 0 matches the bindings in basic.vert / basic.frag
+					// set 0 matches the bindings in common.glsl / basic.frag
 					DescriptorLayoutBuilder()
-						.addBinding(0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_SHADER_STAGE_VERTEX_BIT)
+						.addBinding(0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT)
 						.addBinding(1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_FRAGMENT_BIT)
 				},
+				.pushConstants = { DRAW_PUSH_RANGE },
 			})),
 	render(std::make_unique<Render>(*device, *swapchain, *pipeline))
 {
@@ -69,10 +73,21 @@ void foto::Application::run() {
 		VkExtent2D extent = swapchain->getExtent();
 		f32 aspect = static_cast<f32>(extent.width) / static_cast<f32>(extent.height);
 
-		Ubo ubo = { enginemath::Mat4::identity(), camera.getView(), camera.getProjection(aspect) };
+		FrameUbo frameUbo = {
+			.view = camera.getView(),
+			.proj = camera.getProjection(aspect),
+			.cameraPos = { camera.position.x, camera.position.y, camera.position.z, 1.0f },
+			.lightDir = { -0.3f, -0.8f, -0.5f, 0.0f }
+		};
+		Vec3 light = Vec3(frameUbo.lightDir.x, frameUbo.lightDir.y, frameUbo.lightDir.z).normalized();
+		frameUbo.lightDir = { light.x, light.y, light.z, 0.0f };
 
-		Mesh* meshes[] = { quad.get() };
-		bool outOfDate = render->drawFrame(meshes, ubo);
+		// Two quads, one behind and to the side, to show per-draw transforms + depth testing
+		DrawItem items[] = {
+			{ .mesh = quad.get(), .transform = Mat4::identity() },
+			{ .mesh = quad.get(), .transform = Mat4::translationM(0.45f, 0.2f, -0.4f) },
+		};
+		bool outOfDate = render->drawFrame(items, frameUbo);
 		if (outOfDate || window->getFramebufferResized()) {
 			window->setFramebufferResized(false);
 			swapchain->recreate();
