@@ -83,6 +83,8 @@ namespace foto {
 		bool supportsPathTracing();
 		void setPathTracing(bool enabled, u32 photoMaterial);
 		bool isPathTracing();
+		// Edge-aware filtering of the path traced noise, strongest right after a change (on by default)
+		void setDenoise(bool enabled);
 		u32 getPathTraceSamples();
 
 		void setExposure(f32 ev);
@@ -106,6 +108,7 @@ namespace foto {
 		std::unique_ptr<Pipeline> shadowPipeline;
 		std::unique_ptr<Pipeline> pathTracePipeline;
 		std::unique_ptr<Pipeline> causticsPipeline;
+		std::unique_ptr<Pipeline> denoisePipeline;
 		std::unique_ptr<Render> render;
 		std::unique_ptr<ImGuiLayer> imgui;
 

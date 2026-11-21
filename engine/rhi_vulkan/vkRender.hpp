@@ -26,9 +26,9 @@ namespace foto {
 		// Scene pipelines render into this; presentPipeline tonemaps it to the swapchain
 		static constexpr VkFormat HDR_FORMAT = VK_FORMAT_R16G16B16A16_SFLOAT;
 
-		// pathTracePipeline / causticsPipeline: nullptr when the GPU can't ray trace
+		// pathTracePipeline / causticsPipeline / denoisePipeline: nullptr when the GPU can't ray trace
 		Render(Device& device, Swapchain& swapchain, Pipeline& pipeline, Pipeline& presentPipeline, Pipeline& shadowPipeline,
-			   Pipeline* pathTracePipeline, Pipeline* causticsPipeline);
+			   Pipeline* pathTracePipeline, Pipeline* causticsPipeline, Pipeline* denoisePipeline);
 		~Render();
 		Render(const Render& other) = delete;
 		Render& operator=(const Render& other) = delete;
@@ -62,6 +62,7 @@ namespace foto {
 		// Samples accumulate over frames and restart whenever the casters, lights or camera change
 		void setPathTracing(bool enabled, u32 photoTexture);
 		bool isPathTracing() { return pathTracing; };
+		void setDenoise(bool enabled) { denoise = enabled; };
 		bool supportsPathTracing() { return pathTracePipeline != nullptr; };
 		u32 getPathTraceSamples() { return traceSamples; };
 		u32 getPathTracePhoto() { return tracePhotoTexture; };
@@ -75,6 +76,7 @@ namespace foto {
 		Pipeline& shadowPipeline;
 		Pipeline* pathTracePipeline = nullptr;
 		Pipeline* causticsPipeline = nullptr;
+		Pipeline* denoisePipeline = nullptr;
 
 		VkDevice _device = VK_NULL_HANDLE;
 		VkCommandPool _commandPool = VK_NULL_HANDLE;
@@ -122,6 +124,8 @@ namespace foto {
 		std::unique_ptr<Image> causticImage; // R32_UINT, 3 columns (rgb) per framebuffer pixel
 		std::unique_ptr<Image> illuminationImage;
 		std::unique_ptr<Image> guideImage;
+		std::unique_ptr<Image> denoiseImages[2];
+		bool denoise = true;
 
 		std::vector<VkSemaphore> imageAvailableSem;
 		std::vector<VkSemaphore> renderFinishedSem;

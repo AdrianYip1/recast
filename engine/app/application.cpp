@@ -28,7 +28,8 @@ static foto::DescriptorLayoutBuilder sceneSetLayout(foto::Device& device) {
 		.addBinding(2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, stages, textures.capacity, textureFlags);
 }
 
-static std::unique_ptr<foto::Pipeline> createTracePipeline(foto::Device& device, const char* shaderFilePath) {
+static std::unique_ptr<foto::Pipeline> createTracePipeline(foto::Device& device, const char* shaderFilePath,
+															 VkPushConstantRange pushConstants = foto::TRACE_PUSH_RANGE) {
 	if (!device.supportsRayTracing()) return nullptr;
 	return std::make_unique<foto::Pipeline>(device, foto::ComputePipelineConfig{
 		.shaderFilePath = shaderFilePath,
@@ -41,9 +42,11 @@ static std::unique_ptr<foto::Pipeline> createTracePipeline(foto::Device& device,
 				.addBinding(3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT)
 				.addBinding(4, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_SHADER_STAGE_COMPUTE_BIT)
 				.addBinding(5, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_SHADER_STAGE_COMPUTE_BIT)
-				.addBinding(6, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_SHADER_STAGE_COMPUTE_BIT),
+				.addBinding(6, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_SHADER_STAGE_COMPUTE_BIT)
+				.addBinding(7, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_SHADER_STAGE_COMPUTE_BIT)
+				.addBinding(8, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_SHADER_STAGE_COMPUTE_BIT),
 		},
-		.pushConstants = { foto::TRACE_PUSH_RANGE },
+		.pushConstants = { pushConstants },
 	});
 }
 
@@ -82,8 +85,9 @@ foto::Application::Application(const ApplicationConfig& config) :
 			})),
 	pathTracePipeline(createTracePipeline(*device, "shaders/pathtrace.comp.spv")),
 	causticsPipeline(createTracePipeline(*device, "shaders/caustics.comp.spv")),
+	denoisePipeline(createTracePipeline(*device, "shaders/denoise.comp.spv", DENOISE_PUSH_RANGE)),
 	render(std::make_unique<Render>(*device, *swapchain, *pipeline, *presentPipeline, *shadowPipeline, pathTracePipeline.get(),
-									causticsPipeline.get())),
+									causticsPipeline.get(), denoisePipeline.get())),
 	imgui(std::make_unique<ImGuiLayer>(*window, *device, *swapchain, VK_FORMAT_UNDEFINED)),
 	sampler(std::make_unique<Sampler>(*device))
 {
@@ -247,6 +251,10 @@ bool foto::Application::supportsPathTracing() {
 
 void foto::Application::setPathTracing(bool enabled, u32 photoMaterial) {
 	render->setPathTracing(enabled, render->getMaterial(photoMaterial).baseColorTexture);
+}
+
+void foto::Application::setDenoise(bool enabled) {
+	render->setDenoise(enabled);
 }
 
 bool foto::Application::isPathTracing() {

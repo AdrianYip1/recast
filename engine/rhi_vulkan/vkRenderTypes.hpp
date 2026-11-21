@@ -126,6 +126,21 @@ namespace foto {
 		.size = sizeof(TracePush)
 	};
 
+	inline constexpr u32 DENOISE_PASSES = 4;
+
+	struct DenoisePush {
+		u32 pass;
+		u32 passCount = DENOISE_PASSES;
+		u32 samples;
+		u32 _pad = 0;
+	};
+
+	inline constexpr VkPushConstantRange DENOISE_PUSH_RANGE = {
+		.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+		.offset = 0,
+		.size = sizeof(DenoisePush)
+	};
+
 	enum class LightType : u32 { Point, Directional };
 
 	struct Light {

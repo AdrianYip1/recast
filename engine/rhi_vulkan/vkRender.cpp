@@ -5,9 +5,9 @@
 #include <stb_image_write.h>
 
 foto::Render::Render(Device& device, Swapchain& swapchain, Pipeline& pipeline, Pipeline& presentPipeline, Pipeline& shadowPipeline,
-					 Pipeline* pathTracePipeline, Pipeline* causticsPipeline) :
+					 Pipeline* pathTracePipeline, Pipeline* causticsPipeline, Pipeline* denoisePipeline) :
 	device(device), swapchain(swapchain), pipeline(pipeline), presentPipeline(presentPipeline), shadowPipeline(shadowPipeline),
-	pathTracePipeline(pathTracePipeline), causticsPipeline(causticsPipeline),
+	pathTracePipeline(pathTracePipeline), causticsPipeline(causticsPipeline), denoisePipeline(denoisePipeline),
 	_device(device.getDevice()), _commandPool(createCommandPool(device)),
 	commandBuffers(createCommandBuffers(device, _commandPool)),
 	uniformBuffers(createUniformBuffers(device)),
@@ -211,8 +211,10 @@ void foto::Render::createTraceImages() {
 										   VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
 	illuminationImage = std::make_unique<Image>(device, extent, VK_FORMAT_R32G32B32A32_SFLOAT, VK_IMAGE_USAGE_STORAGE_BIT);
 	guideImage = std::make_unique<Image>(device, extent, VK_FORMAT_R32G32B32A32_SFLOAT, VK_IMAGE_USAGE_STORAGE_BIT);
+	for (auto& image : denoiseImages) image = std::make_unique<Image>(device, extent, VK_FORMAT_R32G32B32A32_SFLOAT, VK_IMAGE_USAGE_STORAGE_BIT);
 	device.immediateSubmit(_commandPool, [&](VkCommandBuffer commandBuffer) {
-		for (Image* image : { accumulationImage.get(), causticImage.get(), illuminationImage.get(), guideImage.get() }) {
+		for (Image* image : { accumulationImage.get(), causticImage.get(), illuminationImage.get(), guideImage.get(),
+							  denoiseImages[0].get(), denoiseImages[1].get() }) {
 			Image::transitionLayout(commandBuffer, image->getImage(), VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
 		}
 	});
@@ -226,6 +228,8 @@ void foto::Render::createTraceImages() {
 			.writeImage(4, causticImage->getView(), VK_NULL_HANDLE, VK_IMAGE_LAYOUT_GENERAL, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
 			.writeImage(5, illuminationImage->getView(), VK_NULL_HANDLE, VK_IMAGE_LAYOUT_GENERAL, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
 			.writeImage(6, guideImage->getView(), VK_NULL_HANDLE, VK_IMAGE_LAYOUT_GENERAL, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
+			.writeImage(7, denoiseImages[0]->getView(), VK_NULL_HANDLE, VK_IMAGE_LAYOUT_GENERAL, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
+			.writeImage(8, denoiseImages[1]->getView(), VK_NULL_HANDLE, VK_IMAGE_LAYOUT_GENERAL, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
 			.update(device, traceSets[i]);
 	}
 	traceKey.clear();
@@ -391,6 +395,25 @@ void foto::Render::recordPathTrace(VkCommandBuffer commandBuffer, std::span<cons
 	vkCmdPushConstants(commandBuffer, pathTracePipeline->getPipelineLayout(), TRACE_PUSH_RANGE.stageFlags, 0, sizeof(TracePush), &push);
 	vkCmdDispatch(commandBuffer, (extent.width + 7) / 8, (extent.height + 7) / 8, 1);
 
+	if (denoise && denoisePipeline) {
+		VkMemoryBarrier2 passDone = {
+			.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+			.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+			.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+			.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+			.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+		};
+		VkDependencyInfo passDependency = { .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &passDone };
+
+		vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, denoisePipeline->getPipeline());
+		vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, denoisePipeline->getPipelineLayout(), 0, 2, sets, 0, nullptr);
+		for (u32 pass = 0; pass < DENOISE_PASSES; pass++) {
+			vkCmdPipelineBarrier2(commandBuffer, &passDependency);
+			DenoisePush denoisePush = { .pass = pass, .samples = push.trace ? traceSamples + 1 : traceSamples };
+			vkCmdPushConstants(commandBuffer, denoisePipeline->getPipelineLayout(), DENOISE_PUSH_RANGE.stageFlags, 0, sizeof(DenoisePush), &denoisePush);
+			vkCmdDispatch(commandBuffer, (extent.width + 7) / 8, (extent.height + 7) / 8, 1);
+		}
+	}
 	if (traceSamples < MAX_TRACE_SAMPLES) traceSamples++;
 
 	VkImageMemoryBarrier2 hdrToSampled = {
