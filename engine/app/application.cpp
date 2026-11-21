@@ -50,6 +50,10 @@ foto::Application::Application(const ApplicationConfig& config) :
 	texture = Image::loadTexture(*device, render->getCommandPool(), "textures/checker.png");
 	sampler = std::make_unique<Sampler>(*device);
 	render->setTexture(1, *texture, *sampler);
+
+	// Slightly off-axis so the perspective is visible
+	camera.position = { 0.6f, 0.4f, 1.6f };
+	camera.lookAt({ 0.0f, 0.0f, 0.0f });
 }
 
 foto::Application::~Application() {
@@ -62,9 +66,10 @@ void foto::Application::run() {
 		window->pollEvents();
 		onUpdate(0.0f);
 
-		// Placeholder camera
-		Ubo ubo = { enginemath::Mat4::identity(), enginemath::Mat4::identity(), enginemath::Mat4::identity() };
-		ubo.proj.m[1][1] = -1.0f;
+		VkExtent2D extent = swapchain->getExtent();
+		f32 aspect = static_cast<f32>(extent.width) / static_cast<f32>(extent.height);
+
+		Ubo ubo = { enginemath::Mat4::identity(), camera.getView(), camera.getProjection(aspect) };
 
 		Mesh* meshes[] = { quad.get() };
 		bool outOfDate = render->drawFrame(meshes, ubo);

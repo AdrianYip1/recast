@@ -2,6 +2,7 @@
 
 #include <engine/core/defines.hpp>
 #include <engine/core/stdIncludes.hpp>
+#include <engine/scene/camera.hpp>
 
 namespace foto {
 	class Window;
@@ -43,5 +44,7 @@ namespace foto {
 		std::unique_ptr<Mesh> quad;
 		std::unique_ptr<Image> texture;
 		std::unique_ptr<Sampler> sampler;
+
+		Camera camera;
 	};
 } // namespace foto

@@ -59,7 +59,8 @@ add_library(foto_engine STATIC
     engine/rhi_vulkan/vkPipeline.cpp
     engine/rhi_vulkan/vkBuffer.cpp  "engine/rhi_vulkan/vkDescriptorHelper.cpp"
     engine/rhi_vulkan/vkImage.cpp
-    engine/rhi_vulkan/vkMesh.cpp)
+    engine/rhi_vulkan/vkMesh.cpp
+    engine/scene/camera.cpp)
 
 target_include_directories(foto_engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
