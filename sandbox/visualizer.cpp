@@ -399,6 +399,15 @@ void Visualizer::onImGui() {
 	ImGui::SameLine();
 	if (ImGui::Button("export image")) exportRequested = true;
 
+	if (objectMesh) {
+		recast::ObjectTransform& transform = scene.object.transform;
+		if (ImGui::SliderFloat("object size", &transform.scale, 0.1f, 10.0f, "%.2fx", ImGuiSliderFlags_Logarithmic)) {
+			transform.scale = std::max(transform.scale, 0.01f);
+			recast::resolveCollisions(scene.proxies, transform, objectMesh->getBoundsMin(), objectMesh->getBoundsMax());
+			unsavedChanges = true;
+		}
+	}
+
 	float exposure = getExposure();
 	if (ImGui::SliderFloat("exposure", &exposure, -4.0f, 4.0f, "%.1f EV")) setExposure(exposure);
 
