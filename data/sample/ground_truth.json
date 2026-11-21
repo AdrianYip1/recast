@@ -1,0 +1,30 @@
+{
+  "light": {
+    "type": "point",
+    "position": [
+      -1.2,
+      1.6,
+      0.6
+    ],
+    "intensity": [
+      3.4,
+      3.2,
+      2.9
+    ]
+  },
+  "ambient": [
+    0.1,
+    0.11,
+    0.13
+  ],
+  "object_transform": {
+    "position": [
+      -0.55,
+      0.0,
+      -0.35
+    ],
+    "rotation_y_deg": 25.0,
+    "scale": 1.0
+  },
+  "photo_with_object": "photo_with_object.hdr"
+}

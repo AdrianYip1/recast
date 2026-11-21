@@ -37,6 +37,18 @@
     "kind": "camera_height",
     "metres": 1.5
   },
+  "object": {
+    "path": "object.glb",
+    "transform": {
+      "position": [
+        -0.55,
+        0.0,
+        -0.35
+      ],
+      "rotation_y_deg": 25.0,
+      "scale": 1.0
+    }
+  },
   "proxies": [
     {
       "type": "plane",
