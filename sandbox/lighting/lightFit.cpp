@@ -5,6 +5,8 @@
 #endif
 
 #include <algorithm>
+#include <map>
+#include <tuple>
 #include <cmath>
 #include <stdexcept>
 
@@ -61,7 +63,27 @@ namespace {
 	struct Occluders {
 		std::vector<Occluder> list;
 
-		explicit Occluders(const std::vector<recast::Proxy>& proxies) {
+		// windows: openings in their wall (centre, unit along the wall, half width, half height, facing)
+		struct Window { Vec3 centre, along; float halfWidth = 0.0f, halfHeight = 0.0f; Vec3 normal; };
+		std::vector<Window> windows;
+
+		explicit Occluders(const std::vector<recast::Proxy>& proxies, const std::vector<recast::SceneLight>* lights = nullptr) {
+			if (lights) {
+				for (const recast::SceneLight& light : *lights) {
+					if (light.type != "area") continue;
+					Vec3 c[4];
+					for (int k = 0; k < 4; k++) c[k] = Vec3(light.corners[k][0], light.corners[k][1], light.corners[k][2]);
+					Window window;
+					window.centre = (c[0] + c[1] + c[2] + c[3]) * 0.25f;
+					Vec3 across = (c[1] - c[0]) * 0.5f;
+					window.halfWidth = std::sqrt(across.dot(across));
+					if (window.halfWidth < 1e-4f) continue;
+					window.along = across / window.halfWidth;
+					window.halfHeight = 0.5f * (c[3].y - c[0].y);
+					window.normal = window.along.cross(Vec3(0.0f, 1.0f, 0.0f)).normalized();
+					windows.push_back(window);
+				}
+			}
 			for (const recast::Proxy& proxy : proxies) {
 				Occluder occluder;
 				occluder.box = proxy.type == "box";
@@ -72,6 +94,15 @@ namespace {
 				occluder.max = Vec3(proxy.max[0], proxy.max[1], proxy.max[2]);
 				list.push_back(occluder);
 			}
+		}
+
+		bool inWindow(const Vec3& position) const {
+			for (const Window& w : windows) {
+				Vec3 offset = position - w.centre;
+				if (std::abs(offset.dot(w.normal)) > 0.15f) continue;
+				if (std::abs(offset.dot(w.along)) <= w.halfWidth && std::abs(offset.y) <= w.halfHeight) return true;
+			}
+			return false;
 		}
 
 		// Any hit with 0 < t < maxT
@@ -99,7 +130,7 @@ namespace {
 					float denominator = o.normal.dot(direction);
 					if (std::abs(denominator) < 1e-6f) continue;
 					float t = (o.point - origin).dot(o.normal) / denominator;
-					if (t > 1e-5f && t < maxT) return true;
+					if (t > 1e-5f && t < maxT && !inWindow(origin + direction * t)) return true;
 				}
 			}
 			return false;
@@ -144,6 +175,28 @@ namespace {
 	double lightTerm(const Occluders& occluders, const recast::LightingSample& sample, const recast::FitLight& light) {
 		Vec3 origin = sample.point + sample.normal * 1e-3f;
 
+		if (light.area) {
+			// irradiance per unit radiance: a 4x4 grid of points on the rectangle, each cos * cos / d^2 * its share of the area
+			Vec3 up(0.0f, light.halfHeight, 0.0f);
+			Vec3 facing = light.halfWidth.cross(Vec3(0.0f, 1.0f, 0.0f)).normalized();
+			double cell = 4.0 * std::sqrt(light.halfWidth.dot(light.halfWidth)) * light.halfHeight / 16.0;
+			double sum = 0.0;
+			for (int i = 0; i < 4; i++) {
+				for (int j = 0; j < 4; j++) {
+					Vec3 target = light.position + light.halfWidth * ((i + 0.5f) / 2.0f - 1.0f) + up * ((j + 0.5f) / 2.0f - 1.0f);
+					Vec3 toLight = target - origin;
+					float distanceSquared = std::max(toLight.dot(toLight), 1e-6f);
+					float distance = std::sqrt(distanceSquared);
+					Vec3 direction = toLight / distance;
+					double cosSurface = sample.normal.dot(direction), cosLight = facing.dot(-direction);
+					if (cosSurface <= 0.0 || cosLight <= 0.0) continue;
+					if (occluders.blocked(origin, direction, distance - 1e-3f, false)) continue;
+					sum += cosSurface * cosLight / distanceSquared;
+				}
+			}
+			return sum * cell;
+		}
+
 		if (light.directional) {
 			double cosine = sample.normal.dot(-light.direction);
 			if (cosine <= 0.0) return 0.0;
@@ -164,9 +217,27 @@ namespace {
 		std::vector<bool> lightVaries; // false: the light is (nearly) constant here, so it can't be told apart from ambient
 	};
 
+	// Terms of fixed lights per sample set, kept for one fit (keyed by the sample set and the light's shape; cleared at
+	// the start and end of each fit, since a later sample set can reuse the same memory)
+	using TermKey = std::tuple<const void*, size_t, bool, float, float, float, float, float, float, float, float>;
+	thread_local std::map<TermKey, std::vector<double>> fixedTermCache;
+
+	const std::vector<double>& fixedLightTerms(const Occluders& occluders, const std::vector<recast::LightingSample>& samples,
+											   const recast::FitLight& light) {
+		auto& cache = fixedTermCache;
+		TermKey key{ samples.data(), samples.size(), light.area, light.position.x, light.position.y, light.position.z,
+				 light.halfWidth.x, light.halfWidth.z, light.halfHeight, light.size, light.directional ? 1.0f : 0.0f };
+		auto found = cache.find(key);
+		if (found != cache.end()) return found->second;
+		if (cache.size() > 64) cache.clear();
+		std::vector<double> terms(samples.size());
+		for (size_t s = 0; s < samples.size(); s++) terms[s] = lightTerm(occluders, samples[s], light);
+		return cache.emplace(key, std::move(terms)).first->second;
+	}
+
 	std::vector<ProxySolution> solvePerProxy(const recast::SceneFile& scene, const std::vector<recast::LightingSample>& samples,
 											 const std::vector<recast::FitLight>& lights, double& residual) {
-		Occluders occluders(scene.proxies);
+		Occluders occluders(scene.proxies, &scene.lights);
 		int unknowns = 1 + static_cast<int>(lights.size());
 		size_t proxyCount = scene.proxies.size();
 
@@ -176,6 +247,12 @@ namespace {
 		std::vector<ProxySolution> solutions(proxyCount);
 		for (auto& solution : solutions) solution.lightWeight.assign(lights.size(), 0.0);
 
+		// Lights found in the photo (fixed) never move during a fit, so their terms for these samples are worked out once
+		std::vector<const std::vector<double>*> cached(lights.size(), nullptr);
+		for (size_t l = 0; l < lights.size(); l++) {
+			if (lights[l].fixed) cached[l] = &fixedLightTerms(occluders, samples, lights[l]);
+		}
+
 		std::vector<double> features(samples.size() * unknowns, 1.0);
 		for (size_t s = 0; s < samples.size(); s++) {
 			const recast::LightingSample& sample = samples[s];
@@ -184,7 +261,7 @@ namespace {
 
 			double* f = &features[s * unknowns];
 			for (size_t l = 0; l < lights.size(); l++) {
-				f[1 + l] = lightTerm(occluders, sample, lights[l]);
+				f[1 + l] = cached[l] ? (*cached[l])[s] : lightTerm(occluders, sample, lights[l]);
 				solution.lightWeight[l] += f[1 + l] * f[1 + l];
 			}
 
@@ -308,6 +385,7 @@ namespace {
 			while (improved) {
 				improved = false;
 				for (size_t l = 0; l < lights.size(); l++) {
+					if (lights[l].fixed) continue;
 					for (int axis = 0; axis < 3; axis++) {
 						if (lights[l].directional && axis == 2) continue;
 						for (float sign : { -1.0f, 1.0f }) {
@@ -444,59 +522,75 @@ recast::LightingFit recast::fitLightIntensities(const SceneFile& scene, const st
 	return fit;
 }
 
-std::vector<Vec3> recast::detectBrightSpots(const SceneFile& scene, const LinearImage& photo, int maxSpots) {
-	constexpr int cell = 4;
-	int gridWidth = photo.width / cell, gridHeight = photo.height / cell;
-	std::vector<float> luminance(static_cast<size_t>(gridWidth) * gridHeight, 0.0f);
-	float brightest = 0.0f;
+namespace {
+	struct Blob {
+		double energy = 0.0, x = 0.0, y = 0.0; // x, y: centroid in photo pixels (energy weighted, until divided)
+		int cells = 0;
+		float peak = 0.0f;
+	};
 
-	for (int gy = 0; gy < gridHeight; gy++) {
-		for (int gx = 0; gx < gridWidth; gx++) {
-			float sum = 0.0f;
-			for (int y = 0; y < cell; y++) {
-				for (int x = 0; x < cell; x++) {
-					Vec3 c = photo.at(gx * cell + x, gy * cell + y);
-					sum += 0.2126f * c.x + 0.7152f * c.y + 0.0722f * c.z;
+	// Connected regions of the brightest pixels (luminance >= relative * the brightest), brightest first
+	std::vector<Blob> brightBlobs(const recast::LinearImage& photo, float relative, int& cellCount) {
+		constexpr int cell = 4;
+		int gridWidth = photo.width / cell, gridHeight = photo.height / cell;
+		cellCount = gridWidth * gridHeight;
+		std::vector<float> luminance(static_cast<size_t>(gridWidth) * gridHeight, 0.0f);
+		float brightest = 0.0f;
+		for (int gy = 0; gy < gridHeight; gy++) {
+			for (int gx = 0; gx < gridWidth; gx++) {
+				float sum = 0.0f;
+				for (int y = 0; y < cell; y++) {
+					for (int x = 0; x < cell; x++) {
+						Vec3 c = photo.at(gx * cell + x, gy * cell + y);
+						sum += 0.2126f * c.x + 0.7152f * c.y + 0.0722f * c.z;
+					}
+				}
+				luminance[gy * gridWidth + gx] = sum / (cell * cell);
+				brightest = std::max(brightest, luminance[gy * gridWidth + gx]);
+			}
+		}
+
+		float threshold = brightest * relative;
+		std::vector<int> label(luminance.size(), -1);
+		std::vector<Blob> blobs;
+		for (int start = 0; start < static_cast<int>(luminance.size()); start++) {
+			if (label[start] >= 0 || luminance[start] < threshold) continue;
+			Blob blob;
+			std::vector<int> stack = { start };
+			label[start] = static_cast<int>(blobs.size());
+			while (!stack.empty()) {
+				int index = stack.back();
+				stack.pop_back();
+				int gx = index % gridWidth, gy = index / gridWidth;
+				blob.energy += luminance[index];
+				blob.x += (gx + 0.5) * cell * luminance[index];
+				blob.y += (gy + 0.5) * cell * luminance[index];
+				blob.cells++;
+				blob.peak = std::max(blob.peak, luminance[index]);
+				const int offsets[4][2] = { { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 } };
+				for (const auto& offset : offsets) {
+					int nx = gx + offset[0], ny = gy + offset[1];
+					if (nx < 0 || ny < 0 || nx >= gridWidth || ny >= gridHeight) continue;
+					int neighbour = ny * gridWidth + nx;
+					if (label[neighbour] >= 0 || luminance[neighbour] < threshold) continue;
+					label[neighbour] = label[start];
+					stack.push_back(neighbour);
 				}
 			}
-			luminance[gy * gridWidth + gx] = sum / (cell * cell);
-			brightest = std::max(brightest, luminance[gy * gridWidth + gx]);
-		}
-	}
-
-	float threshold = brightest * 0.9f;
-	std::vector<int> label(luminance.size(), -1);
-	struct Blob { double energy = 0.0, x = 0.0, y = 0.0; int cells = 0; };
-	std::vector<Blob> blobs;
-
-	for (int start = 0; start < static_cast<int>(luminance.size()); start++) {
-		if (label[start] >= 0 || luminance[start] < threshold) continue;
-		Blob blob;
-		std::vector<int> stack = { start };
-		label[start] = static_cast<int>(blobs.size());
-		while (!stack.empty()) {
-			int index = stack.back();
-			stack.pop_back();
-			int gx = index % gridWidth, gy = index / gridWidth;
-			blob.energy += luminance[index];
-			blob.x += (gx + 0.5) * cell * luminance[index];
-			blob.y += (gy + 0.5) * cell * luminance[index];
-			blob.cells++;
-			const int offsets[4][2] = { { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 } };
-			for (const auto& offset : offsets) {
-				int nx = gx + offset[0], ny = gy + offset[1];
-				if (nx < 0 || ny < 0 || nx >= gridWidth || ny >= gridHeight) continue;
-				int neighbour = ny * gridWidth + nx;
-				if (label[neighbour] >= 0 || luminance[neighbour] < threshold) continue;
-				label[neighbour] = label[start];
-				stack.push_back(neighbour);
+			if (blob.cells >= 3) {
+				blob.x /= blob.energy;
+				blob.y /= blob.energy;
+				blobs.push_back(blob);
 			}
 		}
-		if (blob.cells >= 3) blobs.push_back(blob);
+		std::sort(blobs.begin(), blobs.end(), [](const Blob& a, const Blob& b) { return a.energy > b.energy; });
+		return blobs;
 	}
+}
 
-	std::sort(blobs.begin(), blobs.end(), [](const Blob& a, const Blob& b) { return a.energy > b.energy; });
-
+std::vector<Vec3> recast::detectBrightSpots(const SceneFile& scene, const LinearImage& photo, int maxSpots) {
+	int cellCount = 0;
+	std::vector<Blob> blobs = brightBlobs(photo, 0.9f, cellCount);
 	const SceneCamera& camera = scene.camera;
 	float scaleX = static_cast<float>(photo.width) / static_cast<float>(scene.image_size[0]);
 	float scaleY = static_cast<float>(photo.height) / static_cast<float>(scene.image_size[1]);
@@ -505,9 +599,7 @@ std::vector<Vec3> recast::detectBrightSpots(const SceneFile& scene, const Linear
 	std::vector<Vec3> seeds;
 	for (const Blob& blob : blobs) {
 		if (static_cast<int>(seeds.size()) >= maxSpots) break;
-		float u = static_cast<float>(blob.x / blob.energy) / scaleX;
-		float v = static_cast<float>(blob.y / blob.energy) / scaleY;
-		Vec3 direction = cameraRay(camera, u, v);
+		Vec3 direction = cameraRay(camera, static_cast<float>(blob.x) / scaleX, static_cast<float>(blob.y) / scaleY);
 		RayHit hit = raycastProxies(scene.proxies, origin, direction);
 		// a window or lamp with no wall behind it in the proxies still gives a seed, a few metres out along its ray
 		seeds.push_back(hit.valid() ? hit.point + hit.normal * 0.3f : origin + direction * 3.0f);
@@ -515,12 +607,36 @@ std::vector<Vec3> recast::detectBrightSpots(const SceneFile& scene, const Linear
 	return seeds;
 }
 
+// The sun, where the photo shows it: a small, clipped-bright region above the horizon whose ray reaches no furniture
+// (it's seen through a window or in open sky). Returns the way its light travels, one per candidate
+std::vector<Vec3> recast::sunDirections(const SceneFile& scene, const LinearImage& photo) {
+	int cellCount = 0;
+	std::vector<Blob> blobs = brightBlobs(photo, 0.97f, cellCount);
+	const SceneCamera& camera = scene.camera;
+	float scaleX = static_cast<float>(photo.width) / static_cast<float>(scene.image_size[0]);
+	float scaleY = static_cast<float>(photo.height) / static_cast<float>(scene.image_size[1]);
+	Vec3 origin(camera.position[0], camera.position[1], camera.position[2]);
+
+	std::vector<Vec3> suns;
+	for (const Blob& blob : blobs) {
+		if (suns.size() >= 2) break;
+		if (blob.cells > 0.015 * cellCount) continue; // a large bright area is sky or a window, not the sun's disc
+		Vec3 direction = cameraRay(camera, static_cast<float>(blob.x) / scaleX, static_cast<float>(blob.y) / scaleY);
+		if (direction.y < -0.05f) continue;           // the sun is at or above the horizon (a low sun is near it)
+		RayHit hit = raycastProxies(scene.proxies, origin, direction);
+		// glare on furniture or the floor isn't the sun
+		if (hit.valid() && (scene.proxies[hit.proxyIndex].type == "box" || hit.normal.y > 0.7f)) continue;
+		suns.push_back(-direction);
+	}
+	return suns;
+}
+
 namespace recast {
 // Each light's size (bulb radius / sun angular radius) from how soft the photo's shadow edges are
 static void fitLightSizes(const SceneFile& scene, const std::vector<LightingSample>& samples, std::vector<FitLight>& lights) {
 	// Light sizes only change samples near shadow edges, so search on those plus a thin spread of the rest
 	// (which keeps every surface's least squares solve stable)
-	Occluders occluders(scene.proxies);
+	Occluders occluders(scene.proxies, &scene.lights);
 	std::vector<LightingSample> sizeSamples;
 	for (size_t s = 0; s < samples.size(); s++) {
 		bool edge = false;
@@ -535,6 +651,7 @@ static void fitLightSizes(const SceneFile& scene, const std::vector<LightingSamp
 	}
 
 	for (FitLight& light : lights) {
+		if (light.fixed) continue;
 		std::vector<float> sizes = light.directional
 			? std::vector<float>{ 0.0f, 0.25f, 0.5f, 1.0f, 2.0f, 4.0f, 8.0f }
 			: std::vector<float>{ 0.0f, 0.02f, 0.05f, 0.1f, 0.2f, 0.35f };
@@ -645,41 +762,95 @@ std::vector<recast::FitLight> recast::fitLightsFromScene(const SceneFile& scene)
 	return lights;
 }
 
-// One main light plus ambient: the directional light (sun, window) from a 96-direction grid, and when that isn't a clear
-// win, the best single point light (lamp) too, each refined locally on at most ~6000 samples. Well under a second where
-// the full multi-light search takes 15 s (2 min in a debug build). Keeps no light when neither explains the photo at
-// least 2% better than ambient alone (overcast rooms); most of what's left over is colour variation within furniture
+// The lights found in the photo (`lights` on input: windows, lamps) stay where they are and only get their strength.
+// One more light (the directional sun from a 96-direction grid, or a point lamp when that isn't a clear win) is added
+// when it explains the photo at least 2% better, each refined locally on at most ~6000 samples. Well under a second
+// where the full multi-light search takes 15 s (2 min in a debug build); most of what no light explains is colour
+// variation within the furniture
 recast::LightingFit recast::fitMainLight(const SceneFile& scene, const std::vector<LightingSample>& samples,
-										 std::vector<FitLight>& lights) {
+										 std::vector<FitLight>& lights, const std::vector<Vec3>& suns) {
+	fixedTermCache.clear();
+	struct ClearAfter { ~ClearAfter() { fixedTermCache.clear(); } } clearAfter;
+	std::vector<FitLight> found = lights;
+	for (FitLight& light : found) light.fixed = true;
 	lights.clear();
 	if (samples.empty()) return {};
 	std::vector<LightingSample> subset;
 	size_t step = std::max<size_t>(1, samples.size() / 6000);
 	for (size_t s = 0; s < samples.size(); s += step) subset.push_back(samples[s]);
 
-	double ambientOnly = residualFor(scene, subset, {});
-	double bestResidual = ambientOnly * 0.98;
+	// a window or lamp that comes out with no strength isn't lighting anything we can see
+	if (!found.empty()) {
+		LightingFit check = fitLightIntensities(scene, subset, found);
+		std::vector<FitLight> kept;
+		for (size_t l = 0; l < found.size(); l++) {
+			if (std::max({ check.intensities[l].x, check.intensities[l].y, check.intensities[l].z }) > 1e-4f) kept.push_back(found[l]);
+		}
+		found = kept;
+	}
+	lights = found;
+
+	double baseline = residualFor(scene, subset, found);
+	double bestResidual = baseline * 0.98;
+	// The sun, where the photo shows it, is stronger evidence than the shading fit (the boxes can't explain the real
+	// shadows of legs and frames), so when there is one that explains at least 2% of the shading it's the main light and
+	// the searches are skipped. It keeps the
+	// photo's side of the sky; its height is refined but held at least 12 degrees up, since a sun at the horizon lights
+	// nothing and the camera's pitch is the likely error. Windows or lamps that come out negative next to it are dropped
+	bool sunFromPhoto = false;
+	for (const Vec3& sun : suns) {
+		constexpr double lowest = -12.0 * PI / 180.0; // elevation of the way the light travels: negative = downwards
+		auto holdUp = [&](FitLight& light) {
+			double azimuth, elevation;
+			anglesFromDirection(light.direction, azimuth, elevation);
+			light.direction = directionFromAngles(azimuth, std::clamp(elevation, -PI / 2.0 + 0.01, lowest));
+		};
+		std::vector<FitLight> candidate = found;
+		candidate.push_back({ .directional = true, .direction = sun.normalized() });
+		holdUp(candidate.back());
+		refine(scene, subset, candidate, 0.25f);
+		holdUp(candidate.back());
+		LightingFit check = fitLightIntensities(scene, subset, candidate);
+		std::vector<FitLight> kept;
+		for (size_t l = 0; l + 1 < candidate.size(); l++) {
+			if (std::min({ check.intensities[l].x, check.intensities[l].y, check.intensities[l].z }) > 0.0f) kept.push_back(candidate[l]);
+		}
+		const Vec3& sunStrength = check.intensities.back();
+		if (std::max({ sunStrength.x, sunStrength.y, sunStrength.z }) <= 0.0f) continue;
+		kept.push_back(candidate.back());
+		double residual = residualFor(scene, subset, kept);
+		if (residual > baseline * 0.98) continue; // a bright patch of sky that lights nothing we can see: not the sun
+		lights = kept;
+		bestResidual = residual;
+		sunFromPhoto = true;
+		break;
+	}
+
 	for (bool directional : { true, false }) {
+		if (sunFromPhoto) break;
 		double residual = 0.0;
-		std::vector<FitLight> candidate = { gridSearch(scene, subset, {}, directional, residual) };
+		std::vector<FitLight> candidate = found;
+		candidate.push_back(gridSearch(scene, subset, found, directional, residual));
 		refine(scene, subset, candidate, 0.25f);
 		residual = refine(scene, subset, candidate, 0.03f);
 		if (residual < bestResidual && allIntensitiesPositive(fitLightIntensities(scene, subset, candidate))) {
 			bestResidual = residual;
 			lights = candidate;
 		}
-		if (!lights.empty() && bestResidual < ambientOnly * 0.8) break; // a clear sun: no need to look for a lamp
+		if (lights.size() > found.size() && bestResidual < baseline * 0.8) break; // a clear sun: no need to look for a lamp
 	}
 	if (lights.empty()) return fitLightIntensities(scene, samples, lights);
 	fitLightSizes(scene, subset, lights);
 	LightingFit fit = fitLightIntensities(scene, samples, lights);
 
 	// When the per-surface solves can't separate ambient from the light (colour changes within a piece of furniture
-	// look like shading), the ambient collapses to zero and every shadow would be black. Then measure it where the
-	// light doesn't reach (shadows, surfaces facing away) and refit the light's strength with that ambient
-	Occluders occluders(scene.proxies);
-	std::vector<double> terms(subset.size());
-	for (size_t i = 0; i < subset.size(); i++) terms[i] = lightTerm(occluders, subset[i], lights[0]);
+	// look like shading), the ambient collapses to zero and every shadow would be black. Then measure it where no
+	// light reaches (shadows, surfaces facing away), and with a single light refit its strength against that ambient
+	Occluders occluders(scene.proxies, &scene.lights);
+	std::vector<double> terms(subset.size(), 0.0);
+	for (size_t i = 0; i < subset.size(); i++) {
+		for (const FitLight& light : lights) terms[i] += lightTerm(occluders, subset[i], light);
+	}
 	for (int c = 0; c < 3; c++) {
 		if (fit.ambient[c] > 1e-3f) continue;
 		std::vector<double> unlit;
@@ -690,6 +861,8 @@ recast::LightingFit recast::fitMainLight(const SceneFile& scene, const std::vect
 		if (unlit.size() < 20) continue;
 		std::nth_element(unlit.begin(), unlit.begin() + unlit.size() / 2, unlit.end());
 		double ambient = unlit[unlit.size() / 2];
+		fit.ambient[c] = static_cast<float>(ambient);
+		if (lights.size() != 1) continue;
 		double numerator = 0.0, denominator = 0.0;
 		for (size_t i = 0; i < subset.size(); i++) {
 			if (terms[i] <= 0.0) continue;
@@ -697,8 +870,48 @@ recast::LightingFit recast::fitMainLight(const SceneFile& scene, const std::vect
 			numerator += terms[i] * (irradiance - ambient);
 			denominator += terms[i] * terms[i];
 		}
-		fit.ambient[c] = static_cast<float>(ambient);
 		if (denominator > 0.0) fit.intensities[0][c] = static_cast<float>(std::max(0.0, numerator / denominator));
 	}
 	return fit;
+}
+
+std::vector<recast::FitLight> recast::emittersToFit(const SceneFile& scene) {
+	std::vector<FitLight> found;
+	for (const SceneLight& light : scene.lights) {
+		if (light.type == "area") {
+			Vec3 c[4];
+			for (int k = 0; k < 4; k++) c[k] = Vec3(light.corners[k][0], light.corners[k][1], light.corners[k][2]);
+			FitLight window;
+			window.area = true;
+			window.position = (c[0] + c[1] + c[2] + c[3]) * 0.25f;
+			window.halfWidth = (c[1] - c[0]) * 0.5f;
+			window.halfHeight = 0.5f * (c[3].y - c[0].y);
+			window.fixed = true;
+			found.push_back(window);
+		}
+		else if (light.type == "point" && light.intensity == Vec3f{ 0.0f, 0.0f, 0.0f }) {
+			found.push_back({ .position = Vec3(light.position[0], light.position[1], light.position[2]), .size = light.radius, .fixed = true });
+		}
+	}
+	return found;
+}
+
+recast::SceneLight recast::sceneLightFrom(const FitLight& light, const Vec3& strength) {
+	SceneLight out;
+	if (light.area) {
+		out.type = "area";
+		Vec3 up(0.0f, light.halfHeight, 0.0f);
+		Vec3 corners[4] = { light.position - light.halfWidth - up, light.position + light.halfWidth - up,
+							light.position + light.halfWidth + up, light.position - light.halfWidth + up };
+		for (int k = 0; k < 4; k++) out.corners[k] = { corners[k].x, corners[k].y, corners[k].z };
+		out.radiance = { strength.x, strength.y, strength.z };
+		return out;
+	}
+	out.type = light.directional ? "directional" : "point";
+	out.position = { light.position.x, light.position.y, light.position.z };
+	out.direction = { light.direction.x, light.direction.y, light.direction.z };
+	out.intensity = { strength.x, strength.y, strength.z };
+	if (light.directional) out.angular_radius_deg = light.size * 180.0f / enginemath::PI;
+	else out.radius = light.size;
+	return out;
 }

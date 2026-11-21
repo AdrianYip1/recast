@@ -8,6 +8,7 @@ layout(push_constant) uniform TracePush {
 	uint photonCount;
 	vec4 objectSphere; // bounding sphere of the dynamic casters (w = radius, 0 = none), where photons are aimed
 	uint ownerTexture; // which cutout each photo pixel shows (Material.maskId), 0 = none
+	uint depthTexture; // distance from the camera to what each photo pixel shows (metres, R), 0 = none
 } push;
 
 layout(set = 1, binding = 0) uniform accelerationStructureEXT scene;
@@ -39,6 +40,7 @@ layout(buffer_reference, std430, buffer_reference_align = 4) readonly buffer Flo
 layout(buffer_reference, std430, buffer_reference_align = 4) readonly buffer Indices { uint i[]; };
 
 const uint MASK_STATIC = 0x01u;
+const uint MASK_DYNAMIC = 0x02u;
 const uint MASK_ALL = 0xFFu;
 const uint VERTEX_FLOATS = 8u;
 const float PI = 3.14159265;
@@ -113,10 +115,31 @@ Hit traceClosest(vec3 origin, vec3 direction, uint mask) {
 	return hit;
 }
 
+// Windows (area lights) are openings in their wall: a room surface hit inside one doesn't block light from outside
+bool inWindow(vec3 position) {
+	for (uint i = 0u; i < frame.lightInfo.x; i++) {
+		Light light = frame.lights[i];
+		if (!isArea(light)) continue;
+		vec3 offset = position - light.position.xyz;
+		if (abs(dot(offset, areaNormal(light))) > 0.15) continue; // the window light sits 5 cm in front of its wall
+		float halfWidth = length(light.direction.xyz);
+		if (abs(dot(offset, light.direction.xyz / halfWidth)) <= halfWidth && abs(offset.y) <= light.direction.w) return true;
+	}
+	return false;
+}
+
 bool occluded(vec3 origin, vec3 direction, float maxDistance, uint mask) {
 	rayQueryEXT query;
-	rayQueryInitializeEXT(query, scene, gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT, mask, origin, 1e-4, direction, maxDistance);
-	while (rayQueryProceedEXT(query)) {}
+	rayQueryInitializeEXT(query, scene, gl_RayFlagsNoOpaqueEXT, mask, origin, 1e-4, direction, maxDistance);
+	while (rayQueryProceedEXT(query)) {
+		if (rayQueryGetIntersectionTypeEXT(query, false) != gl_RayQueryCandidateIntersectionTriangleEXT) continue;
+		Geometry geometry = geometries[rayQueryGetIntersectionInstanceCustomIndexEXT(query, false) + rayQueryGetIntersectionGeometryIndexEXT(query, false)];
+		vec3 position = origin + direction * rayQueryGetIntersectionTEXT(query, false);
+		if (geometry.dynamic != 0u || !inWindow(position)) {
+			rayQueryConfirmIntersectionEXT(query);
+			rayQueryTerminateEXT(query);
+		}
+	}
 	return rayQueryGetIntersectionTypeEXT(query, true) != gl_RayQueryCommittedIntersectionNoneEXT;
 }
 
@@ -164,14 +187,24 @@ void directLight(vec3 position, vec3 normal, vec3 view, uint mask, uint seed, fl
 	vec3 origin = position + normal * SURFACE_OFFSET;
 	for (uint i = 0u; i < count; i++) {
 		Light light = frame.lights[i];
-		bool directional = light.intensity.w > 0.5;
 		vec3 direction;
 		float distance;
 		vec3 incoming;
-		if (directional) {
+		if (isDirectional(light)) {
 			direction = sampleCone(-light.direction.xyz, light.direction.w, seed);
 			distance = 1e30;
 			incoming = light.intensity.rgb;
+		}
+		else if (isArea(light)) {
+			// one random point on the rectangle: radiance * cos at the light * area / distance^2
+			vec3 target = light.position.xyz + light.direction.xyz * (2.0 * random(seed) - 1.0)
+						+ vec3(0.0, light.direction.w * (2.0 * random(seed) - 1.0), 0.0);
+			vec3 toLight = target - position;
+			distance = length(toLight);
+			direction = toLight / max(distance, 1e-4);
+			float cosLight = dot(areaNormal(light), -direction);
+			if (cosLight <= 0.0) continue;
+			incoming = light.intensity.rgb * (cosLight * areaSize(light) / max(distance * distance, 1e-4));
 		}
 		else {
 			vec3 toLight = light.position.xyz + sampleSphere(seed) * light.direction.w - position;
@@ -211,6 +244,13 @@ vec3 albedoOf(Hit hit) {
 
 vec3 photoAt(vec2 viewportUV) {
 	return textureLod(textures[push.photoTexture], viewportUV, 0.0).rgb;
+}
+
+// Distance from the camera to what the photo shows at this pixel, in metres (very far where depth is unknown)
+float photoDepthAt(vec2 viewportUV) {
+	ivec2 size = textureSize(textures[push.depthTexture], 0);
+	ivec2 texel = clamp(ivec2(viewportUV * vec2(size)), ivec2(0), size - 1);
+	return texelFetch(textures[push.depthTexture], texel, 0).r;
 }
 
 // The cutout the photo shows at this pixel (exact, no filtering), 0 = none
@@ -268,7 +308,7 @@ float photonUnit() {
 		Light light = frame.lights[i];
 		float radius = push.objectSphere.w;
 		float area;
-		if (light.intensity.w > 0.5) {
+		if (isDirectional(light)) {
 			area = PI * radius * radius;
 		}
 		else {
@@ -276,7 +316,8 @@ float photonUnit() {
 			float sinMax = min(radius / max(distance, 1e-4), 1.0);
 			area = 2.0 * PI * (1.0 - sqrt(1.0 - sinMax * sinMax));
 		}
-		largest = max(largest, max(light.intensity.r, max(light.intensity.g, light.intensity.b)) * area / perLight);
+		vec3 strength = isDirectional(light) ? light.intensity.rgb : pointIntensity(light);
+		largest = max(largest, max(strength.r, max(strength.g, strength.b)) * area / perLight);
 	}
 	return max(largest, 1e-12) / 256.0;
 }

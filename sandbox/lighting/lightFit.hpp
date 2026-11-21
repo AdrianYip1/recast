@@ -32,11 +32,17 @@ namespace recast {
 	// Point: falls off with distance squared. Directional: parallel rays, no falloff, `direction` is the way the light travels.
 	// Directional lights are only shadowed by boxes: planes are assumed open towards a distant source (sun through an opening)
 	// size: point = radius in metres, directional = angular radius in radians (soft shadow edges)
+	// area: a vertical rectangle (a window) centred at position, halfWidth along the wall, halfHeight up and down,
+	// shining towards halfWidth x up. fixed: found in the photo (windows, lamps), only its strength is fitted
 	struct FitLight {
 		bool directional = false;
 		enginemath::Vec3 position;
 		enginemath::Vec3 direction = enginemath::Vec3(0.0f, -1.0f, 0.0f);
 		float size = 0.0f;
+		bool area = false;
+		enginemath::Vec3 halfWidth;
+		float halfHeight = 0.0f;
+		bool fixed = false;
 	};
 
 	struct LightingFit {
@@ -55,9 +61,20 @@ namespace recast {
 	// Finds lights from scratch: tries point lights (bright spot seeds + grid search) and directional lights, keeps the
 	// better model, and adds more lights (up to maxLights) only while each one lowers the residual by at least 5%.
 	// Each light's size is then picked to match how soft the photo's shadow edges are
-	// One main light plus ambient: directional (sun, window), or a point light (lamp) when that fits clearly better,
-	// or ambient alone when neither helps. Under a second, where autoFitLighting's multi-light search takes much longer
-	LightingFit fitMainLight(const SceneFile& scene, const std::vector<LightingSample>& samples, std::vector<FitLight>& lights);
+	// The lights found in the photo (windows, lamps: `lights` on input, kept fixed) plus ambient, and one more light
+	// (directional sun, or a point lamp) when it explains the photo at least 2% better. Under a second
+	LightingFit fitMainLight(const SceneFile& scene, const std::vector<LightingSample>& samples, std::vector<FitLight>& lights,
+							 const std::vector<enginemath::Vec3>& suns = {});
+
+	// Directions (the way the light travels) of the sun where the photo shows it: a small clipped-bright region above
+	// the horizon, seen through a window or open sky
+	std::vector<enginemath::Vec3> sunDirections(const SceneFile& scene, const LinearImage& photo);
+
+	// The lights detect found in the photo: every window (area light), and lamps whose strength isn't fitted yet (zero intensity)
+	std::vector<FitLight> emittersToFit(const SceneFile& scene);
+
+	// Back to scene.json: area lights get corners and radiance, the rest position/direction and intensity
+	SceneLight sceneLightFrom(const FitLight& light, const enginemath::Vec3& strength);
 
 	LightingFit autoFitLighting(const SceneFile& scene, const LinearImage& photo, const std::vector<LightingSample>& samples,
 								std::vector<FitLight>& lights, int maxLights = 3);

@@ -155,9 +155,10 @@ foto::FrameUbo foto::Application::buildFrameUbo() {
 	for (u32 i = 0; i < lightCount; i++) {
 		const Light& light = lights[i];
 		bool directional = light.type == LightType::Directional;
-		Vec3 direction = light.direction.normalized();
+		bool area = light.type == LightType::Area;
+		Vec3 direction = area ? light.direction : light.direction.normalized();
 		frameUbo.lights[i].position = { light.position.x, light.position.y, light.position.z, light.castsShadows ? 1.0f : 0.0f };
-		frameUbo.lights[i].intensity = { light.intensity.x, light.intensity.y, light.intensity.z, directional ? 1.0f : 0.0f };
+		frameUbo.lights[i].intensity = { light.intensity.x, light.intensity.y, light.intensity.z, area ? 2.0f : directional ? 1.0f : 0.0f };
 		frameUbo.lights[i].direction = { direction.x, direction.y, direction.z, light.size };
 		if (directional) frameUbo.lights[i].faceViewProj[0] = shadowDirectionalMatrix(direction, shadowCenter, shadowRadius);
 		else shadowFaceMatrices(light.position, frameUbo.lights[i].faceViewProj);
@@ -215,6 +216,10 @@ foto::u32 foto::Application::createDataTexture(const void* rgba, u32 width, u32 
 
 void foto::Application::setPathTraceOwners(u32 ownerTexture) {
 	render->setPathTraceOwners(ownerTexture);
+}
+
+void foto::Application::setPathTraceDepth(u32 depthTexture) {
+	render->setPathTraceDepth(depthTexture);
 }
 
 foto::u32 foto::Application::addTexture(std::unique_ptr<Image> image) {

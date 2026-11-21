@@ -9,6 +9,16 @@ struct Light {
 	mat4 faceViewProj[6];
 };
 
+// intensity.w: 0 = point, 1 = directional, 2 = area: a vertical rectangle (a window), position = its centre,
+// direction.xyz = half its width along the wall, direction.w = half its height, intensity = radiance,
+// shining towards cross(direction.xyz, up)
+bool isDirectional(Light light) { return abs(light.intensity.w - 1.0) < 0.5; }
+bool isArea(Light light) { return light.intensity.w > 1.5; }
+vec3 areaNormal(Light light) { return normalize(cross(light.direction.xyz, vec3(0.0, 1.0, 0.0))); }
+float areaSize(Light light) { return 4.0 * length(light.direction.xyz) * light.direction.w; }
+// A point at the light's position standing in for it (raster path, photons): area lights send radiance * area
+vec3 pointIntensity(Light light) { return isArea(light) ? light.intensity.rgb * areaSize(light) : light.intensity.rgb; }
+
 layout(set = 0, binding = 0) uniform FrameUbo {
 	mat4 view;
 	mat4 proj;

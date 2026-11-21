@@ -34,6 +34,7 @@ class Photo:
     focal_mm: float | None = None
     focal_35mm: float | None = None
     exif: dict | None = None  # make, model, lens_make, lens_model, f_number (strings/floats, may be missing)
+    scale: float = 1.0        # loaded size / the file's size (load_photo's max_side)
 
     @property
     def height(self) -> int:
@@ -100,8 +101,11 @@ def _read_exif(img: Image.Image) -> tuple[float | None, float | None, dict]:
     return (float(focal) if focal else None, float(focal35) if focal35 else None, info)
 
 
-def load_photo(path: str | Path) -> Photo:
-    """Load a JPG/PNG/TIFF (or camera RAW if rawpy is installed) as linear RGB."""
+def load_photo(path: str | Path, max_side: int | None = None) -> Photo:
+    """Load a JPG/PNG/TIFF (or camera RAW if rawpy is installed) as linear RGB.
+
+    max_side: shrink to at most this many pixels on the long side. JPEGs are then decoded at reduced size and
+    only the small image is converted to linear, several times faster than loading a 12 MP photo in full."""
     path = Path(path)
     if path.suffix.lower() in RAW_EXTENSIONS:
         return _load_raw(path)
@@ -110,7 +114,15 @@ def load_photo(path: str | Path) -> Photo:
         focal, focal35, info = _read_exif(img)
         # respect the orientation flag so lines/vanishing points are in the right place
         orient = img.getexif().get(ExifTags.Base.Orientation, 1)
+        full = max(img.size)
+        if max_side and full > max_side:
+            target = max_side / full
+            img.draft("RGB", (int(img.size[0] * target) + 1, int(img.size[1] * target) + 1))
         img = img.convert("RGB")
+        if max_side and full > max_side:
+            target = max_side / full
+            img = img.resize((max(1, round(img.size[0] * full * target / max(img.size))),
+                              max(1, round(img.size[1] * full * target / max(img.size)))), Image.LANCZOS)
         if orient == 3:
             img = img.rotate(180, expand=True)
         elif orient == 6:
@@ -119,7 +131,7 @@ def load_photo(path: str | Path) -> Photo:
             img = img.rotate(90, expand=True)
         srgb = np.asarray(img, dtype=np.float32) / 255.0
 
-    return Photo(srgb_to_linear(srgb), focal, focal35, info)
+    return Photo(srgb_to_linear(srgb), focal, focal35, info, scale=max(srgb.shape[:2]) / full)
 
 
 def _load_raw(path: Path) -> Photo:

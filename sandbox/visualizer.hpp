@@ -38,9 +38,6 @@ private:
 	foto::Pipeline* proxyOverlayPipeline = nullptr;
 	foto::u32 photoMaterial = foto::DEFAULT_MATERIAL;
 	foto::u32 overlayMaterial = foto::DEFAULT_MATERIAL;
-	foto::u32 lightMarkerMaterial = foto::DEFAULT_MATERIAL;
-	foto::u32 selectedMarkerMaterial = foto::DEFAULT_MATERIAL;
-	foto::Mesh* lightMarker = nullptr;
 	std::vector<foto::Mesh*> proxyMeshes;
 	std::vector<foto::u32> proxyAlbedoMaterials;
 	std::string loadedPhotoPath;
@@ -97,6 +94,7 @@ private:
 	void drawPipeline();
 
 	std::vector<recast::SceneLight> detectedLights; // what "reset lights" goes back to
+	std::vector<recast::FitLight> photoEmitters;    // windows and lamps detect found, whose strength the fit solves
 	recast::Vec3f detectedAmbient = { 0.0f, 0.0f, 0.0f };
 	int selectedLight = -1;
 	bool draggingLight = false;
@@ -107,7 +105,6 @@ private:
 	// room editing: boxes and walls from detect (or added) can be dragged, resized, deleted and reset
 	bool editRoom = false;
 	foto::Mesh* unitBoxMesh = nullptr;
-	foto::u32 selectedProxyMaterial = foto::DEFAULT_MATERIAL;
 	std::vector<recast::Vec3f> proxyMeshOrigins;
 	std::vector<recast::Proxy> detectedProxies; // what "reset room" goes back to
 	int selectedProxy = -1;
@@ -120,6 +117,12 @@ private:
 	std::map<foto::u32, std::string> proxyLabels;
 	std::map<foto::u32, foto::u32> proxyMaskIds; // proxy id -> its object's cutout number in the owner image
 	foto::u32 ownerTexture = 0;
+	foto::u32 depthTexture = 0; // the photo's depth (photo_depth.hdr from detect), 0 = none
+	std::filesystem::path loadedDepthPath;
+	std::filesystem::file_time_type loadedDepthTime;
+	std::vector<unsigned char> ownerPixels; // the owner image on the CPU too, for picking (RGBA, R = cutout number)
+	int ownerWidth = 0, ownerHeight = 0;
+	foto::u32 photoOwnerAt(const enginemath::Vec3& point) const;
 	void loadProxyLabels();
 	std::string proxyName(size_t index) const;
 	bool projectToScreen(const enginemath::Vec3& point, ImVec2& out);
@@ -127,6 +130,9 @@ private:
 	std::array<enginemath::Vec3, 6> boxHandles(const recast::Proxy& box) const;
 	bool wallHandle(const recast::Proxy& wall, enginemath::Vec3& handle) const;
 	int boxUnderCursor(const enginemath::Vec3& origin, const enginemath::Vec3& direction) const;
+	std::vector<recast::Proxy> roomAtGrab; // every box as it was when a drag started (a whole object moves together)
+	bool sameGroup(int a, int b) const;
+	int groupSize(int index) const;
 	void drawRoomOverlay();
 	enginemath::Vec3 proxyGrab;
 	recast::Proxy proxyAtGrab;
@@ -149,6 +155,7 @@ private:
 	bool updateLightEditing();
 	void addLight();
 	void drawLightEditor();
+	void drawLightOverlay();
 	enginemath::Vec3 markerPosition(const recast::SceneLight& light) const;
 	recast::RayHit supportUnderCursor(const enginemath::Vec3& origin, const enginemath::Vec3& direction);
 	void drawScene();

@@ -381,7 +381,10 @@ def geometry_segments(cam: Camera, P: np.ndarray, segments: list[Segment], kind:
         n, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
         for i in range(1, n):
             if stats[i, cv2.CC_STAT_AREA] >= min_area * h * w:
-                out.append(Segment(label, 0.0, labels == i))
+                name = label
+                if label == "pillar" and stats[i, cv2.CC_STAT_HEIGHT] < 1.5 * stats[i, cv2.CC_STAT_WIDTH]:
+                    name = "ledge"                                  # wide and low: sills, shelves, counters
+                out.append(Segment(name, 0.0, labels == i))
     return out
 
 
@@ -390,6 +393,72 @@ def is_outdoors(segments: list[Segment]) -> bool:
     def area(names):
         return sum(int(s.mask.sum()) for s in segments if short_label(s.label) in names)
     return area(CEILING) == 0 and area(OUTDOOR_GROUND) > max(area(FLOOR), 0)
+
+
+SLICES = 8               # thin boxes that follow an object's outline from above
+
+
+def _footprint(points_xz: np.ndarray, lo: np.ndarray, hi: np.ndarray, mirror: bool) -> np.ndarray | None:
+    """Convex outline (N, 2) of an object seen from above, clipped to its box: its visible points, plus their mirror
+    image through the box's centre when only the front is seen (most furniture is as deep behind its middle as in
+    front). Seen from above, its top already covers the whole outline and no mirroring is needed."""
+    centre = 0.5 * (lo[[0, 2]] + hi[[0, 2]])
+    pts = np.vstack([points_xz, 2.0 * centre - points_xz]) if mirror else points_xz
+    pts = np.clip(pts, lo[[0, 2]], hi[[0, 2]]).astype(np.float32)
+    if len(pts) < 20:
+        return None
+    hull = cv2.convexHull(pts).reshape(-1, 2).astype(np.float64)
+    return hull if len(hull) >= 3 else None
+
+
+def _cross_section(hull: np.ndarray, axis: int, value: float) -> tuple[float, float] | None:
+    """[min, max] of the other coordinate where the line `axis = value` crosses the convex outline."""
+    other = 1 - axis
+    found = []
+    for a, b in zip(hull, np.roll(hull, -1, axis=0)):
+        if (a[axis] - value) * (b[axis] - value) > 0:
+            continue
+        if abs(b[axis] - a[axis]) < 1e-9:
+            found += [a[other], b[other]]
+        else:
+            t = (value - a[axis]) / (b[axis] - a[axis])
+            if 0.0 <= t <= 1.0:
+                found.append(a[other] + t * (b[other] - a[other]))
+    return (min(found), max(found)) if found else None
+
+
+def shape_slices(points: np.ndarray, lo: np.ndarray, hi: np.ndarray, top_seen: bool, count: int = SLICES) -> list[tuple]:
+    """The box as `count` thin boxes across its longer side, each as deep as the object's outline there. Boxes that
+    are small or already fill their outline stay one box (empty list)."""
+    points = points[np.isfinite(points).all(axis=1)]
+    points = points[points[:, 1] > lo[1] + 0.05]           # floor and shadow at the base often leak into the cutout
+    size = hi - lo
+    if len(points) < 50 or max(size[0], size[2]) < 0.3:
+        return []
+    hull = _footprint(points[:, [0, 2]], lo, hi, mirror=not top_seen)
+    if hull is None:
+        return []
+    across = 0 if size[0] >= size[2] else 1                 # slice along the longer side (index into x, z)
+    axis3, other3 = (0, 2) if across == 0 else (2, 0)
+    edges = np.linspace(lo[axis3], hi[axis3], count + 1)
+    slices, filled = [], 0.0
+    for s0, s1 in zip(edges[:-1], edges[1:]):
+        ranges = [_cross_section(hull, across, v) for v in [s0, s1, *[p[across] for p in hull if s0 < p[across] < s1]]]
+        ranges = [r for r in ranges if r is not None]
+        if not ranges:
+            continue
+        r_lo, r_hi = min(r[0] for r in ranges), max(r[1] for r in ranges)
+        if r_hi - r_lo < 0.02:
+            continue
+        p_lo, p_hi = lo.copy(), hi.copy()
+        p_lo[axis3], p_hi[axis3] = s0, s1
+        p_lo[other3], p_hi[other3] = max(r_lo, lo[other3]), min(r_hi, hi[other3])
+        slices.append((p_lo, p_hi))
+        filled += (s1 - s0) * (p_hi[other3] - p_lo[other3])
+    # already box-shaped (fills 92% of its box from above): one box is simpler and exact
+    if not slices or filled > 0.92 * size[0] * size[2]:
+        return []
+    return slices
 
 
 def build_proxies(cam: Camera, segments: list[Segment], disparity: np.ndarray, first_id: int,
@@ -497,7 +566,9 @@ def build_proxies(cam: Camera, segments: list[Segment], disparity: np.ndarray, f
                         lo[a], hi[a] = n_lo[a] + (lo[a] - e_lo[a]) * k, n_lo[a] + (hi[a] - e_lo[a]) * k
                     lo[1] = 0.0
         if boxes:
-            found.append({"segment": s, "boxes": boxes, "on_floor": on_floor,
+            # cut off by the bottom of the photo: it carries on below the frame, down to the floor
+            cut_off = bool(s.mask[-3:].any())
+            found.append({"segment": s, "boxes": boxes, "on_floor": on_floor or cut_off,
                           "albedo": _albedo(photo_linear, s.mask, floor_ref)})
 
     # what does each rest on? lowest first, so supports are settled before what's on them
@@ -545,15 +616,26 @@ def build_proxies(cam: Camera, segments: list[Segment], disparity: np.ndarray, f
     proxies, objects = [], []
     next_id = first_id
     by_obj: dict[int, list[int]] = {}
+    parts_of = {}
+    for lo, hi, i in keep:
+        parts_of.setdefault(i, []).append((lo, hi))
     for lo, hi, i in keep:
         f = found[i]
-        proxies.append(BoxProxy(next_id, tuple(float(v) for v in lo), tuple(float(v) for v in hi),
-                                Material(f["albedo"], 0.8)))
-        by_obj.setdefault(i, []).append(next_id)
-        next_id += 1
+        # a single box follows the object's outline from above as thin slices (a round ottoman becomes a stepped
+        # circle); seat + back pairs stay as they are
+        pieces = [(lo, hi)]
+        if len(parts_of[i]) == 1:
+            pieces = shape_slices(P[f["segment"].mask], lo, hi, top_seen=cam.position[1] > hi[1] + 0.1) or pieces
+        for p_lo, p_hi in pieces:
+            proxies.append(BoxProxy(next_id, tuple(float(v) for v in p_lo), tuple(float(v) for v in p_hi),
+                                    Material(f["albedo"], 0.8)))
+            by_obj.setdefault(i, []).append(next_id)
+            next_id += 1
     for i, ids in by_obj.items():
         s = found[i]["segment"]
-        objects.append({"label": short_label(s.label), "score": round(s.score, 3), "proxy_ids": ids, "segment": s})
+        shape = "seat_back" if len(parts_of[i]) > 1 else "slices" if len(ids) > 1 else "box"
+        objects.append({"label": short_label(s.label), "score": round(s.score, 3), "proxy_ids": ids, "segment": s,
+                        "shape": shape})
 
     # walls: never in front of an object (nothing stands behind a wall)
     wall_mask = np.zeros((h, w), bool)
@@ -594,6 +676,77 @@ def build_proxies(cam: Camera, segments: list[Segment], disparity: np.ndarray, f
     return Detection(proxies, objects, walls, fit, P)
 
 
+# --- lights seen in the photo ----------------------------------------------------------------
+
+WINDOWS = {"window", "windowpane", "skylight"}
+LAMPS = {"lamp", "light", "chandelier", "sconce", "spotlight"}
+EMITTER_OFFSET = 0.05    # m in front of the wall, so the wall's own plane doesn't shadow its window
+
+
+def find_emitters(cam: Camera, P: np.ndarray, segments: list[Segment], walls: list[dict],
+                  max_windows: int = 2, max_lamps: int = 1) -> list[dict]:
+    """Windows become area lights on the wall they're in (one rectangle per wall, from where the window pixels' rays
+    meet that wall, not from depth, which sees through glass), lamps become small point lights at their 3D centre.
+    Strengths are left at zero: the engine fits them to the photo. At most 2 windows + 1 lamp, leaving the engine's
+    fourth light for a sun it may add."""
+    h, w = P.shape[:2]
+    window_mask = np.zeros((h, w), bool)
+    lamps = []
+    for s in segments:
+        name = short_label(s.label)
+        if name in WINDOWS:
+            window_mask |= s.mask
+        elif name in LAMPS:
+            pts = P[s.mask]
+            pts = pts[np.isfinite(pts).all(axis=1)]
+            if len(pts) >= 20:
+                lamps.append((int(s.mask.sum()), np.median(pts, axis=0)))
+
+    windows = []
+    vertical = [wall for wall in walls if wall["axis"] != 1]
+    if vertical and window_mask.any():
+        ys, xs = np.nonzero(window_mask)
+        step = max(1, len(ys) // 20000)
+        rays = cam.rays(np.column_stack([xs[::step], ys[::step]]).astype(np.float64))
+        hits = []
+        for wall in vertical:
+            with np.errstate(divide="ignore", invalid="ignore"):
+                t = (wall["value"] - cam.position[wall["axis"]]) / rays[:, wall["axis"]]
+            hits.append(np.where(t > 0, t, np.inf))
+        hits = np.stack(hits)
+        first = hits.argmin(axis=0)
+        for k, wall in enumerate(vertical):
+            mine = np.isfinite(hits[k]) & (first == k)
+            if mine.sum() < 50:
+                continue
+            pts = cam.position + rays[mine] * hits[k, mine][:, None]
+            a = wall["axis"]
+            o = 2 - a                                            # the wall's horizontal direction
+            h_lo, h_hi = np.percentile(pts[:, o], [2, 98])
+            y_lo, y_hi = np.percentile(pts[:, 1], [2, 98])
+            y_lo, y_hi = max(float(y_lo), 0.0), min(float(y_hi), 4.0)
+            if h_hi - h_lo < 0.2 or y_hi - y_lo < 0.2:
+                continue
+            normal = np.zeros(3)
+            normal[a] = wall["side"]                             # into the room
+            along = np.cross([0.0, 1.0, 0.0], normal)           # corner 0 -> 1, so it shines along `normal`
+            centre = np.zeros(3)
+            centre[a] = wall["value"] + wall["side"] * EMITTER_OFFSET
+            centre[o] = 0.5 * (h_lo + h_hi)
+            centre[1] = 0.5 * (y_lo + y_hi)
+            half_w = along * 0.5 * (h_hi - h_lo)
+            half_h = np.array([0.0, 0.5 * (y_hi - y_lo), 0.0])
+            corners = [centre - half_w - half_h, centre + half_w - half_h, centre + half_w + half_h, centre - half_w + half_h]
+            windows.append(((h_hi - h_lo) * (y_hi - y_lo),
+                            {"type": "area", "corners": [[round(float(v), 4) for v in c] for c in corners],
+                             "radiance": [0.0, 0.0, 0.0]}))
+
+    lights = [light for _, light in sorted(windows, key=lambda x: -x[0])[:max_windows]]
+    lights += [{"type": "point", "position": [round(float(v), 4) for v in p], "intensity": [0.0, 0.0, 0.0], "radius": 0.1}
+               for _, p in sorted(lamps, key=lambda x: -x[0])[:max_lamps]]
+    return lights
+
+
 # --- scale ----------------------------------------------------------------------------
 
 # Furniture whose height hardly varies (m, top above the floor). A single photo can't tell a big room
@@ -617,7 +770,26 @@ def scale_from_known_heights(det: Detection) -> tuple[float, list[str]]:
             used.append(f"{o['label']} {top:.2f} m (usually {known:.2f})")
     if not ratios:
         return 1.0, used
-    return float(np.clip(np.median(ratios), 0.6, 1.6)), used
+    # labels are often wrong (a bench called a table) and a hand-held camera is ~1.5 m up anyway: correct by 25% at most
+    return float(np.clip(np.median(ratios), 0.8, 1.25)), used
+
+
+# Furniture that's open underneath (a top on legs): only its top is a box, so light, shadows and objects pass under it
+OPEN_BELOW = {"table", "desk", "bench", "coffee table", "stool", "side table", "console table"}
+SLAB = 0.06              # m: thickness of the top that stands in for open furniture
+
+
+def open_below_slabs(det: Detection) -> Detection:
+    """Tables, desks, benches and stools as their top only. A solid box to the floor would block the light and the
+    inserted object's shadow under them, where the photo shows open floor between the legs."""
+    from dataclasses import replace
+    open_ids = {pid for o in det.objects if o["label"] in OPEN_BELOW and o.get("shape") != "seat_back" for pid in o["proxy_ids"]}
+    proxies = []
+    for p in det.proxies:
+        if isinstance(p, BoxProxy) and p.id in open_ids and p.max[1] - p.min[1] > SLAB:
+            p = replace(p, min=(p.min[0], p.max[1] - SLAB, p.min[2]))
+        proxies.append(p)
+    return replace(det, proxies=proxies)
 
 
 def scaled(det: Detection, k: float) -> Detection:

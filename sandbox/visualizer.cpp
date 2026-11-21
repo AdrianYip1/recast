@@ -106,22 +106,12 @@ void Visualizer::onInit() {
 	});
 	overlayMaterial = createMaterial({ .baseColor = { 0.1f, 0.5f, 1.0f, 0.25f } });
 
-	recast::Proxy markerBox;
-	markerBox.type = "box";
-	markerBox.min = { -0.5f, -0.5f, -0.5f };
-	markerBox.max = { 0.5f, 0.5f, 0.5f };
-	recast::MeshData markerData = recast::buildProxyMesh(markerBox);
-	lightMarker = createMesh(markerData.vertices, markerData.indices);
-
 	recast::Proxy unitBox;
 	unitBox.type = "box";
 	unitBox.min = { 0.0f, 0.0f, 0.0f };
 	unitBox.max = { 1.0f, 1.0f, 1.0f };
 	recast::MeshData unitBoxData = recast::buildProxyMesh(unitBox);
 	unitBoxMesh = createMesh(unitBoxData.vertices, unitBoxData.indices);
-	selectedProxyMaterial = createMaterial({ .baseColor = { 1.0f, 0.55f, 0.1f, 0.35f } });
-	lightMarkerMaterial = createMaterial({ .baseColor = { 0.0f, 0.0f, 0.0f, 1.0f }, .emissive = { 4.0f, 3.6f, 1.2f, 0.0f } });
-	selectedMarkerMaterial = createMaterial({ .baseColor = { 0.0f, 0.0f, 0.0f, 1.0f }, .emissive = { 0.8f, 3.0f, 4.0f, 0.0f } });
 
 	startPythonWorker();
 	if (!scenePath.empty()) {
@@ -173,6 +163,22 @@ void Visualizer::loadScene() {
 	scene = std::move(loaded);
 	sceneLoaded = true;
 	detectedProxies = scene.proxies;
+	// the photo's depth from detect: reloaded only when the file changes (each load makes a new texture)
+	std::error_code error;
+	std::filesystem::path depthPath = scene.directory / "photo_depth.hdr";
+	auto depthTime = std::filesystem::last_write_time(depthPath, error);
+	if (error) depthTexture = 0;
+	else if (depthPath != loadedDepthPath || depthTime != loadedDepthTime) {
+		try {
+			depthTexture = loadTextureHDR(depthPath.string());
+			loadedDepthPath = depthPath;
+			loadedDepthTime = depthTime;
+		}
+		catch (const std::exception& e) {
+			std::cerr << "[recast] " << e.what() << std::endl;
+			depthTexture = 0;
+		}
+	}
 	selectedProxy = -1;
 	hoveredProxy = -1;
 	loadProxyLabels();
@@ -201,7 +207,11 @@ void Visualizer::loadScene() {
 	detectedLights = scene.lights;
 	detectedAmbient = scene.lighting.ambient;
 	selectedLight = -1;
-	if (recast::fitLightsFromScene(scene).empty()) detectLighting();
+	photoEmitters = recast::emittersToFit(scene);
+	bool unfitted = std::any_of(scene.lights.begin(), scene.lights.end(), [](const recast::SceneLight& light) {
+		return light.type == "area" ? light.radiance == recast::Vec3f{ 0, 0, 0 } : light.intensity == recast::Vec3f{ 0, 0, 0 };
+	});
+	if (scene.lights.empty() || unfitted) detectLighting();
 	else lightingStatus = std::to_string(scene.lights.size()) + " light(s) from scene.json";
 
 	std::cout << "[recast] loaded " << scenePath << std::endl;
@@ -240,6 +250,18 @@ void Visualizer::applySceneCamera() {
 void Visualizer::applySceneLighting() {
 	std::vector<foto::Light> lights;
 	for (const recast::SceneLight& light : scene.lights) {
+		if (light.type == "area") {
+			Vec3 c[4];
+			for (int k = 0; k < 4; k++) c[k] = Vec3(light.corners[k][0], light.corners[k][1], light.corners[k][2]);
+			lights.push_back({
+				.type = foto::LightType::Area,
+				.position = (c[0] + c[1] + c[2] + c[3]) * 0.25f,
+				.direction = (c[1] - c[0]) * 0.5f,
+				.intensity = Vec3(light.radiance[0], light.radiance[1], light.radiance[2]),
+				.size = 0.5f * (c[3].y - c[0].y),
+			});
+			continue;
+		}
 		if (light.type != "point" && light.type != "directional") continue;
 		lights.push_back({
 			.type = light.type == "directional" ? foto::LightType::Directional : foto::LightType::Point,
@@ -265,11 +287,13 @@ void Visualizer::detectLighting() {
 	recast::SceneFile sceneCopy = scene;
 	recast::LinearImage photo = photoPixels;
 	int stride = lightingStride(8);
-	detectJob = std::async(std::launch::async, [sceneCopy, photo, stride]() {
+	std::vector<recast::FitLight> emitters = photoEmitters;
+	detectJob = std::async(std::launch::async, [sceneCopy, photo, stride, emitters]() {
 		DetectJob job;
 		try {
 			std::vector<recast::LightingSample> samples = recast::collectLightingSamples(sceneCopy, photo, stride);
-			job.fit = recast::fitMainLight(sceneCopy, samples, job.lights);
+			job.lights = emitters;
+			job.fit = recast::fitMainLight(sceneCopy, samples, job.lights, recast::sunDirections(sceneCopy, photo));
 		}
 		catch (const std::exception& e) {
 			job.error = e.what();
@@ -311,18 +335,10 @@ void Visualizer::finishLightingDetection() {
 	}
 
 	scene.lights.clear();
-	int directionalCount = 0;
+	int windows = 0, others = 0;
 	for (size_t i = 0; i < job.lights.size(); i++) {
-		const recast::FitLight& fitted = job.lights[i];
-		recast::SceneLight light;
-		light.type = fitted.directional ? "directional" : "point";
-		light.position = { fitted.position.x, fitted.position.y, fitted.position.z };
-		light.direction = { fitted.direction.x, fitted.direction.y, fitted.direction.z };
-		light.intensity = { job.fit.intensities[i].x, job.fit.intensities[i].y, job.fit.intensities[i].z };
-		if (fitted.directional) light.angular_radius_deg = fitted.size * 180.0f / enginemath::PI;
-		else light.radius = fitted.size;
-		scene.lights.push_back(light);
-		directionalCount += fitted.directional ? 1 : 0;
+		scene.lights.push_back(recast::sceneLightFrom(job.lights[i], job.fit.intensities[i]));
+		(job.lights[i].area ? windows : others)++;
 	}
 	scene.lighting.ambient = { job.fit.ambient.x, job.fit.ambient.y, job.fit.ambient.z };
 	detectedLights = scene.lights;
@@ -331,8 +347,8 @@ void Visualizer::finishLightingDetection() {
 	unsavedChanges = true;
 
 	int seconds = static_cast<int>(std::chrono::duration<double>(std::chrono::steady_clock::now() - detectStarted).count());
-	lightingStatus = "detected " + std::to_string(job.lights.size() - directionalCount) + " point + " +
-					 std::to_string(directionalCount) + " directional light(s) in " + std::to_string(seconds) + " s";
+	lightingStatus = "lit by " + std::to_string(windows) + " window(s) and " + std::to_string(others) + " other light(s), found in " +
+					 std::to_string(seconds) + " s";
 	std::cout << "[recast] " << lightingStatus << std::endl;
 	if (job.lights.empty()) askForManualLights("none found in the photo");
 }
@@ -357,6 +373,7 @@ void Visualizer::onUpdate(foto::f32 deltaTime) {
 	if (editRoom) updateRoomEditing();
 	else if (!(showLights && updateLightEditing())) updateObjectInteraction();
 	setPathTraceOwners(ownerTexture);
+	setPathTraceDepth(depthTexture);
 	setPathTracing(pathTrace && !showOriginal && !editRoom && !showLights && supportsPathTracing(), photoMaterial);
 	float pixelsPerPhotoPixel = getViewportSize().x / std::max(static_cast<float>(scene.image_size[0]), 1.0f);
 	setCameraMatch(cameraMatch.grain, cameraMatch.blur * pixelsPerPhotoPixel);
@@ -369,39 +386,71 @@ Mat4 Visualizer::objectTransform() const {
 }
 
 // Where the object goes for this mouse ray: the first surface it points at, or the floor in front of it when that's a
-// wall or the side of a box, so the object never ends up hidden behind something
+// wall or the side of a box, so the object never ends up hidden behind something. A box only counts where the photo's
+// cutout says it shows that piece of furniture: elsewhere the box is looser than the real thing, and the ray looks past it
 recast::RayHit Visualizer::supportUnderCursor(const Vec3& origin, const Vec3& direction) {
 	constexpr float supportNormalY = 0.7f;
-	recast::RayHit hit = recast::raycastProxies(scene.proxies, origin, direction);
+	std::vector<recast::Proxy> shown = scene.proxies;
+	recast::RayHit hit;
+	for (int pass = 0; pass < 8; pass++) {
+		hit = recast::raycastProxies(shown, origin, direction);
+		if (!hit.valid()) break;
+		const recast::Proxy& proxy = shown[hit.proxyIndex];
+		auto mask = proxyMaskIds.find(proxy.id);
+		if (proxy.type != "box" || mask == proxyMaskIds.end() || photoOwnerAt(hit.point) == mask->second) break;
+		shown.erase(shown.begin() + hit.proxyIndex);
+	}
 	if (!hit.valid() || hit.normal.y >= supportNormalY) return hit;
-	return recast::raycastProxies(scene.proxies, hit.point + hit.normal * 0.02f, Vec3(0.0f, -1.0f, 0.0f), supportNormalY);
+	return recast::raycastProxies(shown, hit.point + hit.normal * 0.02f, Vec3(0.0f, -1.0f, 0.0f), supportNormalY);
+}
+
+// Which detected object's cutout the photo shows where `point` appears (0 = none, or no cutouts)
+foto::u32 Visualizer::photoOwnerAt(const Vec3& point) const {
+	if (ownerPixels.empty()) return 0;
+	const recast::SceneCamera& c = scene.camera;
+	Vec3 d = point - Vec3(c.position[0], c.position[1], c.position[2]);
+	Vec3 local;
+	for (int j = 0; j < 3; j++) local[j] = c.rotation[0][j] * d.x + c.rotation[1][j] * d.y + c.rotation[2][j] * d.z;
+	if (local.z > -1e-3f) return 0;
+	float u = (c.cx + c.fx * local.x / -local.z) / std::max(1.0f, static_cast<float>(scene.image_size[0]));
+	float v = (c.cy - c.fy * local.y / -local.z) / std::max(1.0f, static_cast<float>(scene.image_size[1]));
+	if (u < 0.0f || v < 0.0f || u >= 1.0f || v >= 1.0f) return 0;
+	int x = std::min(static_cast<int>(u * ownerWidth), ownerWidth - 1), y = std::min(static_cast<int>(v * ownerHeight), ownerHeight - 1);
+	return ownerPixels[(static_cast<size_t>(y) * ownerWidth + x) * 4];
 }
 
 // Light markers sit at point lights, and 2 m back along a directional light from the middle of the room
 Vec3 Visualizer::markerPosition(const recast::SceneLight& light) const {
-	if (light.type == "directional") return shadowCenter - Vec3(light.direction[0], light.direction[1], light.direction[2]).normalized() * 2.0f;
+	if (light.type == "directional") {
+		// where the sun is in the sky, seen from the camera (so it sits under the cursor while dragged)
+		Vec3 eye(scene.camera.position[0], scene.camera.position[1], scene.camera.position[2]);
+		return eye - Vec3(light.direction[0], light.direction[1], light.direction[2]).normalized() * 10.0f;
+	}
 	return Vec3(light.position[0], light.position[1], light.position[2]);
 }
 
 // Click a light marker to select it, drag to move it in the plane facing the camera. True while a light is being dragged
 bool Visualizer::updateLightEditing() {
 	bool leftDown = getWindow().isMouseButtonDown(GLFW_MOUSE_BUTTON_LEFT);
-	bool pressed = leftDown && !lightMouseWasDown;
+	bool pressed = leftDown && !lightMouseWasDown && !ImGui::GetIO().WantCaptureMouse;
 	lightMouseWasDown = leftDown;
 	Vec3 origin, direction;
 	bool haveRay = getCursorRay(origin, direction);
 
+	// picked on screen, where the markers are drawn, so a light behind a wall or out past the window is still reachable
 	if (pressed && haveRay) {
-		constexpr float pickRadius = 0.12f;
-		float closest = 1e30f;
+		ImVec2 mouse = ImGui::GetIO().MousePos;
+		float closest = 14.0f * 14.0f;
 		int picked = -1;
 		for (size_t i = 0; i < scene.lights.size(); i++) {
 			if (scene.lights[i].type != "point" && scene.lights[i].type != "directional") continue;
-			Vec3 toMarker = markerPosition(scene.lights[i]) - origin;
-			float t = toMarker.dot(direction);
-			if (t <= 0.0f || toMarker.dot(toMarker) - t * t > pickRadius * pickRadius || t >= closest) continue;
-			closest = t;
-			picked = static_cast<int>(i);
+			ImVec2 at;
+			if (!projectToScreen(markerPosition(scene.lights[i]), at)) continue;
+			float dx = at.x - mouse.x, dy = at.y - mouse.y;
+			if (dx * dx + dy * dy < closest) {
+				closest = dx * dx + dy * dy;
+				picked = static_cast<int>(i);
+			}
 		}
 		if (picked >= 0) {
 			selectedLight = picked;
@@ -412,6 +461,16 @@ bool Visualizer::updateLightEditing() {
 	}
 	if (!leftDown) draggingLight = false;
 
+	// scrolling moves the selected point light nearer or further along its line from the camera
+	float scroll = getWindow().getScrollDelta();
+	if (scroll != 0.0f && selectedLight >= 0 && selectedLight < static_cast<int>(scene.lights.size()) &&
+		scene.lights[selectedLight].type == "point" && !ImGui::GetIO().WantCaptureMouse) {
+		recast::SceneLight& light = scene.lights[selectedLight];
+		const recast::Vec3f& eye = scene.camera.position;
+		for (int a = 0; a < 3; a++) light.position[a] = eye[a] + (light.position[a] - eye[a]) * std::pow(1.15f, -scroll);
+		unsavedChanges = true;
+	}
+
 	if (draggingLight && haveRay && selectedLight >= 0 && selectedLight < static_cast<int>(scene.lights.size())) {
 		float facing = direction.dot(lightPlaneNormal);
 		float t = std::abs(facing) > 1e-4f ? (lightPlanePoint - origin).dot(lightPlaneNormal) / facing : -1.0f;
@@ -419,11 +478,11 @@ bool Visualizer::updateLightEditing() {
 			Vec3 at = origin + direction * t;
 			recast::SceneLight& light = scene.lights[selectedLight];
 			if (light.type == "directional") {
-				Vec3 toCenter = shadowCenter - at;
-				if (toCenter.dot(toCenter) > 1e-6f) {
-					toCenter.normalize();
-					light.direction = { toCenter.x, toCenter.y, toCenter.z };
-				}
+				// the sun goes where the cursor points, kept above the horizon
+				Vec3 sky = direction;
+				sky.y = std::max(sky.y, 0.05f);
+				sky.normalize();
+				light.direction = { -sky.x, -sky.y, -sky.z };
 			}
 			else {
 				light.position = { at.x, at.y, at.z };
@@ -432,6 +491,38 @@ bool Visualizer::updateLightEditing() {
 		}
 	}
 	return draggingLight;
+}
+
+// Markers over the photo, never hidden by walls: a dot per light (named, selected one larger), windows as outlines
+void Visualizer::drawLightOverlay() {
+	ImDrawList* list = ImGui::GetForegroundDrawList();
+	int number = 0;
+	for (size_t i = 0; i < scene.lights.size(); i++) {
+		const recast::SceneLight& light = scene.lights[i];
+		bool selected = static_cast<int>(i) == selectedLight;
+		ImU32 color = selected ? IM_COL32(110, 220, 255, 255) : IM_COL32(255, 220, 80, 255);
+		if (light.type == "area") {
+			for (int k = 0; k < 4; k++) {
+				const recast::Vec3f& a = light.corners[k];
+				const recast::Vec3f& b = light.corners[(k + 1) % 4];
+				drawSegment(list, Vec3(a[0], a[1], a[2]), Vec3(b[0], b[1], b[2]), IM_COL32(255, 220, 80, 160), 1.5f);
+			}
+			ImVec2 at;
+			Vec3 centre(0.0f);
+			for (const recast::Vec3f& c : light.corners) centre = centre + Vec3(c[0], c[1], c[2]) * 0.25f;
+			if (projectToScreen(centre, at)) list->AddText(ImVec2(at.x - 36.0f, at.y), IM_COL32(255, 220, 80, 220), "window light");
+			continue;
+		}
+		if (light.type != "point" && light.type != "directional") continue;
+		number++;
+		ImVec2 at;
+		if (!projectToScreen(markerPosition(light), at)) continue;
+		float radius = selected ? 10.0f : 8.0f;
+		list->AddCircleFilled(at, radius, color);
+		list->AddCircle(at, radius, IM_COL32(0, 0, 0, 220), 0, 2.0f);
+		std::string name = light.type == "directional" ? "sun" : "light " + std::to_string(number);
+		list->AddText(ImVec2(at.x + radius + 4.0f, at.y - 7.0f), color, name.c_str());
+	}
 }
 
 // A point light 1.2 m above the object, as strong as the first point light (or a neutral one)
@@ -454,8 +545,24 @@ void Visualizer::addLight() {
 }
 
 void Visualizer::drawLightEditor() {
-	ImGui::TextDisabled("drag a light to move it");
+	ImGui::TextDisabled("drag a light to move it, scroll over it to move it nearer or further");
 	if (scene.lights.size() < foto::MAX_LIGHTS && ImGui::Button("add light")) addLight();
+	if (scene.lights.size() < foto::MAX_LIGHTS) {
+		ImGui::SameLine();
+		if (ImGui::Button("add sun")) {
+			recast::SceneLight sun;
+			sun.type = "directional";
+			Vec3 travels = Vec3(0.3f, -0.5f, 0.8f).normalized(); // from the far side of the room, 30 degrees up
+			sun.direction = { travels.x, travels.y, travels.z };
+			sun.intensity = { 2.0f, 1.9f, 1.7f };
+			for (const recast::SceneLight& existing : scene.lights) {
+				if (existing.type == "directional") sun.intensity = existing.intensity;
+			}
+			scene.lights.push_back(sun);
+			selectedLight = static_cast<int>(scene.lights.size()) - 1;
+			unsavedChanges = true;
+		}
+	}
 	if (!detectedLights.empty()) {
 		if (scene.lights.size() < foto::MAX_LIGHTS) ImGui::SameLine();
 		if (ImGui::Button("reset lights")) {
@@ -474,6 +581,50 @@ void Visualizer::drawLightEditor() {
 		selectedLight = -1;
 		unsavedChanges = true;
 		return;
+	}
+
+	if (light.type == "directional") {
+		// where the sun is in the sky: around (0 = straight ahead of the camera, positive = to its right) and above the
+		// horizon, in degrees
+		const auto& r = scene.camera.rotation;
+		Vec3 ahead = Vec3(-r[0][2], 0.0f, -r[2][2]);
+		ahead = ahead.dot(ahead) > 1e-6f ? ahead.normalized() : Vec3(0.0f, 0.0f, -1.0f);
+		Vec3 right = ahead.cross(Vec3(0.0f, 1.0f, 0.0f));
+		Vec3 sky = -Vec3(light.direction[0], light.direction[1], light.direction[2]).normalized();
+		float height = enginemath::toDeg(std::asin(std::clamp(sky.y, -1.0f, 1.0f)));
+		float around = enginemath::toDeg(std::atan2(sky.dot(right), sky.dot(ahead)));
+		bool changed = ImGui::SliderFloat("sun direction", &around, -180.0f, 180.0f, "%.0f deg");
+		changed |= ImGui::SliderFloat("sun height", &height, 2.0f, 89.0f, "%.0f deg");
+		if (changed) {
+			float h = enginemath::toRad(height), a = enginemath::toRad(around);
+			Vec3 toSun = (ahead * std::cos(a) + right * std::sin(a)) * std::cos(h) + Vec3(0.0f, std::sin(h), 0.0f);
+			light.direction = { -toSun.x, -toSun.y, -toSun.z };
+			unsavedChanges = true;
+		}
+	}
+
+	// a sun shines from where the light is, towards the middle of the room; a point light goes back to that spot
+	if (ImGui::Button(light.type == "point" ? "make it a sun" : "make it a point light")) {
+		if (light.type == "point") {
+			Vec3 from(light.position[0], light.position[1], light.position[2]);
+			Vec3 toCenter = shadowCenter - from;
+			if (toCenter.dot(toCenter) > 1e-6f) {
+				toCenter.normalize();
+				light.type = "directional";
+				light.direction = { toCenter.x, toCenter.y, toCenter.z };
+				// a point light's intensity falls off with distance; the sun keeps what it gave the middle of the room
+				float d2 = (shadowCenter - from).dot(shadowCenter - from);
+				for (float& channel : light.intensity) channel /= std::max(d2, 1e-3f);
+			}
+		}
+		else {
+			Vec3 at = markerPosition(light);
+			float d2 = (shadowCenter - at).dot(shadowCenter - at);
+			light.type = "point";
+			light.position = { at.x, at.y, at.z };
+			for (float& channel : light.intensity) channel *= d2;
+		}
+		unsavedChanges = true;
 	}
 
 	float strongest = std::max({ light.intensity[0], light.intensity[1], light.intensity[2] });
@@ -571,18 +722,6 @@ void Visualizer::drawScene() {
 	}
 
 	if (objectMesh && !showOriginal) draw(objectMesh, objectTransform(), foto::NO_MATERIAL_OVERRIDE, nullptr, foto::ShadowCaster::Dynamic);
-
-	if (showLights) {
-		for (size_t i = 0; i < scene.lights.size(); i++) {
-			const recast::SceneLight& light = scene.lights[i];
-			if (light.type != "point" && light.type != "directional") continue;
-			Vec3 at = markerPosition(light);
-			bool selected = static_cast<int>(i) == selectedLight;
-			float size = selected ? 0.08f : 0.06f;
-			draw(lightMarker, Mat4::translationM(at.x, at.y, at.z) * Mat4::scaleM(size, size, size), selected ? selectedMarkerMaterial : lightMarkerMaterial);
-		}
-	}
-
 }
 
 void Visualizer::onImGui() {
@@ -647,7 +786,10 @@ void Visualizer::onImGui() {
 		}
 		ImGui::Checkbox("original photo", &showOriginal);
 		ImGui::Checkbox("show and edit lights", &showLights);
-		if (showLights) drawLightEditor();
+		if (showLights) {
+			drawLightEditor();
+			drawLightOverlay();
+		}
 		ImGui::TextDisabled("%.0f fps, F12 saves a screenshot", ImGui::GetIO().Framerate);
 	}
 
@@ -843,18 +985,20 @@ void Visualizer::loadProxyLabels() {
 	proxyLabels.clear();
 	proxyMaskIds.clear();
 	ownerTexture = 0;
+	ownerPixels.clear();
+	ownerWidth = ownerHeight = 0;
 	std::ifstream file(scene.directory / "detect.json");
 	if (!file) return;
 	try {
 		nlohmann::json detect = nlohmann::json::parse(file);
-		std::vector<unsigned char> owners;
-		int ownerWidth = 0, ownerHeight = 0;
+		std::vector<unsigned char>& owners = ownerPixels;
 		foto::u32 next = 1;
 		for (const auto& object : detect.value("objects", nlohmann::json::array())) {
 			std::string label = object.value("label", "object");
 			const auto& ids = object.value("proxy_ids", nlohmann::json::array());
+			bool seatBack = object.value("shape", ids.size() == 2 ? "seat_back" : "box") == "seat_back";
 			for (size_t k = 0; k < ids.size(); k++) {
-				proxyLabels[ids[k].get<foto::u32>()] = ids.size() == 1 ? label : label + (k == 0 ? " (seat)" : " (back)");
+				proxyLabels[ids[k].get<foto::u32>()] = seatBack ? label + (k == 0 ? " (seat)" : " (back)") : label;
 			}
 
 			std::string maskPath = object.value("mask", "");
@@ -965,6 +1109,20 @@ int Visualizer::boxUnderCursor(const Vec3& origin, const Vec3& direction) const 
 	return best;
 }
 
+// Boxes of one detected object (its outline slices, or a seat and back) move, select and delete together
+bool Visualizer::sameGroup(int a, int b) const {
+	if (a < 0 || b < 0) return false;
+	if (a == b) return true;
+	auto maskA = proxyMaskIds.find(scene.proxies[a].id), maskB = proxyMaskIds.find(scene.proxies[b].id);
+	return maskA != proxyMaskIds.end() && maskB != proxyMaskIds.end() && maskA->second == maskB->second;
+}
+
+int Visualizer::groupSize(int index) const {
+	int count = 0;
+	for (size_t i = 0; i < scene.proxies.size(); i++) count += sameGroup(index, static_cast<int>(i)) ? 1 : 0;
+	return count;
+}
+
 // Click a box to select it and drag to slide it across the floor; drag the dots on the selected box to
 // resize it, or the dot on a selected wall (pick walls in the list) to move the wall in or out
 bool Visualizer::updateRoomEditing() {
@@ -983,7 +1141,7 @@ bool Visualizer::updateRoomEditing() {
 	bool haveSelection = selectedProxy >= 0 && selectedProxy < static_cast<int>(scene.proxies.size());
 
 	hoveredHandle = -1;
-	if (haveSelection && !draggingProxy) {
+	if (haveSelection && !draggingProxy && groupSize(selectedProxy) == 1) {
 		const recast::Proxy& selected = scene.proxies[selectedProxy];
 		Vec3 handle;
 		if (selected.type == "box") {
@@ -1009,6 +1167,7 @@ bool Visualizer::updateRoomEditing() {
 			draggingProxy = true;
 			draggingHandle = -1;
 			proxyAtGrab = scene.proxies[selectedProxy];
+			roomAtGrab = scene.proxies;
 			float t = 0.0f;
 			recast::rayAabb(origin, direction, Vec3(proxyAtGrab.min[0], proxyAtGrab.min[1], proxyAtGrab.min[2]),
 							Vec3(proxyAtGrab.max[0], proxyAtGrab.max[1], proxyAtGrab.max[2]), t);
@@ -1040,9 +1199,12 @@ bool Visualizer::updateRoomEditing() {
 		float t = (proxyGrab.y - origin.y) / direction.y;
 		if (t > 0.0f) {
 			Vec3 delta = origin + direction * t - proxyGrab;
-			for (int a : { 0, 2 }) {
-				proxy.min[a] = proxyAtGrab.min[a] + delta[a];
-				proxy.max[a] = proxyAtGrab.max[a] + delta[a];
+			for (size_t i = 0; i < scene.proxies.size() && i < roomAtGrab.size(); i++) {
+				if (!sameGroup(selectedProxy, static_cast<int>(i))) continue;
+				for (int a : { 0, 2 }) {
+					scene.proxies[i].min[a] = roomAtGrab[i].min[a] + delta[a];
+					scene.proxies[i].max[a] = roomAtGrab[i].max[a] + delta[a];
+				}
 			}
 		}
 	}
@@ -1055,7 +1217,9 @@ void Visualizer::drawRoomOverlay() {
 	ImDrawList* list = ImGui::GetForegroundDrawList();
 	for (size_t i = 0; i < scene.proxies.size(); i++) {
 		const recast::Proxy& proxy = scene.proxies[i];
-		bool selected = static_cast<int>(i) == selectedProxy, hovered = static_cast<int>(i) == hoveredProxy;
+		bool selected = sameGroup(static_cast<int>(i), selectedProxy), hovered = sameGroup(static_cast<int>(i), hoveredProxy);
+		bool firstOfGroup = true;
+		for (size_t j = 0; j < i; j++) firstOfGroup &= !sameGroup(static_cast<int>(i), static_cast<int>(j));
 		if (proxy.type == "box") {
 			ImU32 color = selected ? SELECTED_COLOR : hovered ? HOVER_COLOR : EDGE_COLOR;
 			float thickness = selected ? 2.5f : hovered ? 2.0f : 1.2f;
@@ -1067,14 +1231,14 @@ void Visualizer::drawRoomOverlay() {
 				}
 			}
 			ImVec2 at;
-			if (projectToScreen(Vec3((lo.x + hi.x) * 0.5f, hi.y, (lo.z + hi.z) * 0.5f), at)) {
+			if (firstOfGroup && projectToScreen(Vec3((lo.x + hi.x) * 0.5f, hi.y, (lo.z + hi.z) * 0.5f), at)) {
 				std::string name = proxyName(i);
 				ImVec2 size = ImGui::CalcTextSize(name.c_str());
 				ImVec2 corner0(at.x - size.x * 0.5f - 3.0f, at.y - size.y - 8.0f);
 				list->AddRectFilled(corner0, ImVec2(corner0.x + size.x + 6.0f, corner0.y + size.y + 2.0f), IM_COL32(0, 0, 0, 150), 3.0f);
 				list->AddText(ImVec2(corner0.x + 3.0f, corner0.y + 1.0f), color, name.c_str());
 			}
-			if (selected) {
+			if (static_cast<int>(i) == selectedProxy && groupSize(selectedProxy) == 1) {
 				std::array<Vec3, 6> handles = boxHandles(proxy);
 				for (int h = 0; h < 6; h++) {
 					ImVec2 screen;
@@ -1112,8 +1276,11 @@ void Visualizer::drawRoomEditor() {
 		for (size_t i = 0; i < scene.proxies.size(); i++) {
 			const recast::Proxy& proxy = scene.proxies[i];
 			if (proxy.type != "box" && !isWall(proxy)) continue;
+			bool firstOfGroup = true;
+			for (size_t j = 0; j < i; j++) firstOfGroup &= !sameGroup(static_cast<int>(i), static_cast<int>(j));
+			if (!firstOfGroup) continue;
 			std::string label = proxyName(i) + "##" + std::to_string(i);
-			if (ImGui::Selectable(label.c_str(), static_cast<int>(i) == selectedProxy)) selectedProxy = static_cast<int>(i);
+			if (ImGui::Selectable(label.c_str(), sameGroup(static_cast<int>(i), selectedProxy))) selectedProxy = static_cast<int>(i);
 			if (ImGui::IsItemHovered()) hoveredProxy = static_cast<int>(i);
 		}
 		ImGui::EndListBox();
@@ -1133,7 +1300,11 @@ void Visualizer::drawRoomEditor() {
 	bool haveSelection = selectedProxy >= 0 && selectedProxy < static_cast<int>(scene.proxies.size());
 	ImGui::BeginDisabled(!haveSelection);
 	if (ImGui::Button("delete") && haveSelection) {
-		scene.proxies.erase(scene.proxies.begin() + selectedProxy);
+		std::vector<recast::Proxy> kept;
+		for (size_t i = 0; i < scene.proxies.size(); i++) {
+			if (!sameGroup(selectedProxy, static_cast<int>(i))) kept.push_back(scene.proxies[i]);
+		}
+		scene.proxies = kept;
 		selectedProxy = -1;
 		proxyMeshesDirty = true;
 		unsavedChanges = true;

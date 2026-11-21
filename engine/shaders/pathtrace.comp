@@ -109,6 +109,17 @@ vec3 radiance(ivec2 pixel, vec2 viewportUV, vec2 pixelUV, inout uint state, out 
 
 	vec3 photo = photoAt(pixelUV);
 	Hit hit = traceClosest(origin, direction, MASK_ALL);
+	// Whether the object shows is decided by the photo's own depth, not by the boxes standing in for the furniture:
+	// it's hidden only where the photo has something clearly in front of it (margin for the depth estimate's error)
+	if (push.depthTexture != 0u) {
+		Hit object = traceClosest(origin, direction, MASK_DYNAMIC);
+		if (object.found) {
+			float distance = length(object.position - origin);
+			bool photoInFront = photoDepthAt(pixelUV) < distance - max(0.2, 0.1 * distance);
+			if (!photoInFront) hit = object;
+			else if (hit.dynamic) hit = traceClosest(origin, direction, MASK_STATIC);
+		}
+	}
 	// A box stands in for furniture of another shape: where the photo's cutout says this pixel isn't that piece,
 	// the box isn't there, so look past it (a box is entered and left, both faces carry its mask)
 	uint owner = ownerAt(pixelUV);

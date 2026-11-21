@@ -23,7 +23,7 @@ from PIL import Image
 from . import evaluate, lens
 from .camera import Camera, solve_camera
 from .gbuffer import load_gbuffer, save_gbuffer
-from .io import Photo, linear_to_srgb, load_image_linear, load_photo, save_jpg
+from .io import Photo, linear_to_srgb, load_image_linear, load_photo, save_hdr, save_jpg, to_srgb8
 from .lighting import fit_scene_lighting
 from .scene import (PHOTO_NAME, Lighting, Scene, floor_proxy, render_gbuffer, update_scene_file,
                     write_json_atomic)
@@ -141,19 +141,18 @@ def cmd_detect(args) -> None:
     path = require(out / "scene.json", "run `python -m recast scene` (stage A) first")
     scene = Scene.load(path)
     cam = scene.camera
-    rgb8 = np.asarray(Image.open(out / scene.photo).convert("RGB"))
-    if rgb8.shape[:2] != (cam.height, cam.width):
-        sys.exit(f"{scene.photo} is {rgb8.shape[1]}x{rgb8.shape[0]} but the camera is {cam.width}x{cam.height}")
-    photo_linear = load_image_linear(out / scene.photo)
+    with Image.open(out / scene.photo) as header:
+        if header.size != (cam.width, cam.height):
+            sys.exit(f"{scene.photo} is {header.size[0]}x{header.size[1]} but the camera is {cam.width}x{cam.height}")
 
     # the models see ~512 px anyway: everything runs on a smaller copy with the same camera, scaled.
     # Boxes come out in metres, so they don't depend on the working size
-    shrink = min(1.0, args.max_size / max(cam.width, cam.height)) if args.max_size else 1.0
+    small = load_photo(out / scene.photo, max_side=args.max_size or None)
+    photo_linear = small.pixels
+    rgb8 = to_srgb8(photo_linear)
     full_cam = cam
-    if shrink < 1.0:
-        size = (round(cam.width * shrink), round(cam.height * shrink))
-        rgb8 = cv2.resize(rgb8, size, interpolation=cv2.INTER_AREA)
-        photo_linear = cv2.resize(photo_linear.astype(np.float32), size, interpolation=cv2.INTER_AREA)
+    if small.scale < 1.0:
+        size = (photo_linear.shape[1], photo_linear.shape[0])
         cam = Camera(size[0], size[1], full_cam.fx * size[0] / full_cam.width, full_cam.R, full_cam.position.copy(),
                      (full_cam.principal + 0.5) * np.array(size) / [full_cam.width, full_cam.height] - 0.5,
                      full_cam.fy * size[1] / full_cam.height)
@@ -196,6 +195,8 @@ def cmd_detect(args) -> None:
         if data.get("object", {}) and data["object"].get("transform"):
             data["object"]["transform"]["position"] = [float(v) * k for v in data["object"]["transform"]["position"]]
 
+    det = detect.open_below_slabs(det)
+
     mdir = out / "masks"
     mdir.mkdir(exist_ok=True)
     for f in mdir.glob("*.png"):
@@ -208,19 +209,35 @@ def cmd_detect(args) -> None:
         lo = np.min([b.min for b in boxes], axis=0)
         hi = np.max([b.max for b in boxes], axis=0)
         size = hi - lo
-        rests = "floor" if lo[1] < 1e-6 else f"{lo[1]:.2f} m up"
-        print(f"  {o['label']:<14} {size[0]:.2f} x {size[1]:.2f} x {size[2]:.2f} m, on the {rests}"
-              f"{'  (2 boxes: seat + back)' if len(boxes) > 1 else ''}")
-        objects.append({"label": o["label"], "score": o["score"], "proxy_ids": o["proxy_ids"],
+        rests = "on the floor" if lo[1] < 1e-6 else f"on the {lo[1]:.2f} m up"
+        if o["label"] in detect.OPEN_BELOW and o.get("shape") != "seat_back":
+            rests = f"top at {hi[1]:.2f} m (open below)"
+        print(f"  {o['label']:<14} {size[0]:.2f} x {size[1]:.2f} x {size[2]:.2f} m, {rests}"
+              f"{'  (2 boxes: seat + back)' if o.get('shape') == 'seat_back' else f'  ({len(boxes)} slices)' if len(boxes) > 1 else ''}")
+        objects.append({"label": o["label"], "score": o["score"], "proxy_ids": o["proxy_ids"], "shape": o.get("shape", "box"),
                         "mask": f"masks/{name}"})
     for w in det.walls:
         kind = "ceiling" if w["axis"] == 1 else "wall"
         print(f"  {kind:<14} at {'xyz'[w['axis']]} = {w['value']:.2f} m")
 
+    # windows and lamps in the photo: the engine fits their strength (a new room means new lighting)
+    emitters = detect.find_emitters(cam, det.points, segments, det.walls)
+    for light in emitters:
+        print(f"  {'window light' if light['type'] == 'area' else 'lamp light':<14} " +
+              (f"{np.ptp(np.array(light['corners'])[:, [0, 2]], axis=0).max():.2f} x {np.ptp(np.array(light['corners'])[:, 1]):.2f} m"
+               if light["type"] == "area" else "at " + ", ".join(f"{v:.2f}" for v in light["position"])))
+
+    # the photo's own depth (distance from the camera, metres): the engine hides the object only where the photo really
+    # has something in front of it, instead of wherever a box stands in for the furniture
+    with np.errstate(invalid="ignore"):
+        distance = np.linalg.norm(det.points - cam.position, axis=2)
+    distance = np.where(np.isfinite(distance), distance, 1e4).astype(np.float32)
+    save_hdr(out / "photo_depth.hdr", np.repeat(distance[..., None], 3, axis=2))
+
     proxies = kept + [p.to_dict() for p in det.proxies]
-    sections = {"proxies": proxies}
+    sections = {"proxies": proxies, "lights": emitters}
     if rescaled:
-        sections.update(camera=full_cam.to_dict(), lights=data.get("lights", []),
+        sections.update(camera=full_cam.to_dict(),
                         scale_reference={"kind": "camera_height", "metres": float(cam.position[1]), "from": used})
         if data.get("object"):
             sections["object"] = data["object"]

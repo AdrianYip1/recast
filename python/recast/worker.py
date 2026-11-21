@@ -64,6 +64,8 @@ def _warm_up() -> None:
             import numpy as np
             generated.load_model()
             segment.salient_alpha(np.zeros((64, 64, 3), np.float32))
+            from . import detect
+            detect.run_models(np.zeros((64, 64, 3), np.uint8))
             print("worker: models loaded", flush=True)
         except Exception as e:                       # a missing extra only matters when that step runs
             print(f"worker: warm-up skipped ({e})", flush=True)

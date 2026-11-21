@@ -38,6 +38,20 @@ bool recast::resolveCollisions(const std::vector<Proxy>& proxies, ObjectTransfor
 		Vec3 half = (worldMax - worldMin) * 0.5f;
 		bool moved = false;
 
+		// The box the object stands on wins: boxes overlapping its footprint are loose detections (nothing is
+		// inside a table top), so they don't push the object off it
+		const Proxy* support = nullptr;
+		for (const Proxy& proxy : proxies) {
+			if (proxy.type == "box" && std::abs(proxy.max[1] - worldMin.y) < 0.02f && center.x >= proxy.min[0] && center.x <= proxy.max[0] &&
+				center.z >= proxy.min[2] && center.z <= proxy.max[2]) {
+				support = &proxy;
+			}
+		}
+		auto overlapsSupport = [&](const Proxy& proxy) {
+			return support && &proxy != support && proxy.min[0] < support->max[0] && proxy.max[0] > support->min[0] &&
+				   proxy.min[2] < support->max[2] && proxy.max[2] > support->min[2];
+		};
+
 		for (const Proxy& proxy : proxies) {
 			if (proxy.type == "plane") {
 				Vec3 normal = Vec3(proxy.normal[0], proxy.normal[1], proxy.normal[2]).normalized();
@@ -54,6 +68,7 @@ bool recast::resolveCollisions(const std::vector<Proxy>& proxies, ObjectTransfor
 			}
 			else if (proxy.type == "box") {
 				if (worldMin.y >= proxy.max[1] - epsilon || worldMax.y <= proxy.min[1] + epsilon) continue;
+				if (overlapsSupport(proxy)) continue;
 
 				float overlapX = std::min(worldMax.x, proxy.max[0]) - std::max(worldMin.x, proxy.min[0]);
 				float overlapZ = std::min(worldMax.z, proxy.max[2]) - std::max(worldMin.z, proxy.min[2]);

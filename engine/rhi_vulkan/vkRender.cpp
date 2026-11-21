@@ -243,12 +243,13 @@ void foto::Render::updateTraceSamples(std::span<const DrawItem> items, const Fra
 	keyUbo.exposure = {};
 	keyUbo.whiteBalance = {};
 
-	std::vector<u8> key(sizeof(FrameUbo) + sizeof(u32) * 3);
+	std::vector<u8> key(sizeof(FrameUbo) + sizeof(u32) * 4);
 	std::memcpy(key.data(), &keyUbo, sizeof(FrameUbo));
 	std::memcpy(key.data() + sizeof(FrameUbo), &tracePhotoTexture, sizeof(u32));
 	u32 version = static_cast<u32>(materialsVersion);
 	std::memcpy(key.data() + sizeof(FrameUbo) + sizeof(u32), &version, sizeof(u32));
 	std::memcpy(key.data() + sizeof(FrameUbo) + sizeof(u32) * 2, &traceOwnerTexture, sizeof(u32));
+	std::memcpy(key.data() + sizeof(FrameUbo) + sizeof(u32) * 3, &traceDepthTexture, sizeof(u32));
 	for (const DrawItem& item : items) {
 		if (!item.mesh || item.shadowCaster == ShadowCaster::None) continue;
 		auto append = [&key](const void* data, size bytes) {
@@ -371,6 +372,7 @@ void foto::Render::recordPathTrace(VkCommandBuffer commandBuffer, std::span<cons
 
 	TracePush push = { .sampleIndex = traceSamples, .photoTexture = tracePhotoTexture, .trace = traceSamples < MAX_TRACE_SAMPLES ? 1u : 0u };
 	push.ownerTexture = traceOwnerTexture;
+	push.depthTexture = traceDepthTexture;
 	if (objectMin.x <= objectMax.x) {
 		enginemath::Vec3 center = (objectMin + objectMax) * 0.5f;
 		enginemath::Vec3 half = (objectMax - objectMin) * 0.5f;
@@ -786,7 +788,7 @@ void foto::Render::recordShadowPass(VkCommandBuffer commandBuffer, Image& atlas,
 	u32 lightCount = std::min(frameUbo.lightInfo[0], MAX_LIGHTS);
 	for (u32 light = 0; light < lightCount; light++) {
 		if (frameUbo.lights[light].position.w < 0.5f) continue;
-		u32 faceCount = frameUbo.lights[light].intensity.w > 0.5f ? 1 : 6;
+		u32 faceCount = std::abs(frameUbo.lights[light].intensity.w - 1.0f) < 0.5f ? 1 : 6; // directional: one map, point/area: a cube
 
 		for (u32 face = 0; face < faceCount; face++) {
 			VkViewport viewport = {

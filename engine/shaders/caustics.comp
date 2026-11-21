@@ -43,7 +43,7 @@ void main() {
 	float perLight = float(push.photonCount) / float(lightCount);
 
 	vec3 origin, direction, flux;
-	if (light.intensity.w > 0.5) {
+	if (isDirectional(light)) {
 		direction = sampleCone(light.direction.xyz, light.direction.w, state);
 		float r = radius * sqrt(random(state));
 		float phi = 2.0 * PI * random(state);
@@ -51,14 +51,14 @@ void main() {
 		flux = light.intensity.rgb * PI * radius * radius / perLight;
 	}
 	else {
-		origin = light.position.xyz + sampleSphere(state) * light.direction.w;
+		origin = light.position.xyz + (isArea(light) ? vec3(0.0) : sampleSphere(state) * light.direction.w);
 		vec3 toCenter = center - origin;
 		float distance = length(toCenter);
 		if (distance <= radius) return;
 		float sinMax = radius / distance;
 		float coneAngle = asin(sinMax);
 		direction = sampleCone(toCenter / distance, coneAngle, state);
-		flux = light.intensity.rgb * (2.0 * PI * (1.0 - cos(coneAngle))) / perLight;
+		flux = pointIntensity(light) * (2.0 * PI * (1.0 - cos(coneAngle))) / perLight;
 	}
 
 	bool specularPath = false;

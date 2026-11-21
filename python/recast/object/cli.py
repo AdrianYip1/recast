@@ -80,19 +80,16 @@ def run(args) -> dict:
     out.mkdir(parents=True, exist_ok=True)
     ui = not args.no_ui
 
-    photo = load_photo(args.photo)
+    # loaded at the working size (much faster than decoding 12 MP); everything after this works in its pixels,
+    # command line clicks included
+    photo = load_photo(args.photo, max_side=args.max_size or None)
+    shrink = photo.scale
+    if args.focal_px:
+        args.focal_px *= shrink
     from ..cli import preprocess  # same undistortion as the scene photo
     img = preprocess(photo, {"lensfun": not args.no_lensfun, "k1": args.k1, "k2": args.k2,
                              "focal_px": args.focal_px or photo.focal_px() or 0.9 * max(photo.width, photo.height)})
-
-    # everything after this works in the shrunk photo's pixels, command line clicks included
-    shrink = min(1.0, args.max_size / max(img.shape[:2])) if args.max_size else 1.0
-    if shrink < 1.0:
-        img = cv2.resize(img.astype(np.float32), (round(img.shape[1] * shrink), round(img.shape[0] * shrink)),
-                         interpolation=cv2.INTER_AREA).astype(img.dtype)
-    exif_focal = photo.focal_px() * shrink if photo.focal_px() else None
-    if args.focal_px:
-        args.focal_px *= shrink
+    exif_focal = photo.focal_px()
 
     # --- segment
     rect = tuple(int(round(v * shrink)) for v in args.rect) if args.rect else None
@@ -303,27 +300,55 @@ def _support_spot(cam: Camera, boxes: list[tuple[np.ndarray, np.ndarray]],
     return cam.position * [1.0, 0.0, 1.0] + forward * 2.5
 
 
+# where people put things down: a new object goes on the biggest one of these the camera sees
+TABLE_LIKE = {"table", "desk", "coffee table", "counter", "countertop", "kitchen island", "work surface", "bar"}
+
+
+def _table_spot(cam: Camera, data: dict, out: Path, boxes, walls) -> np.ndarray | None:
+    """Centre of the top of the biggest visible table-like box from detect, or None."""
+    try:
+        detected = json.loads((out / "detect.json").read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    table_ids = {pid for o in detected.get("objects", []) if o.get("label") in TABLE_LIKE for pid in o.get("proxy_ids", [])}
+    best, best_area = None, 0.0
+    for p in data.get("proxies", []):
+        if p.get("type") != "box" or p.get("id") not in table_ids:
+            continue
+        lo, hi = np.asarray(p["min"], float), np.asarray(p["max"], float)
+        top = np.array([0.5 * (lo[0] + hi[0]), hi[1], 0.5 * (lo[2] + hi[2])])
+        if not _in_view(cam, top):
+            continue
+        d = top + [0.0, 0.01, 0.0] - cam.position
+        distance = float(np.linalg.norm(d))
+        t, _ = _first_hit(cam.position, d / distance, boxes, walls)
+        if t < distance - 0.05:                                  # something else is in the way
+            continue
+        area = (hi[0] - lo[0]) * (hi[2] - lo[2])
+        if area > best_area:
+            best, best_area = top, area
+    return best
+
+
 def _place_in_scene(out: Path) -> None:
-    """If this folder has a scene.json, point it at object.glb. A new object (or one the camera can't see)
-    stands on the floor or a box top in view; one the engine placed in view stays where it is."""
+    """If this folder has a scene.json, put object.glb in it: a new object goes on the biggest visible table, else on
+    the first floor or box top in view, with its photographed side facing the camera."""
     path = out / "scene.json"
     if not path.exists():
         return
     data = json.loads(path.read_text())
     cam = Camera.from_dict(data["camera"], data["image_size"])
-    placed = data.get("object")
-    if placed and _in_view(cam, placed["transform"]["position"]):
-        placed["path"] = "object.glb"
-    else:
-        boxes = [(np.asarray(p["min"], float), np.asarray(p["max"], float))
-                 for p in data.get("proxies", []) if p.get("type") == "box"]
-        walls = [(np.asarray(p["point"], float), np.asarray(p["normal"], float))
-                 for p in data.get("proxies", []) if p.get("type") == "plane" and abs(p["normal"][1]) < 0.5]
+    boxes = [(np.asarray(p["min"], float), np.asarray(p["max"], float))
+             for p in data.get("proxies", []) if p.get("type") == "box"]
+    walls = [(np.asarray(p["point"], float), np.asarray(p["normal"], float))
+             for p in data.get("proxies", []) if p.get("type") == "plane" and abs(p["normal"][1]) < 0.5]
+    spot = _table_spot(cam, data, out, boxes, walls)
+    if spot is None:
         spot = _support_spot(cam, boxes, walls)
-        placed = ObjectPlacement("object.glb", (float(spot[0]), float(spot[1]), float(spot[2]))).to_dict()
-        # the photographed side (+Z in object.glb) faces the camera
-        to_cam = cam.position - spot
-        placed["transform"]["rotation_y_deg"] = round(float(np.degrees(np.arctan2(to_cam[0], to_cam[2]))), 2)
+    placed = ObjectPlacement("object.glb", (float(spot[0]), float(spot[1]), float(spot[2]))).to_dict()
+    # the photographed side (+Z in object.glb) faces the camera
+    to_cam = cam.position - spot
+    placed["transform"]["rotation_y_deg"] = round(float(np.degrees(np.arctan2(to_cam[0], to_cam[2]))), 2)
     update_scene_file(path, object=placed)
 
 
