@@ -20,4 +20,5 @@ private:
 	foto::u32 groundMaterial = 0;
 	foto::f32 cubeAngle = 0.0f;
 	foto::f32 spinSpeed = 0.8f;
+	bool screenshotKeyWasDown = false;
 };

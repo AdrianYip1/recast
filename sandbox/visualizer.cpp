@@ -1,6 +1,8 @@
 #include "visualizer.hpp"
 
 #include <imgui.h>
+#include <GLFW/glfw3.h>
+#include <engine/platform/window.hpp>
 
 using enginemath::Vec3;
 using enginemath::Mat4;
@@ -46,6 +48,10 @@ void Visualizer::onUpdate(foto::f32 deltaTime) {
 	cubeAngle += spinSpeed * deltaTime;
 	flyCamera(deltaTime);
 
+	bool screenshotKeyDown = getWindow().isKeyDown(GLFW_KEY_F12);
+	if (screenshotKeyDown && !screenshotKeyWasDown) screenshot("screenshot.png");
+	screenshotKeyWasDown = screenshotKeyDown;
+
 	draw(ground, Mat4::translationM(0.0f, -0.5f, 0.0f), groundMaterial);
 	draw(quad, Mat4::translationM(0.9f, 0.1f, -0.6f), checkerMaterial);
 	draw(cube, Mat4::translationM(-0.3f, 0.0f, 0.2f) * Mat4::rotateY(cubeAngle));
@@ -62,6 +68,7 @@ void Visualizer::onImGui() {
 		updateMaterial(groundMaterial, groundTint);
 	}
 
+	if (ImGui::Button("screenshot (F12)")) screenshot("screenshot.png");
 	ImGui::TextDisabled("hold right mouse + WASD / QE to fly");
 	ImGui::End();
 }

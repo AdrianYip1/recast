@@ -42,6 +42,9 @@ namespace foto {
 		void updateMaterial(u32 index, const Material& material);
 		const Material& getMaterial(u32 index) { return materials.at(index); };
 
+		// Saves the next presented frame (including the overlay) as a PNG
+		void requestScreenshot(const std::string& filePath) { screenshotPath = filePath; };
+
 		VkCommandPool getCommandPool() { return _commandPool; };
 	private:
 		Device& device;
@@ -65,6 +68,9 @@ namespace foto {
 		std::unique_ptr<Image> defaultTexture;
 		std::unique_ptr<Sampler> defaultSampler;
 
+		std::string screenshotPath;
+		std::unique_ptr<Buffer> screenshotBuffer;
+
 		// Swapchain-sized, shared by the frames in flight (the barrier at the start of each frame orders them)
 		std::unique_ptr<Image> depthImage;
 
@@ -77,7 +83,9 @@ namespace foto {
 		void createSyncObjects(VkDevice device, size swapchainImageCount);
 		void createRenderFinishedSems(VkDevice device, size swapchainImageCount);
 		void recordCommandBuffer(VkCommandBuffer commandBuffer, u32 imageIdx, std::span<const DrawItem> items,
-								 const std::function<void(VkCommandBuffer)>& overlay);
+								 const std::function<void(VkCommandBuffer)>& overlay, bool capture);
+		bool prepareScreenshot();
+		void saveScreenshot();
 		static VkCommandPool createCommandPool(Device& device);
 		static std::vector<VkCommandBuffer> createCommandBuffers(Device& device, VkCommandPool commandPool);
 		static std::vector<std::unique_ptr<Buffer>> createUniformBuffers(Device& device);

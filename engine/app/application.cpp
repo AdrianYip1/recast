@@ -150,6 +150,10 @@ void foto::Application::setLightDirection(const Vec3& direction) {
 	lightDirection = direction.normalized();
 }
 
+void foto::Application::screenshot(const std::string& filePath) {
+	render->requestScreenshot(filePath);
+}
+
 void foto::Application::flyCamera(f32 deltaTime, f32 speed, f32 sensitivity) {
 	bool looking = window->isMouseButtonDown(GLFW_MOUSE_BUTTON_RIGHT) && (window->isCursorCaptured() || !imgui->wantsMouse());
 	window->setCursorCaptured(looking);

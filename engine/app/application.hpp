@@ -54,6 +54,7 @@ namespace foto {
 		Window& getWindow() { return *window; };
 		f32 getAspectRatio();
 		void setLightDirection(const enginemath::Vec3& direction);
+		void screenshot(const std::string& filePath);
 
 		// Hold right mouse to look, WASD to move, E/Q up/down, shift to go faster
 		void flyCamera(f32 deltaTime, f32 speed = 3.0f, f32 sensitivity = 0.003f);

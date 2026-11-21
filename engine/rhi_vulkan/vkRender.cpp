@@ -1,6 +1,9 @@
 #include "vkRender.hpp"
 #include "vkImage.hpp"
 
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include <stb_image_write.h>
+
 foto::Render::Render(Device& device, Swapchain& swapchain, Pipeline& pipeline) :
 	device(device), swapchain(swapchain), pipeline(pipeline),
 	_device(device.getDevice()), _commandPool(createCommandPool(device)),
@@ -103,7 +106,8 @@ bool foto::Render::drawFrame(std::span<const DrawItem> items, const FrameUbo& fr
 
 	VkCommandBuffer commandBuffer = commandBuffers[currentFrame];
 	vkResetCommandBuffer(commandBuffer, 0);
-	recordCommandBuffer(commandBuffer, imageIdx, items, overlay);
+	bool capture = prepareScreenshot();
+	recordCommandBuffer(commandBuffer, imageIdx, items, overlay, capture);
 
 	// Submit info
 	VkSemaphore waitSemaphore[] = { imageAvailableSem[currentFrame] };
@@ -127,6 +131,11 @@ bool foto::Render::drawFrame(std::span<const DrawItem> items, const FrameUbo& fr
 	// Fence must be unsignaled, same with signalSemaphores
 	if (vkQueueSubmit(device.getGraphicsQ(), 1, &submitInfo, inFlightFence[currentFrame]) != VK_SUCCESS) {
 		throw std::runtime_error("ERROR: vkRender.cpp -> drawFrame()");
+	}
+
+	if (capture) {
+		vkQueueWaitIdle(device.getGraphicsQ());
+		saveScreenshot();
 	}
 
 	// Present queue
@@ -207,7 +216,7 @@ void foto::Render::createRenderFinishedSems(VkDevice device, size swapchainImage
 }
 
 void foto::Render::recordCommandBuffer(VkCommandBuffer commandBuffer, u32 imageIdx, std::span<const DrawItem> items,
-									   const std::function<void(VkCommandBuffer)>& overlay) {
+									   const std::function<void(VkCommandBuffer)>& overlay, bool capture) {
 	VkCommandBufferBeginInfo beginInfo = {
 		.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
 	};
@@ -344,14 +353,33 @@ void foto::Render::recordCommandBuffer(VkCommandBuffer commandBuffer, u32 imageI
 
 	vkCmdEndRendering(commandBuffer);
 
+	VkImageLayout finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+	if (capture) {
+		Image::transitionLayout(commandBuffer, swapchain.getImages()[imageIdx],
+								VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+
+		VkBufferImageCopy copyRegion = {
+			.bufferOffset = 0,
+			.bufferRowLength = 0,
+			.bufferImageHeight = 0,
+			.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+			.imageOffset = {0, 0, 0},
+			.imageExtent = {swapchain.getExtent().width, swapchain.getExtent().height, 1}
+		};
+		vkCmdCopyImageToBuffer(commandBuffer, swapchain.getImages()[imageIdx], VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+							   screenshotBuffer->getBuffer(), 1, &copyRegion);
+		finalLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+	}
+
 	// Barrier 2 -> after renderingg 
 	VkImageMemoryBarrier2 toPresent = {
 		.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-		.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-		.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+		.srcStageMask = capture ? VK_PIPELINE_STAGE_2_COPY_BIT : VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+		.srcAccessMask = capture ? VK_ACCESS_2_NONE : VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
 		.dstStageMask = VK_PIPELINE_STAGE_2_NONE,
 
-		.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+		.oldLayout = finalLayout,
 		.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
 		.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
 		.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
@@ -429,6 +457,46 @@ std::vector<std::unique_ptr<foto::Buffer>> foto::Render::createMaterialBuffers(D
 	}
 
 	return buffers;
+}
+
+bool foto::Render::prepareScreenshot() {
+	if (screenshotPath.empty()) return false;
+
+	SwapchainSupportDetails support = Device::querySwapchainSupport(device.getPhysicalDevice(), device.getSurface());
+	if (!(support.capabilities.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_SRC_BIT)) {
+		std::cerr << "[foto] screenshot failed: swapchain images can't be copied on this device\n";
+		screenshotPath.clear();
+		return false;
+	}
+
+	VkDeviceSize size = static_cast<VkDeviceSize>(swapchain.getExtent().width) * swapchain.getExtent().height * 4;
+	if (!screenshotBuffer || screenshotBuffer->getSize() != size) {
+		screenshotBuffer = std::make_unique<Buffer>(device, size, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+	}
+	return true;
+}
+
+void foto::Render::saveScreenshot() {
+	VkExtent2D extent = swapchain.getExtent();
+	std::vector<u8> pixels(screenshotBuffer->getSize());
+	screenshotBuffer->download(pixels.data(), pixels.size());
+
+	VkFormat format = swapchain.getFormat();
+	bool bgra = format == VK_FORMAT_B8G8R8A8_SRGB || format == VK_FORMAT_B8G8R8A8_UNORM;
+	for (size i = 0; i < pixels.size(); i += 4) {
+		if (bgra) std::swap(pixels[i], pixels[i + 2]);
+		pixels[i + 3] = 255;
+	}
+
+	if (stbi_write_png(screenshotPath.c_str(), static_cast<int>(extent.width), static_cast<int>(extent.height), 4,
+					   pixels.data(), static_cast<int>(extent.width) * 4)) {
+		std::cout << "[foto] saved screenshot " << screenshotPath << std::endl;
+	}
+	else {
+		std::cerr << "[foto] screenshot failed: couldn't write " << screenshotPath << "\n";
+	}
+	screenshotPath.clear();
 }
 
 std::unique_ptr<foto::Image> foto::Render::createDepthImage(Device& device, VkExtent2D extent) {
