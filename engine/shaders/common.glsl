@@ -1,6 +1,13 @@
 // Must match engine/rhi_vulkan/vkRenderTypes.hpp
 
 #define MAX_TEXTURES 1024
+#define MAX_LIGHTS 4
+
+struct Light {
+	vec4 position;
+	vec4 intensity;
+	mat4 faceViewProj[6];
+};
 
 layout(set = 0, binding = 0) uniform FrameUbo {
 	mat4 view;
@@ -9,6 +16,10 @@ layout(set = 0, binding = 0) uniform FrameUbo {
 	vec4 lightDir;
 	vec4 exposure;
 	vec4 whiteBalance;
+	vec4 ambient;
+	vec4 viewport;
+	uvec4 lightInfo;
+	Light lights[MAX_LIGHTS];
 } frame;
 
 struct Material {

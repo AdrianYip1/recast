@@ -25,7 +25,7 @@ namespace foto {
 		// Scene pipelines render into this; presentPipeline tonemaps it to the swapchain
 		static constexpr VkFormat HDR_FORMAT = VK_FORMAT_R16G16B16A16_SFLOAT;
 
-		Render(Device& device, Swapchain& swapchain, Pipeline& pipeline, Pipeline& presentPipeline);
+		Render(Device& device, Swapchain& swapchain, Pipeline& pipeline, Pipeline& presentPipeline, Pipeline& shadowPipeline);
 		~Render();
 		Render(const Render& other) = delete;
 		Render& operator=(const Render& other) = delete;
@@ -51,12 +51,17 @@ namespace foto {
 		void setViewportAspect(f32 aspect) { viewportAspect = aspect; };
 		VkRect2D getSceneRect();
 
+		// Bindless texture slots of the static and dynamic shadow atlases (for FrameUbo::lightInfo)
+		u32 getStaticShadowAtlas() { return staticShadowSlot; };
+		u32 getDynamicShadowAtlas() { return dynamicShadowSlot; };
+
 		VkCommandPool getCommandPool() { return _commandPool; };
 	private:
 		Device& device;
 		Swapchain& swapchain;
 		Pipeline& pipeline;
 		Pipeline& presentPipeline;
+		Pipeline& shadowPipeline;
 
 		VkDevice _device = VK_NULL_HANDLE;
 		VkCommandPool _commandPool = VK_NULL_HANDLE;
@@ -87,6 +92,11 @@ namespace foto {
 		u32 tonemapMaterial = 0;
 		f32 viewportAspect = 0.0f;
 
+		std::unique_ptr<Image> staticShadowAtlas;
+		std::unique_ptr<Image> dynamicShadowAtlas;
+		u32 staticShadowSlot = 0;
+		u32 dynamicShadowSlot = 0;
+
 		std::vector<VkSemaphore> imageAvailableSem;
 		std::vector<VkSemaphore> renderFinishedSem;
 		std::vector<VkFence> inFlightFence;
@@ -96,8 +106,9 @@ namespace foto {
 		void createSyncObjects(VkDevice device, size swapchainImageCount);
 		void createRenderFinishedSems(VkDevice device, size swapchainImageCount);
 		void recordCommandBuffer(VkCommandBuffer commandBuffer, u32 imageIdx, std::span<const DrawItem> items,
-								 const std::function<void(VkCommandBuffer)>& overlay, bool capture);
+								 const FrameUbo& frameUbo, const std::function<void(VkCommandBuffer)>& overlay, bool capture);
 		void setFullViewport(VkCommandBuffer commandBuffer, VkExtent2D extent);
+		void recordShadowPass(VkCommandBuffer commandBuffer, Image& atlas, ShadowCaster group, std::span<const DrawItem> items, const FrameUbo& frameUbo);
 		void setSceneViewport(VkCommandBuffer commandBuffer, VkExtent2D extent);
 		void writeTextureSlot(u32 slot, Image& texture, Sampler& sampler);
 		bool prepareScreenshot();
@@ -108,5 +119,6 @@ namespace foto {
 		static std::vector<std::unique_ptr<Buffer>> createMaterialBuffers(Device& device);
 		static std::unique_ptr<Image> createDepthImage(Device& device, VkExtent2D extent);
 		static std::unique_ptr<Image> createHdrImage(Device& device, VkExtent2D extent);
+		static std::unique_ptr<Image> createShadowAtlas(Device& device);
 	};
 } // namespace foto
