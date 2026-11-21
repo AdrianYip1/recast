@@ -33,6 +33,7 @@ foto::Application::Application(const ApplicationConfig& config) :
 				.vertexShaderFilePath = "shaders/basic.vert.spv",
 				.fragmentShaderFilePath = "shaders/basic.frag.spv",
 				.colorFormat = swapchain->getFormat(),
+				.depthFormat = Render::DEPTH_FORMAT,
 				.descriptorSetLayouts = {
 					// set 0 matches the bindings in basic.vert / basic.frag
 					DescriptorLayoutBuilder()
