@@ -10,7 +10,7 @@ Outputs (in the target folder):
   photo_with_object.hdr  ground truth with the object physically present
   ground_truth.json      true light + object placement (for evaluation only, the engine doesn't read it)
 
-usage: python tools/make_test_scene.py data/sample
+usage: python tools/make_test_scene.py data/sample [--light=directional]
 """
 import json
 import struct
@@ -34,6 +34,9 @@ BOX_MAX = np.array([0.9, 0.75, -0.6])
 
 LIGHT_POS = np.array([-1.2, 1.6, 0.6])
 LIGHT_INTENSITY = np.array([3.4, 3.2, 2.9])
+SUN_DIRECTION = np.array([-0.55, -0.75, -0.35]) / np.linalg.norm([-0.55, -0.75, -0.35])
+SUN_IRRADIANCE = np.array([1.9, 1.8, 1.6])
+LIGHT_TYPE = "point"
 AMBIENT = np.array([0.10, 0.11, 0.13])
 
 CAN_RADIUS = 0.12
@@ -198,9 +201,13 @@ def render(rotation, with_can):
 
     hit = np.isfinite(best_t)
     points = CAMERA_POS + directions * np.where(hit, best_t, 0.0)[..., None]
-    to_light = LIGHT_POS - points
-    distance = np.linalg.norm(to_light, axis=-1)
-    light_dir = to_light / np.maximum(distance, 1e-6)[..., None]
+    if LIGHT_TYPE == "directional":
+        light_dir = np.broadcast_to(-SUN_DIRECTION, points.shape)
+        distance = np.full(points.shape[:-1], np.inf)
+    else:
+        to_light = LIGHT_POS - points
+        distance = np.linalg.norm(to_light, axis=-1)
+        light_dir = to_light / np.maximum(distance, 1e-6)[..., None]
 
     shadow_origins = points + normal * 1e-3
     blocked = intersect_box(shadow_origins, light_dir)[0] < distance
@@ -208,7 +215,10 @@ def render(rotation, with_can):
         blocked |= intersect_can(shadow_origins, light_dir)[0] < distance
 
     cosine = np.clip(np.sum(normal * light_dir, axis=-1), 0.0, None)
-    direct = LIGHT_INTENSITY * (cosine * ~blocked / np.maximum(distance, 1e-3) ** 2)[..., None]
+    if LIGHT_TYPE == "directional":
+        direct = SUN_IRRADIANCE * (cosine * ~blocked)[..., None]
+    else:
+        direct = LIGHT_INTENSITY * (cosine * ~blocked / np.maximum(distance, 1e-3) ** 2)[..., None]
     image = albedo * (AMBIENT + direct)
     image[~hit] = [0.02, 0.02, 0.025]
     return image
@@ -285,7 +295,11 @@ def write_can_glb(path):
 
 
 def main():
-    out = Path(sys.argv[1] if len(sys.argv) > 1 else "data/sample")
+    global LIGHT_TYPE
+    arguments = [a for a in sys.argv[1:] if not a.startswith("--")]
+    if "--light=directional" in sys.argv[1:]:
+        LIGHT_TYPE = "directional"
+    out = Path(arguments[0] if arguments else "data/sample")
     out.mkdir(parents=True, exist_ok=True)
 
     rotation = look_at_rotation(CAMERA_POS, TARGET)
@@ -312,7 +326,9 @@ def main():
     (out / "scene.json").write_text(json.dumps(scene, indent=2) + "\n")
 
     ground_truth = {
-        "light": {"type": "point", "position": LIGHT_POS.tolist(), "intensity": LIGHT_INTENSITY.tolist()},
+        "light": ({"type": "directional", "direction": SUN_DIRECTION.tolist(), "intensity": SUN_IRRADIANCE.tolist()}
+                  if LIGHT_TYPE == "directional" else
+                  {"type": "point", "position": LIGHT_POS.tolist(), "intensity": LIGHT_INTENSITY.tolist()}),
         "ambient": AMBIENT.tolist(),
         "object_transform": object_transform,
         "photo_with_object": "photo_with_object.hdr",
