@@ -7,6 +7,8 @@
 
 #include "vkDevice.hpp"
 
+#include "vkVertex.hpp"
+
 namespace foto {
 	struct GraphicsPipelineConfig {
 		std::string vertexShaderFilePath;

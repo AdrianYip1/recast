@@ -89,12 +89,16 @@ VkPipeline foto::Pipeline::createGraphicsPipeline(Device& device, const Graphics
 	VkPipelineShaderStageCreateInfo shaderStagesCreateInfo[] = { vertShaderStageInfo, fragShaderStageInfo };
 
 	// Vertex Input
+
+	auto vertexBindingDescription = Vertex::getBindingDescription();
+	auto vertexAttributeDescription = Vertex::getAttributeDescriptions();
+
 	VkPipelineVertexInputStateCreateInfo vertexInputCreateInfo = {
 		.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
-		.vertexBindingDescriptionCount = 0,
-		.pVertexBindingDescriptions = nullptr,
-		.vertexAttributeDescriptionCount = 0,
-		.pVertexAttributeDescriptions = nullptr
+		.vertexBindingDescriptionCount = 1,
+		.pVertexBindingDescriptions = &vertexBindingDescription,
+		.vertexAttributeDescriptionCount = static_cast<u32>(vertexAttributeDescription.size()),
+		.pVertexAttributeDescriptions = vertexAttributeDescription.data()
 	};
 
 	// Input Assembly
