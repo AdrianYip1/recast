@@ -1,10 +1,13 @@
 #pragma once
 
 #include <engine/app/application.hpp>
+#include <engine/core/fileWatcher.hpp>
+
+#include "scene/sceneFile.hpp"
 
 class Visualizer : public foto::Application {
 public:
-	Visualizer(const foto::ApplicationConfig& config);
+	Visualizer(const foto::ApplicationConfig& config, std::string scenePath);
 
 protected:
 	void onInit() override;
@@ -21,4 +24,11 @@ private:
 	foto::f32 cubeAngle = 0.0f;
 	foto::f32 spinSpeed = 0.8f;
 	bool screenshotKeyWasDown = false;
+
+	std::string scenePath;
+	recast::SceneFile scene;
+	bool sceneLoaded = false;
+	foto::FileWatcher sceneWatcher;
+
+	void loadScene();
 };

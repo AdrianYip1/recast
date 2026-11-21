@@ -92,7 +92,9 @@ add_custom_target(assets
     COMMENT "copying assets")
 
 add_executable(foto sandbox/main.cpp 
-"sandbox/visualizer.cpp")
+"sandbox/visualizer.cpp"
+    sandbox/scene/sceneFile.cpp)
+target_include_directories(foto PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/sandbox ${CMAKE_CURRENT_SOURCE_DIR}/external)
 
 target_link_libraries(foto PRIVATE foto_engine glfw Vulkan::Vulkan stb)
 

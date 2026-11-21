@@ -13,3 +13,6 @@ cmake-build-*/
 *.obj
 *.exe
 *.spv
+
+# large image data (regenerate the sample with tools/make_test_scene.py)
+*.hdr

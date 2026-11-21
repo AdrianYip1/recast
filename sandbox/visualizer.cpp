@@ -23,8 +23,8 @@ static const std::vector<foto::Vertex> groundVertices = {
 
 static const std::vector<foto::u32> quadIndices = { 0, 1, 2, 2, 3, 0 };
 
-Visualizer::Visualizer(const foto::ApplicationConfig& config) :
-	Application(config)
+Visualizer::Visualizer(const foto::ApplicationConfig& config, std::string scenePath) :
+	Application(config), scenePath(std::move(scenePath))
 {
 }
 
@@ -42,9 +42,28 @@ void Visualizer::onInit() {
 	foto::Camera& camera = getCamera();
 	camera.position = { 1.6f, 1.4f, 2.6f };
 	camera.lookAt({ 0.0f, 0.3f, 0.0f });
+
+	if (!scenePath.empty()) {
+		loadScene();
+		sceneWatcher = foto::FileWatcher(scenePath);
+	}
+}
+
+void Visualizer::loadScene() {
+	try {
+		scene = recast::loadSceneFile(scenePath);
+		sceneLoaded = true;
+		std::cout << "[recast] loaded " << scenePath << ": " << scene.image_size[0] << "x" << scene.image_size[1]
+				  << " photo, " << scene.proxies.size() << " proxies, " << scene.lights.size() << " lights" << std::endl;
+	}
+	catch (const std::exception& e) {
+		std::cerr << "[recast] " << e.what() << std::endl;
+	}
 }
 
 void Visualizer::onUpdate(foto::f32 deltaTime) {
+	if (sceneWatcher.changed()) loadScene();
+
 	cubeAngle += spinSpeed * deltaTime;
 	flyCamera(deltaTime);
 
