@@ -383,6 +383,72 @@ def geometry_segments(cam: Camera, P: np.ndarray, segments: list[Segment], kind:
     return out
 
 
+SLICES = 8               # thin boxes that follow an object's outline from above
+
+
+def _footprint(points_xz: np.ndarray, lo: np.ndarray, hi: np.ndarray, mirror: bool) -> np.ndarray | None:
+    """Convex outline (N, 2) of an object seen from above, clipped to its box: its visible points, plus their mirror
+    image through the box's centre when only the front is seen (most furniture is as deep behind its middle as in
+    front). Seen from above, its top already covers the whole outline and no mirroring is needed."""
+    centre = 0.5 * (lo[[0, 2]] + hi[[0, 2]])
+    pts = np.vstack([points_xz, 2.0 * centre - points_xz]) if mirror else points_xz
+    pts = np.clip(pts, lo[[0, 2]], hi[[0, 2]]).astype(np.float32)
+    if len(pts) < 20:
+        return None
+    hull = cv2.convexHull(pts).reshape(-1, 2).astype(np.float64)
+    return hull if len(hull) >= 3 else None
+
+
+def _cross_section(hull: np.ndarray, axis: int, value: float) -> tuple[float, float] | None:
+    """[min, max] of the other coordinate where the line `axis = value` crosses the convex outline."""
+    other = 1 - axis
+    found = []
+    for a, b in zip(hull, np.roll(hull, -1, axis=0)):
+        if (a[axis] - value) * (b[axis] - value) > 0:
+            continue
+        if abs(b[axis] - a[axis]) < 1e-9:
+            found += [a[other], b[other]]
+        else:
+            t = (value - a[axis]) / (b[axis] - a[axis])
+            if 0.0 <= t <= 1.0:
+                found.append(a[other] + t * (b[other] - a[other]))
+    return (min(found), max(found)) if found else None
+
+
+def shape_slices(points: np.ndarray, lo: np.ndarray, hi: np.ndarray, top_seen: bool, count: int = SLICES) -> list[tuple]:
+    """The box as `count` thin boxes across its longer side, each as deep as the object's outline there. Boxes that
+    are small or already fill their outline stay one box (empty list)."""
+    points = points[np.isfinite(points).all(axis=1)]
+    points = points[points[:, 1] > lo[1] + 0.05]           # floor and shadow at the base often leak into the cutout
+    size = hi - lo
+    if len(points) < 50 or max(size[0], size[2]) < 0.3:
+        return []
+    hull = _footprint(points[:, [0, 2]], lo, hi, mirror=not top_seen)
+    if hull is None:
+        return []
+    across = 0 if size[0] >= size[2] else 1                 # slice along the longer side (index into x, z)
+    axis3, other3 = (0, 2) if across == 0 else (2, 0)
+    edges = np.linspace(lo[axis3], hi[axis3], count + 1)
+    slices, filled = [], 0.0
+    for s0, s1 in zip(edges[:-1], edges[1:]):
+        ranges = [_cross_section(hull, across, v) for v in [s0, s1, *[p[across] for p in hull if s0 < p[across] < s1]]]
+        ranges = [r for r in ranges if r is not None]
+        if not ranges:
+            continue
+        r_lo, r_hi = min(r[0] for r in ranges), max(r[1] for r in ranges)
+        if r_hi - r_lo < 0.02:
+            continue
+        p_lo, p_hi = lo.copy(), hi.copy()
+        p_lo[axis3], p_hi[axis3] = s0, s1
+        p_lo[other3], p_hi[other3] = max(r_lo, lo[other3]), min(r_hi, hi[other3])
+        slices.append((p_lo, p_hi))
+        filled += (s1 - s0) * (p_hi[other3] - p_lo[other3])
+    # already box-shaped (fills 92% of its box from above): one box is simpler and exact
+    if not slices or filled > 0.92 * size[0] * size[2]:
+        return []
+    return slices
+
+
 def build_proxies(cam: Camera, segments: list[Segment], disparity: np.ndarray, first_id: int,
                   photo_linear: np.ndarray | None = None, min_area: float = 0.001) -> Detection:
     h, w = cam.height, cam.width
@@ -529,15 +595,26 @@ def build_proxies(cam: Camera, segments: list[Segment], disparity: np.ndarray, f
     proxies, objects = [], []
     next_id = first_id
     by_obj: dict[int, list[int]] = {}
+    parts_of = {}
+    for lo, hi, i in keep:
+        parts_of.setdefault(i, []).append((lo, hi))
     for lo, hi, i in keep:
         f = found[i]
-        proxies.append(BoxProxy(next_id, tuple(float(v) for v in lo), tuple(float(v) for v in hi),
-                                Material(f["albedo"], 0.8)))
-        by_obj.setdefault(i, []).append(next_id)
-        next_id += 1
+        # a single box follows the object's outline from above as thin slices (a round ottoman becomes a stepped
+        # circle); seat + back pairs stay as they are
+        pieces = [(lo, hi)]
+        if len(parts_of[i]) == 1:
+            pieces = shape_slices(P[f["segment"].mask], lo, hi, top_seen=cam.position[1] > hi[1] + 0.1) or pieces
+        for p_lo, p_hi in pieces:
+            proxies.append(BoxProxy(next_id, tuple(float(v) for v in p_lo), tuple(float(v) for v in p_hi),
+                                    Material(f["albedo"], 0.8)))
+            by_obj.setdefault(i, []).append(next_id)
+            next_id += 1
     for i, ids in by_obj.items():
         s = found[i]["segment"]
-        objects.append({"label": short_label(s.label), "score": round(s.score, 3), "proxy_ids": ids, "segment": s})
+        shape = "seat_back" if len(parts_of[i]) > 1 else "slices" if len(ids) > 1 else "box"
+        objects.append({"label": short_label(s.label), "score": round(s.score, 3), "proxy_ids": ids, "segment": s,
+                        "shape": shape})
 
     # walls: never in front of an object (nothing stands behind a wall)
     wall_mask = np.zeros((h, w), bool)
@@ -685,7 +762,7 @@ def open_below_slabs(det: Detection) -> Detection:
     """Tables, desks, benches and stools as their top only. A solid box to the floor would block the light and the
     inserted object's shadow under them, where the photo shows open floor between the legs."""
     from dataclasses import replace
-    open_ids = {pid for o in det.objects if o["label"] in OPEN_BELOW and len(o["proxy_ids"]) == 1 for pid in o["proxy_ids"]}
+    open_ids = {pid for o in det.objects if o["label"] in OPEN_BELOW and o.get("shape") != "seat_back" for pid in o["proxy_ids"]}
     proxies = []
     for p in det.proxies:
         if isinstance(p, BoxProxy) and p.id in open_ids and p.max[1] - p.min[1] > SLAB:

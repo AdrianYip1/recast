@@ -139,3 +139,19 @@ def test_scale_from_a_table():
     small = scaled(det, k)
     assert np.isclose(small.proxies[0].max[1], 0.74)
     assert np.isclose(small.proxies[1].point[2], -5.0 * k)
+
+
+def test_round_object_becomes_slices_that_follow_it():
+    from recast.detect import shape_slices
+    rng = np.random.default_rng(0)
+    a = rng.uniform(0, 2 * np.pi, 4000)
+    r = 0.3 * np.sqrt(rng.uniform(0, 1, 4000))
+    top = np.column_stack([r * np.cos(a), np.full(4000, 0.45), r * np.sin(a) - 3.0])   # a round top, 0.3 m radius
+    lo, hi = np.array([-0.3, 0.0, -3.3]), np.array([0.3, 0.45, -2.7])
+    slices = shape_slices(top, lo, hi, top_seen=True)
+    assert 4 <= len(slices) <= 8
+    area = sum((h[0] - l[0]) * (h[2] - l[2]) for l, h in slices)
+    assert area < 0.9 * 0.36                                  # less than the square box, close to the circle (0.28)
+    assert area > 0.25
+    square = np.column_stack([rng.uniform(-0.3, 0.3, 4000), np.full(4000, 0.45), rng.uniform(-3.3, -2.7, 4000)])
+    assert shape_slices(square, lo, hi, top_seen=True) == []  # already a box: stays one box

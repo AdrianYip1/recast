@@ -210,11 +210,11 @@ def cmd_detect(args) -> None:
         hi = np.max([b.max for b in boxes], axis=0)
         size = hi - lo
         rests = "on the floor" if lo[1] < 1e-6 else f"on the {lo[1]:.2f} m up"
-        if o["label"] in detect.OPEN_BELOW and len(boxes) == 1:
+        if o["label"] in detect.OPEN_BELOW and o.get("shape") != "seat_back":
             rests = f"top at {hi[1]:.2f} m (open below)"
         print(f"  {o['label']:<14} {size[0]:.2f} x {size[1]:.2f} x {size[2]:.2f} m, {rests}"
-              f"{'  (2 boxes: seat + back)' if len(boxes) > 1 else ''}")
-        objects.append({"label": o["label"], "score": o["score"], "proxy_ids": o["proxy_ids"],
+              f"{'  (2 boxes: seat + back)' if o.get('shape') == 'seat_back' else f'  ({len(boxes)} slices)' if len(boxes) > 1 else ''}")
+        objects.append({"label": o["label"], "score": o["score"], "proxy_ids": o["proxy_ids"], "shape": o.get("shape", "box"),
                         "mask": f"masks/{name}"})
     for w in det.walls:
         kind = "ceiling" if w["axis"] == 1 else "wall"
