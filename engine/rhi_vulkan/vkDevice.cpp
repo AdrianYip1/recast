@@ -1,4 +1,5 @@
 #include "vkDevice.hpp"
+#include "vkRenderTypes.hpp"
 
 #ifdef FOTO_DEBUG
 static constexpr bool enableValidation = true;
@@ -45,7 +46,8 @@ foto::Device::Device(GLFWwindow* window) :
 	physicalDevice(selectPhysicalDevice(instance, surface)),
 	queueInfos(findQueueFamilies(physicalDevice, surface).value()),
 	rayTracing(rayTracingSuitable(physicalDevice)),
-	logicalDevice(selectLogicalDevice(physicalDevice, queueInfos, rayTracing))
+	textureBinding(chooseTextureBinding(physicalDevice)),
+	logicalDevice(selectLogicalDevice(physicalDevice, queueInfos, rayTracing, textureBinding))
 {
 	vkGetDeviceQueue(logicalDevice, queueInfos.graphicsQueueIdx.value(), 0, &graphicsQueue);
 	vkGetDeviceQueue(logicalDevice, queueInfos.presentQueueIdx.value(), 0, &presentQueue);
@@ -170,10 +172,16 @@ VkPhysicalDevice foto::Device::selectPhysicalDevice(VkInstance instance, VkSurfa
 	vkEnumeratePhysicalDevices(instance, &deviceCount, devices.data());
 
 	VkPhysicalDevice chosenDevice = VK_NULL_HANDLE;
+	std::string rejected;
 	for (auto device : devices) {
 		VkPhysicalDeviceProperties properties;
 		vkGetPhysicalDeviceProperties(device, &properties);
-		if (properties.apiVersion < VK_API_VERSION_1_3) continue;
+		auto reject = [&](const std::string& reason) { rejected += std::string("\n  ") + properties.deviceName + ": " + reason; };
+		if (properties.apiVersion < VK_API_VERSION_1_3) {
+			reject("needs Vulkan 1.3, the driver reports " + std::to_string(VK_API_VERSION_MAJOR(properties.apiVersion)) + "." +
+				   std::to_string(VK_API_VERSION_MINOR(properties.apiVersion)) + " (update the graphics driver)");
+			continue;
+		}
 
 		// Check for Vulkan Features
 		VkPhysicalDeviceVulkan12Features features12 = {
@@ -188,25 +196,41 @@ VkPhysicalDevice foto::Device::selectPhysicalDevice(VkInstance instance, VkSurfa
 			.pNext = &features13
 		};
 		vkGetPhysicalDeviceFeatures2(device, &features2);
-		if (!features13.dynamicRendering || !features13.synchronization2) continue;
-		if (!features12.descriptorBindingPartiallyBound) continue;
-
-		// Check for queues
-		if (!findQueueFamilies(device, surface).has_value()) continue;
-
-		// Check for extensions
-		if (!extensionsSuitable(device, requiredDeviceExtensions)) continue;
-
-		// Swapchain adequacy
+		if (!features13.dynamicRendering || !features13.synchronization2) {
+			reject("no dynamic rendering or synchronization2");
+			continue;
+		}
+		if (!features12.descriptorBindingPartiallyBound) {
+			reject("no partially bound descriptors");
+			continue;
+		}
+		if (!findQueueFamilies(device, surface).has_value()) {
+			reject("no graphics, compute or present queue for this window");
+			continue;
+		}
+		if (!extensionsSuitable(device, requiredDeviceExtensions)) {
+			reject("no swapchain extension");
+			continue;
+		}
 		SwapchainSupportDetails swapchainSupport = querySwapchainSupport(device, surface);
-		if (swapchainSupport.formats.empty() || swapchainSupport.presentModes.empty()) continue;
+		if (swapchainSupport.formats.empty() || swapchainSupport.presentModes.empty()) {
+			reject("can't present to this window");
+			continue;
+		}
+		if (chooseTextureBinding(device).capacity < MIN_TEXTURES) {
+			reject("can bind only " + std::to_string(chooseTextureBinding(device).capacity) + " textures per shader, needs " +
+				   std::to_string(MIN_TEXTURES));
+			continue;
+		}
 
 		chosenDevice = device;
 		// Use discrete if found right way
 		if (properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU) break;
 	} 
 
-	if (chosenDevice == VK_NULL_HANDLE) throw std::runtime_error("ERROR: vkDevice.cpp -> selectPhysicalDevice()");
+	if (chosenDevice == VK_NULL_HANDLE) {
+		throw std::runtime_error("ERROR: vkDevice.cpp -> selectPhysicalDevice(): no usable GPU" + (rejected.empty() ? std::string(" found") : rejected));
+	}
 	return chosenDevice;
 }
 
@@ -265,7 +289,33 @@ bool foto::Device::rayTracingSuitable(VkPhysicalDevice device) {
 		   features12.shaderSampledImageArrayNonUniformIndexing;
 }
 
-VkDevice foto::Device::selectLogicalDevice(VkPhysicalDevice physicalDevice, const QueueInfos& queueInfo, bool rayTracing) {
+foto::TextureBinding foto::Device::chooseTextureBinding(VkPhysicalDevice device) {
+	VkPhysicalDeviceProperties properties;
+	vkGetPhysicalDeviceProperties(device, &properties);
+	const VkPhysicalDeviceLimits& limits = properties.limits;
+	u32 regular = std::min({ limits.maxPerStageDescriptorSamplers, limits.maxPerStageDescriptorSampledImages,
+							 limits.maxDescriptorSetSamplers, limits.maxDescriptorSetSampledImages });
+	if (regular >= MAX_TEXTURES) return { MAX_TEXTURES, false };
+
+	VkPhysicalDeviceVulkan12Properties properties12 = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_PROPERTIES };
+	VkPhysicalDeviceProperties2 properties2 = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &properties12 };
+	vkGetPhysicalDeviceProperties2(device, &properties2);
+	VkPhysicalDeviceVulkan12Features features12 = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES };
+	VkPhysicalDeviceFeatures2 features2 = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &features12 };
+	vkGetPhysicalDeviceFeatures2(device, &features2);
+
+	if (features12.descriptorBindingSampledImageUpdateAfterBind) {
+		u32 updateAfterBind = std::min({ properties12.maxPerStageDescriptorUpdateAfterBindSamplers,
+										 properties12.maxPerStageDescriptorUpdateAfterBindSampledImages,
+										 properties12.maxDescriptorSetUpdateAfterBindSamplers,
+										 properties12.maxDescriptorSetUpdateAfterBindSampledImages });
+		if (updateAfterBind > regular) return { std::min(updateAfterBind, MAX_TEXTURES), true };
+	}
+	return { regular, false };
+}
+
+VkDevice foto::Device::selectLogicalDevice(VkPhysicalDevice physicalDevice, const QueueInfos& queueInfo, bool rayTracing,
+										  const TextureBinding& textureBinding) {
 	VkDevice logicalDevice = VK_NULL_HANDLE;
 	f32 priority = 1.0f;
 
@@ -300,6 +350,7 @@ VkDevice foto::Device::selectLogicalDevice(VkPhysicalDevice physicalDevice, cons
 		.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
 		.pNext = rayTracing ? &accelerationFeatures : nullptr,
 		.shaderSampledImageArrayNonUniformIndexing = rayTracing ? VK_TRUE : VK_FALSE,
+		.descriptorBindingSampledImageUpdateAfterBind = textureBinding.updateAfterBind ? VK_TRUE : VK_FALSE,
 		.descriptorBindingPartiallyBound = VK_TRUE,
 		.bufferDeviceAddress = rayTracing ? VK_TRUE : VK_FALSE
 	};

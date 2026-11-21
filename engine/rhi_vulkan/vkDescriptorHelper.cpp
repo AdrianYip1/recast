@@ -25,6 +25,7 @@ VkDescriptorSetLayout foto::DescriptorLayoutBuilder::build(Device& device) const
 	VkDescriptorSetLayoutCreateInfo layoutCreateInfo = {
 		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
 		.pNext = anyFlags ? &flagsCreateInfo : nullptr,
+		.flags = updatesAfterBind() ? VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT : 0u,
 		.bindingCount = static_cast<u32>(bindings.size()),
 		.pBindings = bindings.data()
 	};
@@ -57,8 +58,13 @@ std::vector<VkDescriptorPoolSize> foto::DescriptorLayoutBuilder::poolSizes(u32 s
 	return sizes;
 }
 
-foto::DescriptorPool::DescriptorPool(Device& device, u32 maxSets, std::span<const VkDescriptorPoolSize> poolSizes) :
-	_device(device.getDevice()), pool(createPool(device, maxSets, poolSizes))
+bool foto::DescriptorLayoutBuilder::updatesAfterBind() const {
+	return std::any_of(bindingFlags.begin(), bindingFlags.end(),
+					   [](VkDescriptorBindingFlags f) { return (f & VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT) != 0; });
+}
+
+foto::DescriptorPool::DescriptorPool(Device& device, u32 maxSets, std::span<const VkDescriptorPoolSize> poolSizes, VkDescriptorPoolCreateFlags flags) :
+	_device(device.getDevice()), pool(createPool(device, maxSets, poolSizes, flags))
 {
 
 };
@@ -86,9 +92,11 @@ std::vector<VkDescriptorSet> foto::DescriptorPool::allocate(VkDescriptorSetLayou
 	return sets;
 }
 
-VkDescriptorPool foto::DescriptorPool::createPool(Device& device, u32 maxSets, std::span<const VkDescriptorPoolSize> poolSizes) {
+VkDescriptorPool foto::DescriptorPool::createPool(Device& device, u32 maxSets, std::span<const VkDescriptorPoolSize> poolSizes,
+												  VkDescriptorPoolCreateFlags flags) {
 	VkDescriptorPoolCreateInfo poolCreateInfo = {
 		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+		.flags = flags,
 		.maxSets = maxSets,
 		.poolSizeCount = static_cast<u32>(poolSizes.size()),
 		.pPoolSizes = poolSizes.data()
