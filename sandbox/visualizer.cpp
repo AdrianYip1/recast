@@ -335,6 +335,47 @@ bool Visualizer::updateLightEditing() {
 	return draggingLight;
 }
 
+// A point light 1.2 m above the object, as strong as the first point light (or a neutral one)
+void Visualizer::addLight() {
+	recast::SceneLight light;
+	light.type = "point";
+	const recast::Vec3f& base = scene.object.transform.position;
+	Vec3 above = objectMesh ? Vec3(base[0], base[1] + 1.2f, base[2]) : shadowCenter + Vec3(0.0f, 1.2f, 0.0f);
+	light.position = { above.x, above.y, above.z };
+	light.intensity = { 2.0f, 2.0f, 2.0f };
+	for (const recast::SceneLight& existing : scene.lights) {
+		if (existing.type == "point") {
+			light.intensity = existing.intensity;
+			break;
+		}
+	}
+	scene.lights.push_back(light);
+	selectedLight = static_cast<int>(scene.lights.size()) - 1;
+	unsavedChanges = true;
+}
+
+void Visualizer::drawLightEditor() {
+	ImGui::TextDisabled("drag a light to move it");
+	if (scene.lights.size() < foto::MAX_LIGHTS && ImGui::Button("add light")) addLight();
+
+	if (selectedLight < 0 || selectedLight >= static_cast<int>(scene.lights.size())) return;
+	recast::SceneLight& light = scene.lights[selectedLight];
+	if (scene.lights.size() < foto::MAX_LIGHTS) ImGui::SameLine();
+	if (ImGui::Button("remove light")) {
+		scene.lights.erase(scene.lights.begin() + selectedLight);
+		selectedLight = -1;
+		unsavedChanges = true;
+		return;
+	}
+
+	float strongest = std::max({ light.intensity[0], light.intensity[1], light.intensity[2] });
+	float brightness = strongest;
+	if (ImGui::SliderFloat("brightness", &brightness, 0.0f, 50.0f, "%.2f", ImGuiSliderFlags_Logarithmic)) {
+		for (float& channel : light.intensity) channel = strongest > 1e-6f ? channel * brightness / strongest : brightness;
+		unsavedChanges = true;
+	}
+}
+
 void Visualizer::updateObjectInteraction() {
 	if (!objectMesh) return;
 
@@ -485,7 +526,7 @@ void Visualizer::onImGui() {
 		ImGui::Checkbox("original photo", &showOriginal);
 		ImGui::Checkbox("show room proxies", &showProxies);
 		ImGui::Checkbox("show and edit lights", &showLights);
-		if (showLights) ImGui::TextDisabled("drag a light to move it");
+		if (showLights) drawLightEditor();
 		ImGui::TextDisabled("%.0f fps, F12 saves a screenshot", ImGui::GetIO().Framerate);
 	}
 

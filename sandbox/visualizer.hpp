@@ -83,6 +83,8 @@ private:
 	void finishLightingDetection();
 	void updateObjectInteraction();
 	bool updateLightEditing();
+	void addLight();
+	void drawLightEditor();
 	enginemath::Vec3 markerPosition(const recast::SceneLight& light) const;
 	recast::RayHit supportUnderCursor(const enginemath::Vec3& origin, const enginemath::Vec3& direction);
 	void drawScene();
