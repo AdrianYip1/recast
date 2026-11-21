@@ -439,11 +439,12 @@ def shape_hull(points: np.ndarray, lo: np.ndarray, hi: np.ndarray, top_seen: boo
     return anchor, points[used] - anchor, faces
 
 
-CARVE_CELLS = 48         # voxels across an object's longest side when carving its shape
+CARVE_CELLS = 64         # voxels across an object's longest side when carving its shape
 MAX_FACES = 600          # carved shapes are simplified to about this many triangles (picking and the light fit test them on the CPU)
 
 
-def shape_carve(cam: Camera, P: np.ndarray, mask: np.ndarray, hidden: np.ndarray, lo: np.ndarray, hi: np.ndarray):
+def shape_carve(cam: Camera, P: np.ndarray, mask: np.ndarray, hidden: np.ndarray, lo: np.ndarray, hi: np.ndarray,
+                rests_on_box: bool = False, on_floor: bool = False):
     """The object's shape carved from its box by what the photo shows (single-view space carving): a voxel stays where
     it projects inside the object's cutout and lies behind the surface the photo sees there. The outline is the cutout
     itself, and the space above a seat or between armrests is carved away (it's in front of the backrest). Pixels
@@ -456,9 +457,19 @@ def shape_carve(cam: Camera, P: np.ndarray, mask: np.ndarray, hidden: np.ndarray
     # The box comes from depth, which can be off: carve from a bigger one. The cutout bounds it sideways and the photo's
     # surface in front; behind that surface, the object reaches back at most as far as it is wide
     thickness = float(max(hi[0] - lo[0], hi[2] - lo[2]))
+    # down to the floor unless it rests on furniture: below its real bottom the voxels project onto floor pixels,
+    # outside its cutout, and are carved away anyway (feet missed as floor contacts still reach the floor)
+    support = float(lo[1]) if rests_on_box else 0.0
     grow = np.maximum(0.35 * (hi - lo), 0.1)
-    lo = np.array([lo[0] - grow[0], lo[1], lo[2] - grow[2]])     # never below what it stands on
+    lo = np.array([lo[0] - grow[0], support, lo[2] - grow[2]])   # never below what it stands on
     hi = np.array([hi[0] + grow[0], hi[1] + 0.05, hi[2] + grow[2]])
+    # the box leaves out the object's outermost points (a hand at the end of an arm, a lamp's head): reach them too
+    pts = P[mask]
+    pts = pts[np.isfinite(pts).all(axis=1)]
+    if len(pts) >= 20:
+        lo = np.minimum(lo, np.percentile(pts, 0.5, axis=0) - 0.05)
+        hi = np.maximum(hi, np.percentile(pts, 99.5, axis=0) + 0.05)
+        lo[1] = max(lo[1], support)
     size = hi - lo
     cell = float(np.clip(size.max() / CARVE_CELLS, 0.015, 0.05))
     counts = np.maximum(np.ceil(size / cell).astype(int), 2)
@@ -505,7 +516,12 @@ def shape_carve(cam: Camera, P: np.ndarray, mask: np.ndarray, hidden: np.ndarray
     if len(mesh.faces) < 4:
         return None
     vertices = np.array(mesh.vertices)
-    vertices[vertices[:, 1] < lo[1] + 1e-3, 1] = lo[1]       # exactly on what it stands on (simplifying nudges it)
+    # Its feet touch the floor (contacts were found), but thin parts at the very bottom (feet, shoes) are a voxel or
+    # two and can carve away: then its lowest edge is stretched down to the floor
+    bottom = float(vertices[:, 1].min())
+    if on_floor and support + 0.005 < bottom < support + 0.25:
+        vertices[vertices[:, 1] < bottom + 0.02, 1] = support
+    vertices[vertices[:, 1] < support + 1e-3, 1] = support   # exactly on what it stands on (simplifying nudges it)
     anchor = vertices.mean(axis=0)
     return anchor, vertices - anchor, np.asarray(mesh.faces).tolist()
 
@@ -539,6 +555,7 @@ def build_proxies(cam: Camera, segments: list[Segment], disparity: np.ndarray, f
         m = _erode(s.mask, 2 if s.mask.sum() > 4000 else 1)
         if m.sum() < 0.4 * s.mask.sum():          # thin parts (legs) would vanish
             m = _erode(s.mask, 1)
+        depth_scale = 1.0                         # how far its feet moved its depth (carving uses the same)
         clean = m & ~edges
         if clean.sum() >= 0.4 * m.sum():
             m = clean
@@ -555,7 +572,7 @@ def build_proxies(cam: Camera, segments: list[Segment], disparity: np.ndarray, f
             v = np.maximum(contacts[:, 1].astype(int) - 3, 0)
             y_at = P[v, u, 1]
             dist = np.linalg.norm(P[v, u] - cam.position, axis=1)
-            contacts = contacts[np.isfinite(y_at) & (y_at < np.maximum(0.08, 0.04 * dist))]
+            contacts = contacts[np.isfinite(y_at) & (y_at < np.maximum(0.2, 0.06 * dist))]   # a table edge is ~0.7 m up
         if len(contacts) >= 3:
             # the floor fit can be off at this object's distance (narrow strip of floor, depth model bias):
             # scale the object's depth about the camera so its feet land where the camera says they are
@@ -567,6 +584,7 @@ def build_proxies(cam: Camera, segments: list[Segment], disparity: np.ndarray, f
             if ok.sum() >= 3:
                 k = float(np.clip(np.median(true[ok] / model[ok]), 0.5, 2.0))
                 pts = cam.position + (pts - cam.position) * k
+                depth_scale = k
         # drop the depth "halo" where an outline meets the background
         d = np.linalg.norm(pts - cam.position, axis=1)
         med = np.median(d)
@@ -609,6 +627,7 @@ def build_proxies(cam: Camera, segments: list[Segment], disparity: np.ndarray, f
             # cut off by the bottom of the photo: it carries on below the frame, down to the floor
             cut_off = bool(s.mask[-3:].any())
             found.append({"segment": s, "boxes": boxes, "on_floor": on_floor or cut_off, "cut_off": cut_off,
+                          "depth_scale": depth_scale,
                           "albedo": _albedo(photo_linear, s.mask, floor_ref)})
 
     # what does each rest on? lowest first, so supports are settled before what's on them
@@ -634,6 +653,7 @@ def build_proxies(cam: Camera, segments: list[Segment], disparity: np.ndarray, f
                     if owner != i and abs(b_hi[1] - lo[1]) < SUPPORT_SNAP and _overlap_xz(lo, hi, b_lo, b_hi) > 0.3]
             if tops:
                 lo[1] = max(tops)
+                found[i]["rests_on_box"] = True
         if lo[1] > FLOATING:
             continue
         if hi[1] - lo[1] < 0.02:
@@ -670,7 +690,9 @@ def build_proxies(cam: Camera, segments: list[Segment], disparity: np.ndarray, f
             if i in hulled:
                 continue
             e_lo, e_hi = envelope[i]
-            shape = shape_carve(cam, P, f["segment"].mask, f["hidden"], e_lo, e_hi)
+            anchored = P if f["depth_scale"] == 1.0 else cam.position + (P - cam.position) * f["depth_scale"]
+            shape = shape_carve(cam, anchored, f["segment"].mask, f["hidden"], e_lo, e_hi, f.get("rests_on_box", False),
+                                on_floor=f["on_floor"] and not f["cut_off"])
             if shape is None:
                 shape = shape_hull(P[f["segment"].mask], e_lo, e_hi, top_seen=cam.position[1] > e_hi[1] + 0.1,
                                    may_stand_on_legs=e_lo[1] < 1e-6 and not f["cut_off"])
