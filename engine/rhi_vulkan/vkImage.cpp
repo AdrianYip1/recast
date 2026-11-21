@@ -102,6 +102,29 @@ std::unique_ptr<foto::Image> foto::Image::loadTexture(Device& device, VkCommandP
 	return texture;
 }
 
+std::unique_ptr<foto::Image> foto::Image::loadTextureHDR(Device& device, VkCommandPool commandPool, const std::string& filePath) {
+	int width = 0, height = 0, channels = 0;
+	float* pixels = stbi_loadf(filePath.c_str(), &width, &height, &channels, STBI_rgb_alpha);
+	if (!pixels) {
+		throw std::runtime_error("ERROR: vkImage.cpp -> loadTextureHDR(): " + filePath + " (" + stbi_failure_reason() + ")");
+	}
+
+	VkDeviceSize size = static_cast<VkDeviceSize>(width) * height * 4 * sizeof(float);
+	VkExtent2D extent = { static_cast<u32>(width), static_cast<u32>(height) };
+
+	std::unique_ptr<Image> texture;
+	try {
+		texture = createTexture(device, commandPool, pixels, size, extent, VK_FORMAT_R32G32B32A32_SFLOAT, false);
+	}
+	catch (...) {
+		stbi_image_free(pixels);
+		throw;
+	}
+
+	stbi_image_free(pixels);
+	return texture;
+}
+
 void foto::Image::transitionLayout(VkCommandBuffer commandBuffer, VkImage image, VkImageLayout oldLayout,
 								   VkImageLayout newLayout, VkImageAspectFlags aspect, u32 baseMip, u32 mipCount) {
 	VkImageMemoryBarrier2 barrier = {

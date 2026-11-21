@@ -2,8 +2,7 @@
 
 #include <cstdlib>
 
-int main() {
-	
+int main(int argc, char** argv) {
 	foto::ApplicationConfig config = {
 		.title = "foto",
 		.width = 1280,
@@ -11,7 +10,7 @@ int main() {
 	};
 
 	try {
-		Visualizer app(config);
+		Visualizer app(config, argc > 1 ? argv[1] : "");
 		app.run();
 	}
 	catch (const std::exception& e) {

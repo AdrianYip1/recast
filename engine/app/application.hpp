@@ -14,6 +14,7 @@ namespace foto {
 	class Pipeline;
 	class Render;
 	class Image;
+	struct GraphicsPipelineConfig;
 	class Sampler;
 	class ImGuiLayer;
 
@@ -42,18 +43,33 @@ namespace foto {
 		Mesh* createMesh(std::span<const Vertex> vertices, std::span<const u32> indices, std::vector<Submesh> submeshes = {});
 		Mesh* loadModel(const std::string& filePath);
 		u32 loadTexture(const std::string& filePath);
+		u32 loadTextureHDR(const std::string& filePath);
 		u32 createTexture(const void* rgba, u32 width, u32 height);
 		u32 createMaterial(const Material& material);
 		void updateMaterial(u32 index, const Material& material);
 		const Material& getMaterial(u32 index);
 
 		// Queues a draw for the current frame; call from onUpdate
-		void draw(Mesh* mesh, const enginemath::Mat4& transform, u32 materialOverride = NO_MATERIAL_OVERRIDE);
+		void draw(Mesh* mesh, const enginemath::Mat4& transform, u32 materialOverride = NO_MATERIAL_OVERRIDE, Pipeline* pipeline = nullptr);
+		void drawFullscreen(Pipeline* pipeline, u32 material);
+
+		// Scene pipeline with the engine's formats, descriptor layout and push constants filled in
+		Pipeline* createPipeline(GraphicsPipelineConfig config);
+		void destroyMesh(Mesh* mesh);
+
+		// Letterboxes the 3D view to width/height (0 = fill the window)
+		void setViewportAspect(f32 aspect);
 
 		Camera& getCamera() { return camera; };
 		Window& getWindow() { return *window; };
 		f32 getAspectRatio();
 		void setLightDirection(const enginemath::Vec3& direction);
+		void screenshot(const std::string& filePath);
+
+		void setExposure(f32 ev);
+		f32 getExposure() { return exposureEV; };
+		void setWhiteBalance(const enginemath::Vec3& gains);
+		const enginemath::Vec3& getWhiteBalance() { return whiteBalance; };
 
 		// Hold right mouse to look, WASD to move, E/Q up/down, shift to go faster
 		void flyCamera(f32 deltaTime, f32 speed = 3.0f, f32 sensitivity = 0.003f);
@@ -63,16 +79,21 @@ namespace foto {
 		std::unique_ptr<Device> device;
 		std::unique_ptr<Swapchain> swapchain;
 		std::unique_ptr<Pipeline> pipeline;
+		std::unique_ptr<Pipeline> presentPipeline;
 		std::unique_ptr<Render> render;
 		std::unique_ptr<ImGuiLayer> imgui;
 
 		std::unique_ptr<Sampler> sampler;
 		std::vector<std::unique_ptr<Image>> textures;
 		std::vector<std::unique_ptr<Mesh>> meshes;
+		std::vector<std::unique_ptr<Pipeline>> pipelines;
+		f32 viewportAspect = 0.0f;
 
 		std::vector<DrawItem> drawList;
 		Camera camera;
 		enginemath::Vec3 lightDirection = enginemath::Vec3(-0.3f, -0.8f, -0.5f).normalized();
+		f32 exposureEV = 0.0f;
+		enginemath::Vec3 whiteBalance = enginemath::Vec3(1.0f, 1.0f, 1.0f);
 
 		u32 addTexture(std::unique_ptr<Image> image);
 	};

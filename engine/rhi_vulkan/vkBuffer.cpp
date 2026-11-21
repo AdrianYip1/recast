@@ -42,6 +42,19 @@ void foto::Buffer::upload(const void* data, VkDeviceSize dataSize, VkDeviceSize 
 	vkUnmapMemory(_device, memory);
 }
 
+void foto::Buffer::download(void* out, VkDeviceSize dataSize, VkDeviceSize offset) {
+	if (offset + dataSize > _size) {
+		throw std::runtime_error("ERROR: vkBuffer.cpp -> download(): range larger than buffer");
+	}
+
+	void* mapped = nullptr;
+	if (vkMapMemory(_device, memory, offset, dataSize, 0, &mapped) != VK_SUCCESS) {
+		throw std::runtime_error("ERROR: vkBuffer.cpp -> download()");
+	}
+	memcpy(out, mapped, static_cast<size>(dataSize));
+	vkUnmapMemory(_device, memory);
+}
+
 VkBuffer foto::Buffer::createBuffer(Device& device, VkDeviceSize size, VkBufferUsageFlags usage) {
 	VkBufferCreateInfo bufferCreateInfo = {
 		.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,

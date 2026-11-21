@@ -1,10 +1,13 @@
 #pragma once
 
 #include <engine/app/application.hpp>
+#include <engine/core/fileWatcher.hpp>
+
+#include "scene/sceneFile.hpp"
 
 class Visualizer : public foto::Application {
 public:
-	Visualizer(const foto::ApplicationConfig& config);
+	Visualizer(const foto::ApplicationConfig& config, std::string scenePath);
 
 protected:
 	void onInit() override;
@@ -20,4 +23,26 @@ private:
 	foto::u32 groundMaterial = 0;
 	foto::f32 cubeAngle = 0.0f;
 	foto::f32 spinSpeed = 0.8f;
+	bool screenshotKeyWasDown = false;
+
+	std::string scenePath;
+	recast::SceneFile scene;
+	bool sceneLoaded = false;
+	foto::FileWatcher sceneWatcher;
+
+	foto::Pipeline* backgroundPipeline = nullptr;
+	foto::Pipeline* proxyDepthPipeline = nullptr;
+	foto::Pipeline* proxyPipeline = nullptr;
+	std::string loadedPhotoPath;
+	foto::u32 photoMaterial = foto::DEFAULT_MATERIAL;
+	foto::u32 proxyMaterial = foto::DEFAULT_MATERIAL;
+	std::vector<foto::Mesh*> proxyMeshes;
+	bool showProxies = true;
+	float proxyOpacity = 0.25f;
+	bool freeCamera = false;
+
+	void loadScene();
+	void applySceneCamera();
+	void drawPhotoView();
+	void drawDemo();
 };

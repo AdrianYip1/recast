@@ -19,13 +19,13 @@ find_package(Vulkan REQUIRED)
 message(STATUS "GLSLC: ${Vulkan_GLSLC_EXECUTABLE}")
 
 set(SHADER_DIR ${CMAKE_CURRENT_SOURCE_DIR}/engine/shaders)
-file(GLOB SHADER_SOURCES
+file(GLOB SHADER_SOURCES CONFIGURE_DEPENDS
     ${SHADER_DIR}/*.vert
     ${SHADER_DIR}/*.frag
     ${SHADER_DIR}/*.comp)
 
 # Shared code for #include "file.glsl": every shader recompiles when one of these changes
-file(GLOB SHADER_INCLUDES ${SHADER_DIR}/*.glsl)
+file(GLOB SHADER_INCLUDES CONFIGURE_DEPENDS ${SHADER_DIR}/*.glsl)
 
 set(SPV_FILES "")
 foreach(SHADER ${SHADER_SOURCES})
@@ -92,7 +92,10 @@ add_custom_target(assets
     COMMENT "copying assets")
 
 add_executable(foto sandbox/main.cpp 
-"sandbox/visualizer.cpp")
+"sandbox/visualizer.cpp"
+    sandbox/scene/sceneFile.cpp
+    sandbox/scene/proxyMesh.cpp)
+target_include_directories(foto PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/sandbox ${CMAKE_CURRENT_SOURCE_DIR}/external)
 
 target_link_libraries(foto PRIVATE foto_engine glfw Vulkan::Vulkan stb)
 

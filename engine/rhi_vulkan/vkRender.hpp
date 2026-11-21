@@ -22,8 +22,10 @@ namespace foto {
 	public:
 		// Depth attachment format. Pipelines drawn by Render need it as GraphicsPipelineConfig::depthFormat
 		static constexpr VkFormat DEPTH_FORMAT = VK_FORMAT_D32_SFLOAT;
+		// Scene pipelines render into this; presentPipeline tonemaps it to the swapchain
+		static constexpr VkFormat HDR_FORMAT = VK_FORMAT_R16G16B16A16_SFLOAT;
 
-		Render(Device& device, Swapchain& swapchain, Pipeline& pipeline);
+		Render(Device& device, Swapchain& swapchain, Pipeline& pipeline, Pipeline& presentPipeline);
 		~Render();
 		Render(const Render& other) = delete;
 		Render& operator=(const Render& other) = delete;
@@ -42,11 +44,19 @@ namespace foto {
 		void updateMaterial(u32 index, const Material& material);
 		const Material& getMaterial(u32 index) { return materials.at(index); };
 
+		// Saves the next presented frame (including the overlay) as a PNG
+		void requestScreenshot(const std::string& filePath) { screenshotPath = filePath; };
+
+		// Letterboxes the scene pass to this width/height ratio (0 = fill the window)
+		void setViewportAspect(f32 aspect) { viewportAspect = aspect; };
+		VkRect2D getSceneRect();
+
 		VkCommandPool getCommandPool() { return _commandPool; };
 	private:
 		Device& device;
 		Swapchain& swapchain;
 		Pipeline& pipeline;
+		Pipeline& presentPipeline;
 
 		VkDevice _device = VK_NULL_HANDLE;
 		VkCommandPool _commandPool = VK_NULL_HANDLE;
@@ -65,8 +75,17 @@ namespace foto {
 		std::unique_ptr<Image> defaultTexture;
 		std::unique_ptr<Sampler> defaultSampler;
 
+		std::string screenshotPath;
+		std::unique_ptr<Buffer> screenshotBuffer;
+
 		// Swapchain-sized, shared by the frames in flight (the barrier at the start of each frame orders them)
 		std::unique_ptr<Image> depthImage;
+
+		std::unique_ptr<Image> hdrImage;
+		std::unique_ptr<Sampler> hdrSampler;
+		u32 hdrTextureSlot = 0;
+		u32 tonemapMaterial = 0;
+		f32 viewportAspect = 0.0f;
 
 		std::vector<VkSemaphore> imageAvailableSem;
 		std::vector<VkSemaphore> renderFinishedSem;
@@ -77,11 +96,17 @@ namespace foto {
 		void createSyncObjects(VkDevice device, size swapchainImageCount);
 		void createRenderFinishedSems(VkDevice device, size swapchainImageCount);
 		void recordCommandBuffer(VkCommandBuffer commandBuffer, u32 imageIdx, std::span<const DrawItem> items,
-								 const std::function<void(VkCommandBuffer)>& overlay);
+								 const std::function<void(VkCommandBuffer)>& overlay, bool capture);
+		void setFullViewport(VkCommandBuffer commandBuffer, VkExtent2D extent);
+		void setSceneViewport(VkCommandBuffer commandBuffer, VkExtent2D extent);
+		void writeTextureSlot(u32 slot, Image& texture, Sampler& sampler);
+		bool prepareScreenshot();
+		void saveScreenshot();
 		static VkCommandPool createCommandPool(Device& device);
 		static std::vector<VkCommandBuffer> createCommandBuffers(Device& device, VkCommandPool commandPool);
 		static std::vector<std::unique_ptr<Buffer>> createUniformBuffers(Device& device);
 		static std::vector<std::unique_ptr<Buffer>> createMaterialBuffers(Device& device);
 		static std::unique_ptr<Image> createDepthImage(Device& device, VkExtent2D extent);
+		static std::unique_ptr<Image> createHdrImage(Device& device, VkExtent2D extent);
 	};
 } // namespace foto

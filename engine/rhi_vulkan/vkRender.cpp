@@ -1,8 +1,11 @@
 #include "vkRender.hpp"
 #include "vkImage.hpp"
 
-foto::Render::Render(Device& device, Swapchain& swapchain, Pipeline& pipeline) :
-	device(device), swapchain(swapchain), pipeline(pipeline),
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include <stb_image_write.h>
+
+foto::Render::Render(Device& device, Swapchain& swapchain, Pipeline& pipeline, Pipeline& presentPipeline) :
+	device(device), swapchain(swapchain), pipeline(pipeline), presentPipeline(presentPipeline),
 	_device(device.getDevice()), _commandPool(createCommandPool(device)),
 	commandBuffers(createCommandBuffers(device, _commandPool)),
 	uniformBuffers(createUniformBuffers(device)),
@@ -32,6 +35,11 @@ foto::Render::Render(Device& device, Swapchain& swapchain, Pipeline& pipeline) :
 	addTexture(*defaultTexture, *defaultSampler);
 	addMaterial(Material{});
 
+	hdrSampler = std::make_unique<Sampler>(device, VK_FILTER_NEAREST, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
+	hdrImage = createHdrImage(device, swapchain.getExtent());
+	hdrTextureSlot = addTexture(*hdrImage, *hdrSampler);
+	tonemapMaterial = addMaterial({ .baseColorTexture = hdrTextureSlot });
+
 	createSyncObjects(_device, swapchain.getImages().size());
 };
 
@@ -50,15 +58,17 @@ foto::u32 foto::Render::addTexture(Image& texture, Sampler& sampler) {
 	}
 
 	vkDeviceWaitIdle(_device);
+	writeTextureSlot(textureCount, texture, sampler);
+	return textureCount++;
+}
 
+void foto::Render::writeTextureSlot(u32 slot, Image& texture, Sampler& sampler) {
 	DescriptorWriter writer;
 	writer.writeImage(2, texture.getView(), sampler.getSampler(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-					  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, textureCount);
+					  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, slot);
 	for (VkDescriptorSet set : descriptorSets) {
 		writer.update(device, set);
 	}
-
-	return textureCount++;
 }
 
 foto::u32 foto::Render::addMaterial(const Material& material) {
@@ -103,7 +113,8 @@ bool foto::Render::drawFrame(std::span<const DrawItem> items, const FrameUbo& fr
 
 	VkCommandBuffer commandBuffer = commandBuffers[currentFrame];
 	vkResetCommandBuffer(commandBuffer, 0);
-	recordCommandBuffer(commandBuffer, imageIdx, items, overlay);
+	bool capture = prepareScreenshot();
+	recordCommandBuffer(commandBuffer, imageIdx, items, overlay, capture);
 
 	// Submit info
 	VkSemaphore waitSemaphore[] = { imageAvailableSem[currentFrame] };
@@ -127,6 +138,11 @@ bool foto::Render::drawFrame(std::span<const DrawItem> items, const FrameUbo& fr
 	// Fence must be unsignaled, same with signalSemaphores
 	if (vkQueueSubmit(device.getGraphicsQ(), 1, &submitInfo, inFlightFence[currentFrame]) != VK_SUCCESS) {
 		throw std::runtime_error("ERROR: vkRender.cpp -> drawFrame()");
+	}
+
+	if (capture) {
+		vkQueueWaitIdle(device.getGraphicsQ());
+		saveScreenshot();
 	}
 
 	// Present queue
@@ -165,6 +181,8 @@ void foto::Render::onSwapchainRecreated() {
 
 	// Swapchain::recreate() already waited for the device to go idle, so the old one isn't in use
 	depthImage = createDepthImage(device, swapchain.getExtent());
+	hdrImage = createHdrImage(device, swapchain.getExtent());
+	writeTextureSlot(hdrTextureSlot, *hdrImage, *hdrSampler);
 }
 
 void foto::Render::createSyncObjects(VkDevice device, size swapchainImageCount) {
@@ -207,7 +225,7 @@ void foto::Render::createRenderFinishedSems(VkDevice device, size swapchainImage
 }
 
 void foto::Render::recordCommandBuffer(VkCommandBuffer commandBuffer, u32 imageIdx, std::span<const DrawItem> items,
-									   const std::function<void(VkCommandBuffer)>& overlay) {
+									   const std::function<void(VkCommandBuffer)>& overlay, bool capture) {
 	VkCommandBufferBeginInfo beginInfo = {
 		.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
 	};
@@ -216,52 +234,61 @@ void foto::Render::recordCommandBuffer(VkCommandBuffer commandBuffer, u32 imageI
 		throw std::runtime_error("ERROR: vkRender.cpp -> recordCommandBuffer()");
 	}
 
-	// Barrier 1 -> before rendering
-	VkImageMemoryBarrier2 toColor = {
-		.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-		.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-		.srcAccessMask = 0,
-		.dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-		.dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+	VkExtent2D extent = swapchain.getExtent();
+	VkImage swapchainImage = swapchain.getImages()[imageIdx];
 
-		.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-		.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-		.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-		.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-		.image = swapchain.getImages()[imageIdx],
-		.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
+	VkImageMemoryBarrier2 beginBarriers[] = {
+		{
+			.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+			.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+			.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+			.dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+			.dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+			.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+			.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+			.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+			.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+			.image = hdrImage->getImage(),
+			.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
+		},
+		{
+			.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+			.srcStageMask = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+			.srcAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+			.dstStageMask = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+			.dstAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+			.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+			.newLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+			.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+			.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+			.image = depthImage->getImage(),
+			.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1},
+		},
+		{
+			.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+			.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+			.srcAccessMask = 0,
+			.dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+			.dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+			.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+			.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+			.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+			.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+			.image = swapchainImage,
+			.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
+		},
 	};
 
-	// Depth: previous contents are discarded (cleared below). src = last frame's depth writes, so the
-	// frames in flight sharing this one image never overlap
-	VkImageMemoryBarrier2 toDepth = {
-		.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-		.srcStageMask = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
-		.srcAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-		.dstStageMask = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
-		.dstAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-
-		.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-		.newLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
-		.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-		.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-		.image = depthImage->getImage(),
-		.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1},
-	};
-
-	VkImageMemoryBarrier2 beginBarriers[] = { toColor, toDepth };
-
-	VkDependencyInfo toColorDep = {
+	VkDependencyInfo beginDependency = {
 		.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-		.imageMemoryBarrierCount = 2,
+		.imageMemoryBarrierCount = 3,
 		.pImageMemoryBarriers = beginBarriers,
 	};
-	vkCmdPipelineBarrier2(commandBuffer, &toColorDep);
+	vkCmdPipelineBarrier2(commandBuffer, &beginDependency);
 
-	// Begin rendering (instead of renderpass + framebuffer)
-	VkRenderingAttachmentInfo colorAttachment = {
+	VkRenderingAttachmentInfo hdrAttachment = {
 		.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-		.imageView = swapchain.getImageViews()[imageIdx],
+		.imageView = hdrImage->getView(),
 		.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
 		.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
 		.storeOp = VK_ATTACHMENT_STORE_OP_STORE,
@@ -272,7 +299,6 @@ void foto::Render::recordCommandBuffer(VkCommandBuffer commandBuffer, u32 imageI
 		}
 	};
 
-	// Depth is only needed during the pass: cleared to the far plane, not stored
 	VkRenderingAttachmentInfo depthAttachment = {
 		.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
 		.imageView = depthImage->getView(),
@@ -284,46 +310,36 @@ void foto::Render::recordCommandBuffer(VkCommandBuffer commandBuffer, u32 imageI
 		}
 	};
 
-	VkRenderingInfo rendering = {
+	VkRenderingInfo sceneRendering = {
 		.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
-		.renderArea = {
-			.offset = {0, 0},
-			.extent = swapchain.getExtent()
-		},
+		.renderArea = { .offset = {0, 0}, .extent = extent },
 		.layerCount = 1,
 		.colorAttachmentCount = 1,
-		.pColorAttachments = &colorAttachment,
+		.pColorAttachments = &hdrAttachment,
 		.pDepthAttachment = &depthAttachment,
 	};
-	vkCmdBeginRendering(commandBuffer, &rendering);
+	vkCmdBeginRendering(commandBuffer, &sceneRendering);
+	setSceneViewport(commandBuffer, extent);
 
-	// Bind pipeline/viewport/scissor
-	vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.getPipeline());
-
-	// Bind descriptor
-	vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.getPipelineLayout(),
-							0, 1, &descriptorSets[currentFrame], 0, nullptr);
-
-	VkViewport viewport = {
-		.x = 0.0f,
-		.y = 0.0f,
-		.width = static_cast<f32>(swapchain.getExtent().width),
-		.height = static_cast<f32>(swapchain.getExtent().height),
-		.minDepth = 0.0f,
-		.maxDepth = 1.0f,
-	};
-	vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
-
-	VkRect2D scissor = {
-		.offset = {0, 0},
-		.extent = swapchain.getExtent(),
-	};
-	vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
-
-	// Draw list: rebind buffers only when the mesh changes, one push + draw per submesh
+	Pipeline* boundPipeline = nullptr;
 	Mesh* boundMesh = nullptr;
 	for (const DrawItem& item : items) {
-		if (!item.mesh) continue;
+		Pipeline* itemPipeline = item.pipeline ? item.pipeline : &pipeline;
+		if (!item.mesh && !item.pipeline) continue;
+
+		if (itemPipeline != boundPipeline) {
+			vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, itemPipeline->getPipeline());
+			vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, itemPipeline->getPipelineLayout(),
+									0, 1, &descriptorSets[currentFrame], 0, nullptr);
+			boundPipeline = itemPipeline;
+		}
+
+		if (!item.mesh) {
+			DrawPush push = { .model = item.transform, .materialIndex = (item.materialOverride != NO_MATERIAL_OVERRIDE) ? item.materialOverride : DEFAULT_MATERIAL };
+			vkCmdPushConstants(commandBuffer, itemPipeline->getPipelineLayout(), DRAW_PUSH_RANGE.stageFlags, 0, sizeof(DrawPush), &push);
+			vkCmdDraw(commandBuffer, 3, 1, 0, 0);
+			continue;
+		}
 
 		if (item.mesh != boundMesh) {
 			item.mesh->bind(commandBuffer);
@@ -335,27 +351,92 @@ void foto::Render::recordCommandBuffer(VkCommandBuffer commandBuffer, u32 imageI
 				.model = item.transform,
 				.materialIndex = (item.materialOverride != NO_MATERIAL_OVERRIDE) ? item.materialOverride : submesh.materialIndex
 			};
-			vkCmdPushConstants(commandBuffer, pipeline.getPipelineLayout(), DRAW_PUSH_RANGE.stageFlags, 0, sizeof(DrawPush), &push);
+			vkCmdPushConstants(commandBuffer, itemPipeline->getPipelineLayout(), DRAW_PUSH_RANGE.stageFlags, 0, sizeof(DrawPush), &push);
 			vkCmdDrawIndexed(commandBuffer, submesh.indexCount, 1, submesh.firstIndex, 0, 0);
 		}
 	}
+
+	vkCmdEndRendering(commandBuffer);
+
+	VkImageMemoryBarrier2 hdrToSampled = {
+		.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+		.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+		.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+		.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+		.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+		.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+		.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+		.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+		.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+		.image = hdrImage->getImage(),
+		.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
+	};
+
+	VkDependencyInfo hdrDependency = {
+		.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+		.imageMemoryBarrierCount = 1,
+		.pImageMemoryBarriers = &hdrToSampled,
+	};
+	vkCmdPipelineBarrier2(commandBuffer, &hdrDependency);
+
+	VkRenderingAttachmentInfo swapchainAttachment = {
+		.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+		.imageView = swapchain.getImageViews()[imageIdx],
+		.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+		.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+		.storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+	};
+
+	VkRenderingInfo presentRendering = {
+		.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+		.renderArea = { .offset = {0, 0}, .extent = extent },
+		.layerCount = 1,
+		.colorAttachmentCount = 1,
+		.pColorAttachments = &swapchainAttachment,
+	};
+	vkCmdBeginRendering(commandBuffer, &presentRendering);
+	setFullViewport(commandBuffer, extent);
+
+	vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, presentPipeline.getPipeline());
+	vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, presentPipeline.getPipelineLayout(),
+							0, 1, &descriptorSets[currentFrame], 0, nullptr);
+	DrawPush tonemapPush = { .model = enginemath::Mat4::identity(), .materialIndex = tonemapMaterial };
+	vkCmdPushConstants(commandBuffer, presentPipeline.getPipelineLayout(), DRAW_PUSH_RANGE.stageFlags, 0, sizeof(DrawPush), &tonemapPush);
+	vkCmdDraw(commandBuffer, 3, 1, 0, 0);
 
 	if (overlay) overlay(commandBuffer);
 
 	vkCmdEndRendering(commandBuffer);
 
-	// Barrier 2 -> after renderingg 
+	VkImageLayout finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+	if (capture) {
+		Image::transitionLayout(commandBuffer, swapchainImage,
+								VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+
+		VkBufferImageCopy copyRegion = {
+			.bufferOffset = 0,
+			.bufferRowLength = 0,
+			.bufferImageHeight = 0,
+			.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+			.imageOffset = {0, 0, 0},
+			.imageExtent = {extent.width, extent.height, 1}
+		};
+		vkCmdCopyImageToBuffer(commandBuffer, swapchainImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+							   screenshotBuffer->getBuffer(), 1, &copyRegion);
+		finalLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+	}
+
 	VkImageMemoryBarrier2 toPresent = {
 		.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-		.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-		.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+		.srcStageMask = capture ? VK_PIPELINE_STAGE_2_COPY_BIT : VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+		.srcAccessMask = capture ? VK_ACCESS_2_NONE : VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
 		.dstStageMask = VK_PIPELINE_STAGE_2_NONE,
-
-		.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+		.oldLayout = finalLayout,
 		.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
 		.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
 		.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-		.image = swapchain.getImages()[imageIdx],
+		.image = swapchainImage,
 		.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
 	};
 
@@ -369,6 +450,48 @@ void foto::Render::recordCommandBuffer(VkCommandBuffer commandBuffer, u32 imageI
 	if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS) {
 		throw std::runtime_error("ERROR: vkRender.cpp -> recordCommandBuffer()");
 	}
+}
+
+VkRect2D foto::Render::getSceneRect() {
+	VkExtent2D extent = swapchain.getExtent();
+	if (viewportAspect <= 0.0f || extent.height == 0) return { {0, 0}, extent };
+
+	f32 windowAspect = static_cast<f32>(extent.width) / static_cast<f32>(extent.height);
+	if (windowAspect > viewportAspect) {
+		u32 width = static_cast<u32>(extent.height * viewportAspect + 0.5f);
+		return { { static_cast<i32>((extent.width - width) / 2), 0 }, { width, extent.height } };
+	}
+	u32 height = static_cast<u32>(extent.width / viewportAspect + 0.5f);
+	return { { 0, static_cast<i32>((extent.height - height) / 2) }, { extent.width, height } };
+}
+
+void foto::Render::setSceneViewport(VkCommandBuffer commandBuffer, VkExtent2D extent) {
+	VkRect2D rect = getSceneRect();
+	VkViewport viewport = {
+		.x = static_cast<f32>(rect.offset.x),
+		.y = static_cast<f32>(rect.offset.y),
+		.width = static_cast<f32>(rect.extent.width),
+		.height = static_cast<f32>(rect.extent.height),
+		.minDepth = 0.0f,
+		.maxDepth = 1.0f,
+	};
+	vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
+	vkCmdSetScissor(commandBuffer, 0, 1, &rect);
+}
+
+void foto::Render::setFullViewport(VkCommandBuffer commandBuffer, VkExtent2D extent) {
+	VkViewport viewport = {
+		.x = 0.0f,
+		.y = 0.0f,
+		.width = static_cast<f32>(extent.width),
+		.height = static_cast<f32>(extent.height),
+		.minDepth = 0.0f,
+		.maxDepth = 1.0f,
+	};
+	vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
+
+	VkRect2D scissor = { .offset = {0, 0}, .extent = extent };
+	vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 }
 
 VkCommandPool foto::Render::createCommandPool(Device& device) {
@@ -429,6 +552,50 @@ std::vector<std::unique_ptr<foto::Buffer>> foto::Render::createMaterialBuffers(D
 	}
 
 	return buffers;
+}
+
+bool foto::Render::prepareScreenshot() {
+	if (screenshotPath.empty()) return false;
+
+	SwapchainSupportDetails support = Device::querySwapchainSupport(device.getPhysicalDevice(), device.getSurface());
+	if (!(support.capabilities.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_SRC_BIT)) {
+		std::cerr << "[foto] screenshot failed: swapchain images can't be copied on this device\n";
+		screenshotPath.clear();
+		return false;
+	}
+
+	VkDeviceSize size = static_cast<VkDeviceSize>(swapchain.getExtent().width) * swapchain.getExtent().height * 4;
+	if (!screenshotBuffer || screenshotBuffer->getSize() != size) {
+		screenshotBuffer = std::make_unique<Buffer>(device, size, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+	}
+	return true;
+}
+
+void foto::Render::saveScreenshot() {
+	VkExtent2D extent = swapchain.getExtent();
+	std::vector<u8> pixels(screenshotBuffer->getSize());
+	screenshotBuffer->download(pixels.data(), pixels.size());
+
+	VkFormat format = swapchain.getFormat();
+	bool bgra = format == VK_FORMAT_B8G8R8A8_SRGB || format == VK_FORMAT_B8G8R8A8_UNORM;
+	for (size i = 0; i < pixels.size(); i += 4) {
+		if (bgra) std::swap(pixels[i], pixels[i + 2]);
+		pixels[i + 3] = 255;
+	}
+
+	if (stbi_write_png(screenshotPath.c_str(), static_cast<int>(extent.width), static_cast<int>(extent.height), 4,
+					   pixels.data(), static_cast<int>(extent.width) * 4)) {
+		std::cout << "[foto] saved screenshot " << screenshotPath << std::endl;
+	}
+	else {
+		std::cerr << "[foto] screenshot failed: couldn't write " << screenshotPath << "\n";
+	}
+	screenshotPath.clear();
+}
+
+std::unique_ptr<foto::Image> foto::Render::createHdrImage(Device& device, VkExtent2D extent) {
+	return std::make_unique<Image>(device, extent, HDR_FORMAT, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
 }
 
 std::unique_ptr<foto::Image> foto::Render::createDepthImage(Device& device, VkExtent2D extent) {

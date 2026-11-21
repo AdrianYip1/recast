@@ -106,7 +106,8 @@ VkSwapchainKHR foto::Swapchain::createSwapchain(GLFWwindow* window, Device& devi
 		.imageColorSpace = format.colorSpace,
 		.imageExtent = extent,
 		.imageArrayLayers = 1,
-		.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+		.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+			(swapchainSupport.capabilities.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_SRC_BIT),
 		.imageSharingMode = (isConcurrent) ? VK_SHARING_MODE_CONCURRENT : VK_SHARING_MODE_EXCLUSIVE,
 		.queueFamilyIndexCount = (isConcurrent) ? static_cast<u32>(2) : static_cast<u32>(0),
 		.pQueueFamilyIndices = (isConcurrent) ? queueFamilyIndices : nullptr,

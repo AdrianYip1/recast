@@ -26,6 +26,9 @@ namespace foto {
 		static std::unique_ptr<Image> loadTexture(Device& device, VkCommandPool commandPool, const std::string& filePath,
 												  bool generateMips = true);
 
+		// Loads a float image (.hdr) as linear RGBA32F, values above 1 kept
+		static std::unique_ptr<Image> loadTextureHDR(Device& device, VkCommandPool commandPool, const std::string& filePath);
+
 		// Records a layout transition of mip levels [baseMip, baseMip + mipCount).
 		// Coarse (ALL_COMMANDS) sync: fine for load-time work, not for per-frame use
 		static void transitionLayout(VkCommandBuffer commandBuffer, VkImage image, VkImageLayout oldLayout,

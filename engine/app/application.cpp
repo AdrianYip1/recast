@@ -17,6 +17,14 @@
 using enginemath::Vec3;
 using enginemath::Mat4;
 
+static foto::DescriptorLayoutBuilder sceneSetLayout() {
+	return foto::DescriptorLayoutBuilder()
+		.addBinding(0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT)
+		.addBinding(1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_FRAGMENT_BIT)
+		.addBinding(2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_FRAGMENT_BIT,
+					foto::MAX_TEXTURES, VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT);
+}
+
 foto::Application::Application(const ApplicationConfig& config) :
 	window(std::make_unique<Window>(config.width, config.height, config.title)),
 	device(std::make_unique<Device>(window->getWindow())),
@@ -24,19 +32,24 @@ foto::Application::Application(const ApplicationConfig& config) :
 	pipeline(std::make_unique<Pipeline>(*device, GraphicsPipelineConfig{
 				.vertexShaderFilePath = "shaders/basic.vert.spv",
 				.fragmentShaderFilePath = "shaders/basic.frag.spv",
-				.colorFormat = swapchain->getFormat(),
+				.colorFormat = Render::HDR_FORMAT,
 				.depthFormat = Render::DEPTH_FORMAT,
-				.descriptorSetLayouts = {
-					DescriptorLayoutBuilder()
-						.addBinding(0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT)
-						.addBinding(1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_FRAGMENT_BIT)
-						.addBinding(2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_FRAGMENT_BIT,
-									MAX_TEXTURES, VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT)
-				},
+				.descriptorSetLayouts = { sceneSetLayout() },
 				.pushConstants = { DRAW_PUSH_RANGE },
 			})),
-	render(std::make_unique<Render>(*device, *swapchain, *pipeline)),
-	imgui(std::make_unique<ImGuiLayer>(*window, *device, *swapchain, Render::DEPTH_FORMAT)),
+	presentPipeline(std::make_unique<Pipeline>(*device, GraphicsPipelineConfig{
+				.vertexShaderFilePath = "shaders/fullscreen.vert.spv",
+				.fragmentShaderFilePath = "shaders/tonemap.frag.spv",
+				.colorFormat = swapchain->getFormat(),
+				.descriptorSetLayouts = { sceneSetLayout() },
+				.pushConstants = { DRAW_PUSH_RANGE },
+				.useVertexInput = false,
+				.cullMode = VK_CULL_MODE_NONE,
+				.depthTest = false,
+				.depthWrite = false,
+			})),
+	render(std::make_unique<Render>(*device, *swapchain, *pipeline, *presentPipeline)),
+	imgui(std::make_unique<ImGuiLayer>(*window, *device, *swapchain, VK_FORMAT_UNDEFINED)),
 	sampler(std::make_unique<Sampler>(*device))
 {
 
@@ -69,7 +82,9 @@ void foto::Application::run() {
 			.view = camera.getView(),
 			.proj = camera.getProjection(getAspectRatio()),
 			.cameraPos = { camera.position.x, camera.position.y, camera.position.z, 1.0f },
-			.lightDir = { lightDirection.x, lightDirection.y, lightDirection.z, 0.0f }
+			.lightDir = { lightDirection.x, lightDirection.y, lightDirection.z, 0.0f },
+			.exposure = { std::exp2(exposureEV), 0.0f, 0.0f, 0.0f },
+			.whiteBalance = { whiteBalance.x, whiteBalance.y, whiteBalance.z, 1.0f }
 		};
 
 		bool outOfDate = render->drawFrame(drawList, frameUbo, [this](VkCommandBuffer commandBuffer) {
@@ -115,6 +130,10 @@ foto::u32 foto::Application::loadTexture(const std::string& filePath) {
 	return addTexture(Image::loadTexture(*device, render->getCommandPool(), filePath));
 }
 
+foto::u32 foto::Application::loadTextureHDR(const std::string& filePath) {
+	return addTexture(Image::loadTextureHDR(*device, render->getCommandPool(), filePath));
+}
+
 foto::u32 foto::Application::createTexture(const void* rgba, u32 width, u32 height) {
 	VkDeviceSize size = static_cast<VkDeviceSize>(width) * height * 4;
 	return addTexture(Image::createTexture(*device, render->getCommandPool(), rgba, size, { width, height }));
@@ -137,11 +156,37 @@ const foto::Material& foto::Application::getMaterial(u32 index) {
 	return render->getMaterial(index);
 }
 
-void foto::Application::draw(Mesh* mesh, const Mat4& transform, u32 materialOverride) {
-	drawList.push_back({ .mesh = mesh, .transform = transform, .materialOverride = materialOverride });
+void foto::Application::draw(Mesh* mesh, const Mat4& transform, u32 materialOverride, Pipeline* pipeline) {
+	drawList.push_back({ .mesh = mesh, .transform = transform, .materialOverride = materialOverride, .pipeline = pipeline });
+}
+
+void foto::Application::drawFullscreen(Pipeline* pipeline, u32 material) {
+	drawList.push_back({ .mesh = nullptr, .transform = Mat4::identity(), .materialOverride = material, .pipeline = pipeline });
+}
+
+foto::Pipeline* foto::Application::createPipeline(GraphicsPipelineConfig config) {
+	config.colorFormat = Render::HDR_FORMAT;
+	config.depthFormat = Render::DEPTH_FORMAT;
+	config.descriptorSetLayouts = { sceneSetLayout() };
+	config.pushConstants = { DRAW_PUSH_RANGE };
+	pipelines.push_back(std::make_unique<Pipeline>(*device, config));
+	return pipelines.back().get();
+}
+
+void foto::Application::destroyMesh(Mesh* mesh) {
+	auto it = std::find_if(meshes.begin(), meshes.end(), [mesh](const std::unique_ptr<Mesh>& m) { return m.get() == mesh; });
+	if (it == meshes.end()) return;
+	vkDeviceWaitIdle(device->getDevice());
+	meshes.erase(it);
+}
+
+void foto::Application::setViewportAspect(f32 aspect) {
+	viewportAspect = aspect;
+	render->setViewportAspect(aspect);
 }
 
 foto::f32 foto::Application::getAspectRatio() {
+	if (viewportAspect > 0.0f) return viewportAspect;
 	VkExtent2D extent = swapchain->getExtent();
 	return static_cast<f32>(extent.width) / static_cast<f32>(std::max(extent.height, 1u));
 }
@@ -150,11 +195,24 @@ void foto::Application::setLightDirection(const Vec3& direction) {
 	lightDirection = direction.normalized();
 }
 
+void foto::Application::setExposure(f32 ev) {
+	exposureEV = ev;
+}
+
+void foto::Application::setWhiteBalance(const Vec3& gains) {
+	whiteBalance = gains;
+}
+
+void foto::Application::screenshot(const std::string& filePath) {
+	render->requestScreenshot(filePath);
+}
+
 void foto::Application::flyCamera(f32 deltaTime, f32 speed, f32 sensitivity) {
 	bool looking = window->isMouseButtonDown(GLFW_MOUSE_BUTTON_RIGHT) && (window->isCursorCaptured() || !imgui->wantsMouse());
 	window->setCursorCaptured(looking);
 
 	if (looking) {
+		if (camera.hasOrientation()) camera.clearOrientation();
 		enginemath::Vec2 delta = window->getCursorDelta();
 		camera.yaw += delta.x * sensitivity;
 		camera.pitch -= delta.y * sensitivity;
