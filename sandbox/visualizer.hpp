@@ -38,9 +38,6 @@ private:
 	foto::Pipeline* proxyOverlayPipeline = nullptr;
 	foto::u32 photoMaterial = foto::DEFAULT_MATERIAL;
 	foto::u32 overlayMaterial = foto::DEFAULT_MATERIAL;
-	foto::u32 lightMarkerMaterial = foto::DEFAULT_MATERIAL;
-	foto::u32 selectedMarkerMaterial = foto::DEFAULT_MATERIAL;
-	foto::Mesh* lightMarker = nullptr;
 	std::vector<foto::Mesh*> proxyMeshes;
 	std::vector<foto::u32> proxyAlbedoMaterials;
 	std::string loadedPhotoPath;
@@ -108,7 +105,6 @@ private:
 	// room editing: boxes and walls from detect (or added) can be dragged, resized, deleted and reset
 	bool editRoom = false;
 	foto::Mesh* unitBoxMesh = nullptr;
-	foto::u32 selectedProxyMaterial = foto::DEFAULT_MATERIAL;
 	std::vector<recast::Vec3f> proxyMeshOrigins;
 	std::vector<recast::Proxy> detectedProxies; // what "reset room" goes back to
 	int selectedProxy = -1;
@@ -156,6 +152,7 @@ private:
 	bool updateLightEditing();
 	void addLight();
 	void drawLightEditor();
+	void drawLightOverlay();
 	enginemath::Vec3 markerPosition(const recast::SceneLight& light) const;
 	recast::RayHit supportUnderCursor(const enginemath::Vec3& origin, const enginemath::Vec3& direction);
 	void drawScene();

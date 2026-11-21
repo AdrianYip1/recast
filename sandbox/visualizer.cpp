@@ -106,22 +106,12 @@ void Visualizer::onInit() {
 	});
 	overlayMaterial = createMaterial({ .baseColor = { 0.1f, 0.5f, 1.0f, 0.25f } });
 
-	recast::Proxy markerBox;
-	markerBox.type = "box";
-	markerBox.min = { -0.5f, -0.5f, -0.5f };
-	markerBox.max = { 0.5f, 0.5f, 0.5f };
-	recast::MeshData markerData = recast::buildProxyMesh(markerBox);
-	lightMarker = createMesh(markerData.vertices, markerData.indices);
-
 	recast::Proxy unitBox;
 	unitBox.type = "box";
 	unitBox.min = { 0.0f, 0.0f, 0.0f };
 	unitBox.max = { 1.0f, 1.0f, 1.0f };
 	recast::MeshData unitBoxData = recast::buildProxyMesh(unitBox);
 	unitBoxMesh = createMesh(unitBoxData.vertices, unitBoxData.indices);
-	selectedProxyMaterial = createMaterial({ .baseColor = { 1.0f, 0.55f, 0.1f, 0.35f } });
-	lightMarkerMaterial = createMaterial({ .baseColor = { 0.0f, 0.0f, 0.0f, 1.0f }, .emissive = { 4.0f, 3.6f, 1.2f, 0.0f } });
-	selectedMarkerMaterial = createMaterial({ .baseColor = { 0.0f, 0.0f, 0.0f, 1.0f }, .emissive = { 0.8f, 3.0f, 4.0f, 0.0f } });
 
 	startPythonWorker();
 	if (!scenePath.empty()) {
@@ -431,29 +421,32 @@ foto::u32 Visualizer::photoOwnerAt(const Vec3& point) const {
 
 // Light markers sit at point lights, and 2 m back along a directional light from the middle of the room
 Vec3 Visualizer::markerPosition(const recast::SceneLight& light) const {
-	if (light.type == "directional") return shadowCenter - Vec3(light.direction[0], light.direction[1], light.direction[2]).normalized() * 2.0f;
+	if (light.type == "directional") return shadowCenter - Vec3(light.direction[0], light.direction[1], light.direction[2]).normalized() * 4.0f;
 	return Vec3(light.position[0], light.position[1], light.position[2]);
 }
 
 // Click a light marker to select it, drag to move it in the plane facing the camera. True while a light is being dragged
 bool Visualizer::updateLightEditing() {
 	bool leftDown = getWindow().isMouseButtonDown(GLFW_MOUSE_BUTTON_LEFT);
-	bool pressed = leftDown && !lightMouseWasDown;
+	bool pressed = leftDown && !lightMouseWasDown && !ImGui::GetIO().WantCaptureMouse;
 	lightMouseWasDown = leftDown;
 	Vec3 origin, direction;
 	bool haveRay = getCursorRay(origin, direction);
 
+	// picked on screen, where the markers are drawn, so a light behind a wall or out past the window is still reachable
 	if (pressed && haveRay) {
-		constexpr float pickRadius = 0.12f;
-		float closest = 1e30f;
+		ImVec2 mouse = ImGui::GetIO().MousePos;
+		float closest = 14.0f * 14.0f;
 		int picked = -1;
 		for (size_t i = 0; i < scene.lights.size(); i++) {
 			if (scene.lights[i].type != "point" && scene.lights[i].type != "directional") continue;
-			Vec3 toMarker = markerPosition(scene.lights[i]) - origin;
-			float t = toMarker.dot(direction);
-			if (t <= 0.0f || toMarker.dot(toMarker) - t * t > pickRadius * pickRadius || t >= closest) continue;
-			closest = t;
-			picked = static_cast<int>(i);
+			ImVec2 at;
+			if (!projectToScreen(markerPosition(scene.lights[i]), at)) continue;
+			float dx = at.x - mouse.x, dy = at.y - mouse.y;
+			if (dx * dx + dy * dy < closest) {
+				closest = dx * dx + dy * dy;
+				picked = static_cast<int>(i);
+			}
 		}
 		if (picked >= 0) {
 			selectedLight = picked;
@@ -463,6 +456,16 @@ bool Visualizer::updateLightEditing() {
 		}
 	}
 	if (!leftDown) draggingLight = false;
+
+	// scrolling moves the selected point light nearer or further along its line from the camera
+	float scroll = getWindow().getScrollDelta();
+	if (scroll != 0.0f && selectedLight >= 0 && selectedLight < static_cast<int>(scene.lights.size()) &&
+		scene.lights[selectedLight].type == "point" && !ImGui::GetIO().WantCaptureMouse) {
+		recast::SceneLight& light = scene.lights[selectedLight];
+		const recast::Vec3f& eye = scene.camera.position;
+		for (int a = 0; a < 3; a++) light.position[a] = eye[a] + (light.position[a] - eye[a]) * std::pow(1.15f, -scroll);
+		unsavedChanges = true;
+	}
 
 	if (draggingLight && haveRay && selectedLight >= 0 && selectedLight < static_cast<int>(scene.lights.size())) {
 		float facing = direction.dot(lightPlaneNormal);
@@ -486,6 +489,38 @@ bool Visualizer::updateLightEditing() {
 	return draggingLight;
 }
 
+// Markers over the photo, never hidden by walls: a dot per light (named, selected one larger), windows as outlines
+void Visualizer::drawLightOverlay() {
+	ImDrawList* list = ImGui::GetForegroundDrawList();
+	int number = 0;
+	for (size_t i = 0; i < scene.lights.size(); i++) {
+		const recast::SceneLight& light = scene.lights[i];
+		bool selected = static_cast<int>(i) == selectedLight;
+		ImU32 color = selected ? IM_COL32(110, 220, 255, 255) : IM_COL32(255, 220, 80, 255);
+		if (light.type == "area") {
+			for (int k = 0; k < 4; k++) {
+				const recast::Vec3f& a = light.corners[k];
+				const recast::Vec3f& b = light.corners[(k + 1) % 4];
+				drawSegment(list, Vec3(a[0], a[1], a[2]), Vec3(b[0], b[1], b[2]), IM_COL32(255, 220, 80, 160), 1.5f);
+			}
+			ImVec2 at;
+			Vec3 centre(0.0f);
+			for (const recast::Vec3f& c : light.corners) centre = centre + Vec3(c[0], c[1], c[2]) * 0.25f;
+			if (projectToScreen(centre, at)) list->AddText(ImVec2(at.x - 36.0f, at.y), IM_COL32(255, 220, 80, 220), "window light");
+			continue;
+		}
+		if (light.type != "point" && light.type != "directional") continue;
+		number++;
+		ImVec2 at;
+		if (!projectToScreen(markerPosition(light), at)) continue;
+		float radius = selected ? 10.0f : 8.0f;
+		list->AddCircleFilled(at, radius, color);
+		list->AddCircle(at, radius, IM_COL32(0, 0, 0, 220), 0, 2.0f);
+		std::string name = light.type == "directional" ? "sun" : "light " + std::to_string(number);
+		list->AddText(ImVec2(at.x + radius + 4.0f, at.y - 7.0f), color, name.c_str());
+	}
+}
+
 // A point light 1.2 m above the object, as strong as the first point light (or a neutral one)
 void Visualizer::addLight() {
 	recast::SceneLight light;
@@ -506,7 +541,7 @@ void Visualizer::addLight() {
 }
 
 void Visualizer::drawLightEditor() {
-	ImGui::TextDisabled("drag a light to move it");
+	ImGui::TextDisabled("drag a light to move it, scroll over it to move it nearer or further");
 	if (scene.lights.size() < foto::MAX_LIGHTS && ImGui::Button("add light")) addLight();
 	if (!detectedLights.empty()) {
 		if (scene.lights.size() < foto::MAX_LIGHTS) ImGui::SameLine();
@@ -526,6 +561,30 @@ void Visualizer::drawLightEditor() {
 		selectedLight = -1;
 		unsavedChanges = true;
 		return;
+	}
+
+	// a sun shines from where the light is, towards the middle of the room; a point light goes back to that spot
+	if (ImGui::Button(light.type == "point" ? "make it a sun" : "make it a point light")) {
+		if (light.type == "point") {
+			Vec3 from(light.position[0], light.position[1], light.position[2]);
+			Vec3 toCenter = shadowCenter - from;
+			if (toCenter.dot(toCenter) > 1e-6f) {
+				toCenter.normalize();
+				light.type = "directional";
+				light.direction = { toCenter.x, toCenter.y, toCenter.z };
+				// a point light's intensity falls off with distance; the sun keeps what it gave the middle of the room
+				float d2 = (shadowCenter - from).dot(shadowCenter - from);
+				for (float& channel : light.intensity) channel /= std::max(d2, 1e-3f);
+			}
+		}
+		else {
+			Vec3 at = markerPosition(light);
+			float d2 = (shadowCenter - at).dot(shadowCenter - at);
+			light.type = "point";
+			light.position = { at.x, at.y, at.z };
+			for (float& channel : light.intensity) channel *= d2;
+		}
+		unsavedChanges = true;
 	}
 
 	float strongest = std::max({ light.intensity[0], light.intensity[1], light.intensity[2] });
@@ -623,18 +682,6 @@ void Visualizer::drawScene() {
 	}
 
 	if (objectMesh && !showOriginal) draw(objectMesh, objectTransform(), foto::NO_MATERIAL_OVERRIDE, nullptr, foto::ShadowCaster::Dynamic);
-
-	if (showLights) {
-		for (size_t i = 0; i < scene.lights.size(); i++) {
-			const recast::SceneLight& light = scene.lights[i];
-			if (light.type != "point" && light.type != "directional") continue;
-			Vec3 at = markerPosition(light);
-			bool selected = static_cast<int>(i) == selectedLight;
-			float size = selected ? 0.08f : 0.06f;
-			draw(lightMarker, Mat4::translationM(at.x, at.y, at.z) * Mat4::scaleM(size, size, size), selected ? selectedMarkerMaterial : lightMarkerMaterial);
-		}
-	}
-
 }
 
 void Visualizer::onImGui() {
@@ -699,7 +746,10 @@ void Visualizer::onImGui() {
 		}
 		ImGui::Checkbox("original photo", &showOriginal);
 		ImGui::Checkbox("show and edit lights", &showLights);
-		if (showLights) drawLightEditor();
+		if (showLights) {
+			drawLightEditor();
+			drawLightOverlay();
+		}
 		ImGui::TextDisabled("%.0f fps, F12 saves a screenshot", ImGui::GetIO().Framerate);
 	}
 
