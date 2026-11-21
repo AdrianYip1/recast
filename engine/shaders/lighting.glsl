@@ -1,6 +1,6 @@
 // Point lights with cube shadow maps. Needs common.glsl first.
 
-const float SHADOW_NORMAL_OFFSET = 0.01;
+const float SHADOW_NORMAL_OFFSET = 0.02;
 const float SHADOW_BIAS = 0.0005;
 
 uint shadowFace(vec3 lightToPoint) {
@@ -21,14 +21,18 @@ float shadowVisibility(uint atlas, uint lightIndex, vec3 worldPos, vec3 normal) 
 
 	float faceResolution = float(frame.lightInfo.w);
 	vec2 atlasSize = vec2(6.0, float(MAX_LIGHTS)) * faceResolution;
-	vec2 faceUV = clamp(ndc.xy * 0.5 + 0.5, vec2(1.5 / faceResolution), vec2(1.0 - 1.5 / faceResolution));
-	vec2 atlasUV = (vec2(float(face), float(lightIndex)) + faceUV) * faceResolution / atlasSize;
+	vec2 faceUV = clamp(ndc.xy * 0.5 + 0.5, vec2(3.0 / faceResolution), vec2(1.0 - 3.0 / faceResolution));
+	vec2 texel = (vec2(float(face), float(lightIndex)) + faceUV) * faceResolution - 0.5;
+	vec2 f = fract(texel);
+	vec2 base = floor(texel) + 0.5;
 
 	float visible = 0.0;
-	for (int y = -1; y <= 1; y++) {
-		for (int x = -1; x <= 1; x++) {
-			float depth = texture(textures[atlas], atlasUV + vec2(x, y) / atlasSize).r;
-			visible += (ndc.z - SHADOW_BIAS <= depth) ? 1.0 : 0.0;
+	for (int y = -1; y <= 2; y++) {
+		float wy = y == -1 ? 1.0 - f.y : (y == 2 ? f.y : 1.0);
+		for (int x = -1; x <= 2; x++) {
+			float wx = x == -1 ? 1.0 - f.x : (x == 2 ? f.x : 1.0);
+			float depth = texture(textures[atlas], (base + vec2(x, y)) / atlasSize).r;
+			visible += (ndc.z - SHADOW_BIAS <= depth) ? wx * wy : 0.0;
 		}
 	}
 	return visible / 9.0;

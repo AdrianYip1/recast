@@ -712,7 +712,7 @@ void foto::shadowFaceMatrices(const enginemath::Vec3& position, enginemath::Mat4
 	const Vec3 directions[6] = { Vec3(1, 0, 0), Vec3(-1, 0, 0), Vec3(0, 1, 0), Vec3(0, -1, 0), Vec3(0, 0, 1), Vec3(0, 0, -1) };
 	const Vec3 ups[6] = { Vec3(0, 1, 0), Vec3(0, 1, 0), Vec3(0, 0, 1), Vec3(0, 0, 1), Vec3(0, 1, 0), Vec3(0, 1, 0) };
 
-	Mat4 projection = Mat4::projectionM(enginemath::toRad(90.0f), 1.0f, 0.02f, 50.0f);
+	Mat4 projection = Mat4::projectionM(enginemath::toRad(92.0f), 1.0f, 0.02f, 50.0f);
 	for (int face = 0; face < 6; face++) {
 		out[face] = projection * Mat4::lookAtM(position, position + directions[face], ups[face]);
 	}
