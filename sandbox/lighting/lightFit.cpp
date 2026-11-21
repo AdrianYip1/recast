@@ -273,6 +273,43 @@ namespace {
 		return true;
 	}
 
+	double refine(const recast::SceneFile& scene, const std::vector<recast::LightingSample>& samples,
+				  std::vector<recast::FitLight>& lights, float startStep) {
+		double current = residualFor(scene, samples, lights);
+		for (float step = startStep; step > 0.004f; step *= 0.5f) {
+			bool improved = true;
+			while (improved) {
+				improved = false;
+				for (size_t l = 0; l < lights.size(); l++) {
+					for (int axis = 0; axis < 3; axis++) {
+						if (lights[l].directional && axis == 2) continue;
+						for (float sign : { -1.0f, 1.0f }) {
+							std::vector<recast::FitLight> trial = lights;
+							if (trial[l].directional) {
+								double azimuth, elevation;
+								anglesFromDirection(trial[l].direction, azimuth, elevation);
+								(axis == 0 ? azimuth : elevation) += sign * step * 0.5;
+								elevation = std::clamp(elevation, -PI / 2.0 + 0.01, PI / 2.0 - 0.01);
+								trial[l].direction = directionFromAngles(azimuth, elevation);
+							}
+							else {
+								trial[l].position[axis] += sign * step;
+							}
+
+							double residual = residualFor(scene, samples, trial);
+							if (residual < current) {
+								current = residual;
+								lights = trial;
+								improved = true;
+							}
+						}
+					}
+				}
+			}
+		}
+		return current;
+	}
+
 	Vec3 cameraRay(const recast::SceneCamera& camera, float u, float v) {
 		Vec3 local((u - camera.cx) / camera.fx, -(v - camera.cy) / camera.fy, -1.0f);
 		Vec3 direction;
@@ -379,45 +416,6 @@ recast::LightingFit recast::fitLightIntensities(const SceneFile& scene, const st
 	return fit;
 }
 
-recast::LightingFit recast::refineLighting(const SceneFile& scene, const std::vector<LightingSample>& samples, std::vector<FitLight>& lights) {
-	if (samples.empty()) return {};
-
-	double current = residualFor(scene, samples, lights);
-	for (float step = 0.25f; step > 0.004f; step *= 0.5f) {
-		bool improved = true;
-		while (improved) {
-			improved = false;
-			for (size_t l = 0; l < lights.size(); l++) {
-				for (int axis = 0; axis < 3; axis++) {
-					if (lights[l].directional && axis == 2) continue;
-					for (float sign : { -1.0f, 1.0f }) {
-						std::vector<FitLight> trial = lights;
-						if (trial[l].directional) {
-							double azimuth, elevation;
-							anglesFromDirection(trial[l].direction, azimuth, elevation);
-							(axis == 0 ? azimuth : elevation) += sign * step * 0.5;
-							elevation = std::clamp(elevation, -PI / 2.0 + 0.01, PI / 2.0 - 0.01);
-							trial[l].direction = directionFromAngles(azimuth, elevation);
-						}
-						else {
-							trial[l].position[axis] += sign * step;
-						}
-
-						double residual = residualFor(scene, samples, trial);
-						if (residual < current) {
-							current = residual;
-							lights = trial;
-							improved = true;
-						}
-					}
-				}
-			}
-		}
-	}
-
-	return fitLightIntensities(scene, samples, lights);
-}
-
 std::vector<Vec3> recast::detectBrightSpots(const SceneFile& scene, const LinearImage& photo, int maxSpots) {
 	constexpr int cell = 4;
 	int gridWidth = photo.width / cell, gridHeight = photo.height / cell;
@@ -492,6 +490,9 @@ recast::LightingFit recast::autoFitLighting(const SceneFile& scene, const Linear
 	lights.clear();
 	if (samples.empty()) return {};
 
+	std::vector<LightingSample> coarse;
+	for (size_t s = 0; s < samples.size(); s += 4) coarse.push_back(samples[s]);
+
 	std::vector<Vec3> seeds = detectBrightSpots(scene, photo);
 	double current = 1e300;
 
@@ -506,17 +507,16 @@ recast::LightingFit recast::autoFitLighting(const SceneFile& scene, const Linear
 		for (bool directional : { false, true }) {
 			double residual = 0.0;
 			std::vector<FitLight> candidate = lights;
-			candidate.push_back(gridSearch(scene, samples, lights, directional, residual));
+			candidate.push_back(gridSearch(scene, coarse, lights, directional, residual));
 			candidates.push_back(candidate);
 		}
 
 		double bestResidual = 1e300;
 		std::vector<FitLight> best;
 		for (std::vector<FitLight>& candidate : candidates) {
-			LightingFit fit = refineLighting(scene, samples, candidate);
-			if (!allIntensitiesPositive(fit)) continue;
-			if (fit.residual < bestResidual) {
-				bestResidual = fit.residual;
+			double residual = refine(scene, coarse, candidate, 0.25f);
+			if (residual < bestResidual && allIntensitiesPositive(fitLightIntensities(scene, coarse, candidate))) {
+				bestResidual = residual;
 				best = candidate;
 			}
 		}
@@ -526,6 +526,7 @@ recast::LightingFit recast::autoFitLighting(const SceneFile& scene, const Linear
 		lights = best;
 	}
 
+	refine(scene, samples, lights, 0.03f);
 	return fitLightIntensities(scene, samples, lights);
 }
 

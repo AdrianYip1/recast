@@ -47,9 +47,6 @@ namespace recast {
 	// then converted to absolute values with the proxies' albedo from scene.json
 	LightingFit fitLightIntensities(const SceneFile& scene, const std::vector<LightingSample>& samples, const std::vector<FitLight>& lights);
 
-	// Refines the given lights' positions / directions, then fits intensities
-	LightingFit refineLighting(const SceneFile& scene, const std::vector<LightingSample>& samples, std::vector<FitLight>& lights);
-
 	// Surface points under the brightest blobs of the photo (lamps, windows, hotspots), brightest first
 	std::vector<enginemath::Vec3> detectBrightSpots(const SceneFile& scene, const LinearImage& photo, int maxSpots = 4);
 
