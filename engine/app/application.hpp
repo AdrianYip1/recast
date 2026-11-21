@@ -44,6 +44,11 @@ namespace foto {
 		std::unique_ptr<Mesh> quad;
 		std::unique_ptr<Image> texture;
 		std::unique_ptr<Sampler> sampler;
+		std::vector<std::unique_ptr<Image>> textures;
+		std::vector<std::unique_ptr<Mesh>> meshes;
+		Mesh* cube = nullptr;
+
+		Mesh* loadModel(const std::string& filePath);
 
 		Camera camera;
 		u32 checkerMaterial = 0;

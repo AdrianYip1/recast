@@ -60,9 +60,11 @@ add_library(foto_engine STATIC
     engine/rhi_vulkan/vkBuffer.cpp  "engine/rhi_vulkan/vkDescriptorHelper.cpp"
     engine/rhi_vulkan/vkImage.cpp
     engine/rhi_vulkan/vkMesh.cpp
-    engine/scene/camera.cpp)
+    engine/scene/camera.cpp
+    engine/assets/gltfLoader.cpp)
 
 target_include_directories(foto_engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_include_directories(foto_engine PRIVATE external/cgltf)
 
 target_link_libraries(foto_engine
     PUBLIC enginemath::enginemath
@@ -72,7 +74,9 @@ target_link_libraries(foto_engine
 add_custom_target(assets
     COMMAND ${CMAKE_COMMAND} -E copy_directory
         ${CMAKE_CURRENT_SOURCE_DIR}/assets/textures ${CMAKE_BINARY_DIR}/textures
-    COMMENT "copying textures")
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        ${CMAKE_CURRENT_SOURCE_DIR}/assets/models ${CMAKE_BINARY_DIR}/models
+    COMMENT "copying assets")
 
 add_executable(foto sandbox/main.cpp 
 "sandbox/visualizer.cpp")

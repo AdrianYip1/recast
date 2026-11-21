@@ -12,6 +12,7 @@
 #include "../rhi_vulkan/vkVertex.hpp"
 #include "../rhi_vulkan/vkImage.hpp"
 #include "../rhi_vulkan/vkDescriptorHelper.hpp"
+#include "../assets/gltfLoader.hpp"
 
 using enginemath::Vec3;
 using enginemath::Mat4;
@@ -57,8 +58,34 @@ foto::Application::Application(const ApplicationConfig& config) :
 	checkerMaterial = render->addMaterial({ .baseColorTexture = checkerTexture });
 	tintedMaterial = render->addMaterial({ .baseColor = { 1.0f, 0.6f, 0.3f, 1.0f }, .baseColorTexture = checkerTexture });
 
+	cube = loadModel("models/cube.glb");
+
 	camera.position = { 0.6f, 0.4f, 1.6f };
 	camera.lookAt({ 0.0f, 0.0f, 0.0f });
+}
+
+foto::Mesh* foto::Application::loadModel(const std::string& filePath) {
+	ModelData model = loadGltf(filePath);
+
+	std::vector<u32> textureSlots;
+	for (const ImageData& image : model.images) {
+		textures.push_back(Image::createTexture(*device, render->getCommandPool(), image.rgba.data(), image.rgba.size(),
+												{ image.width, image.height }));
+		textureSlots.push_back(render->addTexture(*textures.back(), *sampler));
+	}
+
+	std::vector<u32> materialSlots;
+	for (Material material : model.materials) {
+		material.baseColorTexture = (material.baseColorTexture == NO_TEXTURE) ? DEFAULT_TEXTURE : textureSlots.at(material.baseColorTexture);
+		materialSlots.push_back(render->addMaterial(material));
+	}
+
+	for (Submesh& submesh : model.submeshes) {
+		submesh.materialIndex = materialSlots.at(submesh.materialIndex);
+	}
+
+	meshes.push_back(std::make_unique<Mesh>(*device, render->getCommandPool(), model.vertices, model.indices, model.submeshes));
+	return meshes.back().get();
 }
 
 foto::Application::~Application() {
@@ -97,6 +124,7 @@ void foto::Application::run() {
 		DrawItem items[] = {
 			{ .mesh = quad.get(), .transform = Mat4::identity(), .materialOverride = checkerMaterial },
 			{ .mesh = quad.get(), .transform = Mat4::translationM(0.45f, 0.2f, -0.4f), .materialOverride = tintedMaterial },
+			{ .mesh = cube, .transform = Mat4::translationM(-0.7f, -0.1f, -0.2f) * Mat4::scaleM(0.5f, 0.5f, 0.5f) },
 		};
 		bool outOfDate = render->drawFrame(items, frameUbo);
 		if (outOfDate || window->getFramebufferResized()) {
