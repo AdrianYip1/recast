@@ -292,9 +292,10 @@ void Visualizer::detectLighting() {
 	detectJob = std::async(std::launch::async, [sceneCopy, photo, stride, emitters]() {
 		DetectJob job;
 		try {
-			std::vector<recast::LightingSample> samples = recast::collectLightingSamples(sceneCopy, photo, stride);
+			std::vector<recast::LightingSample> clipped;
+			std::vector<recast::LightingSample> samples = recast::collectLightingSamples(sceneCopy, photo, stride, &clipped);
 			job.lights = emitters;
-			job.fit = recast::fitMainLight(sceneCopy, samples, job.lights, recast::sunDirections(sceneCopy, photo));
+			job.fit = recast::fitMainLight(sceneCopy, samples, job.lights, recast::sunDirections(sceneCopy, photo), clipped);
 		}
 		catch (const std::exception& e) {
 			job.error = e.what();
