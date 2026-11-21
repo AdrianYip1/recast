@@ -212,6 +212,7 @@ void foto::Application::flyCamera(f32 deltaTime, f32 speed, f32 sensitivity) {
 	window->setCursorCaptured(looking);
 
 	if (looking) {
+		if (camera.hasOrientation()) camera.clearOrientation();
 		enginemath::Vec2 delta = window->getCursorDelta();
 		camera.yaw += delta.x * sensitivity;
 		camera.pitch -= delta.y * sensitivity;
