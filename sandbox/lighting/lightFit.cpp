@@ -5,6 +5,8 @@
 #endif
 
 #include <algorithm>
+#include <map>
+#include <tuple>
 #include <cmath>
 #include <stdexcept>
 
@@ -186,6 +188,24 @@ namespace {
 		std::vector<bool> lightVaries; // false: the light is (nearly) constant here, so it can't be told apart from ambient
 	};
 
+	// Terms of fixed lights per sample set, kept for one fit (keyed by the sample set and the light's shape; cleared at
+	// the start and end of each fit, since a later sample set can reuse the same memory)
+	using TermKey = std::tuple<const void*, size_t, bool, float, float, float, float, float, float, float, float>;
+	thread_local std::map<TermKey, std::vector<double>> fixedTermCache;
+
+	const std::vector<double>& fixedLightTerms(const Occluders& occluders, const std::vector<recast::LightingSample>& samples,
+											   const recast::FitLight& light) {
+		auto& cache = fixedTermCache;
+		TermKey key{ samples.data(), samples.size(), light.area, light.position.x, light.position.y, light.position.z,
+				 light.halfWidth.x, light.halfWidth.z, light.halfHeight, light.size, light.directional ? 1.0f : 0.0f };
+		auto found = cache.find(key);
+		if (found != cache.end()) return found->second;
+		if (cache.size() > 64) cache.clear();
+		std::vector<double> terms(samples.size());
+		for (size_t s = 0; s < samples.size(); s++) terms[s] = lightTerm(occluders, samples[s], light);
+		return cache.emplace(key, std::move(terms)).first->second;
+	}
+
 	std::vector<ProxySolution> solvePerProxy(const recast::SceneFile& scene, const std::vector<recast::LightingSample>& samples,
 											 const std::vector<recast::FitLight>& lights, double& residual) {
 		Occluders occluders(scene.proxies);
@@ -198,6 +218,12 @@ namespace {
 		std::vector<ProxySolution> solutions(proxyCount);
 		for (auto& solution : solutions) solution.lightWeight.assign(lights.size(), 0.0);
 
+		// Lights found in the photo (fixed) never move during a fit, so their terms for these samples are worked out once
+		std::vector<const std::vector<double>*> cached(lights.size(), nullptr);
+		for (size_t l = 0; l < lights.size(); l++) {
+			if (lights[l].fixed) cached[l] = &fixedLightTerms(occluders, samples, lights[l]);
+		}
+
 		std::vector<double> features(samples.size() * unknowns, 1.0);
 		for (size_t s = 0; s < samples.size(); s++) {
 			const recast::LightingSample& sample = samples[s];
@@ -206,7 +232,7 @@ namespace {
 
 			double* f = &features[s * unknowns];
 			for (size_t l = 0; l < lights.size(); l++) {
-				f[1 + l] = lightTerm(occluders, sample, lights[l]);
+				f[1 + l] = cached[l] ? (*cached[l])[s] : lightTerm(occluders, sample, lights[l]);
 				solution.lightWeight[l] += f[1 + l] * f[1 + l];
 			}
 
@@ -676,6 +702,8 @@ std::vector<recast::FitLight> recast::fitLightsFromScene(const SceneFile& scene)
 // variation within the furniture
 recast::LightingFit recast::fitMainLight(const SceneFile& scene, const std::vector<LightingSample>& samples,
 										 std::vector<FitLight>& lights) {
+	fixedTermCache.clear();
+	struct ClearAfter { ~ClearAfter() { fixedTermCache.clear(); } } clearAfter;
 	std::vector<FitLight> found = lights;
 	for (FitLight& light : found) light.fixed = true;
 	lights.clear();
