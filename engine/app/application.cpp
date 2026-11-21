@@ -7,7 +7,7 @@
 
 foto::Application::Application(const ApplicationConfig& config) :
 	window(std::make_unique<Window>(config.width, config.height, config.title)),
-	device(std::make_unique<Device>())
+	device(std::make_unique<Device>(window->getWindow()))
 {
 	 
 }

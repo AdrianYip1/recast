@@ -1,10 +1,13 @@
 #include "vkDevice.hpp"
 
-#ifdef NDEBUG
-static constexpr bool enableValidation = false;
-#else
+#ifdef FOTO_DEBUG
 static constexpr bool enableValidation = true;
+#else
+static constexpr bool enableValidation = false;
 #endif
+
+
+#include <GLFW/glfw3.h>
 
 // Extensions for the physical device
 static const std::vector<const char*> requiredDeviceExtensions = {
@@ -29,16 +32,22 @@ static VkDebugUtilsMessengerCreateInfoEXT debugMessengerInfo() {
 	};
 }
 
-foto::Device::Device() :
+foto::Device::Device(GLFWwindow* window) :
 	instance(createInstance()),
 	debugMessenger(createDebugMessenger(instance)),
-	physicalDevice(selectPhysicalDevice(instance)),
-	logicalDevice(selectLogicalDevice(physicalDevice))
+	surface(createSurface(instance, window)),
+	physicalDevice(selectPhysicalDevice(instance, surface)),
+	queueInfos(findQueueFamilies(physicalDevice, surface).value()),
+	logicalDevice(selectLogicalDevice(physicalDevice, queueInfos))
 {
-
+	vkGetDeviceQueue(logicalDevice, queueInfos.graphicsQueueIdx.value(), 0, &graphicsQueue);
+	vkGetDeviceQueue(logicalDevice, queueInfos.presentQueueIdx.value(), 0, &presentQueue);
+	vkGetDeviceQueue(logicalDevice, queueInfos.computeQueueIdx.value(), 0, &computeQueue);
 }
 
 foto::Device::~Device() {
+	vkDestroyDevice(logicalDevice, nullptr);
+	vkDestroySurfaceKHR(instance, surface, nullptr);
 	if (debugMessenger) {
 		auto destroyMessenger = reinterpret_cast<PFN_vkDestroyDebugUtilsMessengerEXT>(
 			vkGetInstanceProcAddr(instance, "vkDestroyDebugUtilsMessengerEXT"));
@@ -117,7 +126,17 @@ VkDebugUtilsMessengerEXT foto::Device::createDebugMessenger(VkInstance instance)
 	return messenger;
 }
 
-VkPhysicalDevice foto::Device::selectPhysicalDevice(VkInstance instance) {
+VkSurfaceKHR foto::Device::createSurface(VkInstance instance, GLFWwindow* window) {
+	VkSurfaceKHR surface = VK_NULL_HANDLE;
+	
+	if (glfwCreateWindowSurface(instance, window , nullptr, &surface) != VK_SUCCESS) {
+		throw std::runtime_error("ERROR: vkDevice.cpp -> createSurface()");
+	}
+
+	return surface;
+}
+
+VkPhysicalDevice foto::Device::selectPhysicalDevice(VkInstance instance, VkSurfaceKHR surface) {
 	u32 deviceCount = 0;
 	vkEnumeratePhysicalDevices(instance, &deviceCount, nullptr);
 	if (deviceCount == 0) throw std::runtime_error("ERROR: vkDevice.cpp -> selectPhysicalDevice(): no Vulkan GPU found");
@@ -132,7 +151,9 @@ VkPhysicalDevice foto::Device::selectPhysicalDevice(VkInstance instance) {
 		if (properties.apiVersion < VK_API_VERSION_1_3) continue;
 
 		// Check for Vulkan Features
-		VkPhysicalDeviceVulkan13Features features13 = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES };
+		VkPhysicalDeviceVulkan13Features features13 = { 
+			.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES 
+		};
 		VkPhysicalDeviceFeatures2 features2 = { 
 			.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, 
 			.pNext = &features13
@@ -141,10 +162,14 @@ VkPhysicalDevice foto::Device::selectPhysicalDevice(VkInstance instance) {
 		if (!features13.dynamicRendering || !features13.synchronization2) continue;
 
 		// Check for queues
-		if (!findQueueFamilies(device).has_value()) continue;
+		if (!findQueueFamilies(device, surface).has_value()) continue;
 
 		// Check for extensions
 		if (!extensionsSuitable(device)) continue;
+
+		// Swapchain adequacy
+		SwapchainSupportDetails swapchainSupport = querySwapchainSupport(device, surface);
+		if (swapchainSupport.formats.empty() || swapchainSupport.presentModes.empty()) continue;
 
 		chosenDevice = device;
 		// Use discrete if found right way
@@ -155,21 +180,26 @@ VkPhysicalDevice foto::Device::selectPhysicalDevice(VkInstance instance) {
 	return chosenDevice;
 }
 
-std::optional<foto::QueueInfos> foto::Device::findQueueFamilies(VkPhysicalDevice device) {
+std::optional<foto::QueueInfos> foto::Device::findQueueFamilies(VkPhysicalDevice device, VkSurfaceKHR surface) {
 	u32 familyCount = 0;
 	vkGetPhysicalDeviceQueueFamilyProperties(device, &familyCount, nullptr);
 	std::vector<VkQueueFamilyProperties> properties(familyCount);
 	vkGetPhysicalDeviceQueueFamilyProperties(device, &familyCount, properties.data());
 
-	std::optional<u32> graphics, compute;
+	std::optional<u32> graphics, present, compute;
 	for (u32 i = 0; i < familyCount; i++) {
 		if (!graphics && properties[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) graphics = i;
 		if (!compute && properties[i].queueFlags & VK_QUEUE_COMPUTE_BIT) compute = i;
+
+		VkBool32 presentSupport = VK_FALSE;
+		vkGetPhysicalDeviceSurfaceSupportKHR(device, i, surface, &presentSupport);
+		if (!present && presentSupport) present = i;
 	}
 
-	if (!graphics || !compute) return std::nullopt;
+	if (!graphics || !compute || !present) return std::nullopt;
 	return QueueInfos{
 		.graphicsQueueIdx = graphics,
+		.presentQueueIdx = present,
 		.computeQueueIdx = compute
 	};
 }
@@ -180,7 +210,7 @@ bool foto::Device::extensionsSuitable(VkPhysicalDevice device) {
 
 	std::vector<VkExtensionProperties> extensions(deviceExtensionCount);
 	vkEnumerateDeviceExtensionProperties(device, nullptr, &deviceExtensionCount, extensions.data());
-
+	
 	return std::all_of(requiredDeviceExtensions.begin(), requiredDeviceExtensions.end(),
 		[&](const char* required) {
 			return std::any_of(extensions.begin(), extensions.end(),
@@ -190,16 +220,46 @@ bool foto::Device::extensionsSuitable(VkPhysicalDevice device) {
 		});
 }
 
-VkDevice foto::Device::selectLogicalDevice(VkPhysicalDevice physicalDevice) {
+VkDevice foto::Device::selectLogicalDevice(VkPhysicalDevice physicalDevice, const QueueInfos& queueInfo) {
 	VkDevice logicalDevice = VK_NULL_HANDLE;
+	f32 priority = 1.0f;
 
-	QueueInfos queues = *findQueueFamilies(physicalDevice);
+	std::set<u32> uniqueFamilies = {
+		queueInfo.graphicsQueueIdx.value(),
+		queueInfo.presentQueueIdx.value(),
+		queueInfo.computeQueueIdx.value()
+	};
 
+	std::vector<VkDeviceQueueCreateInfo> queueCreateInfos;
+	for (auto family : uniqueFamilies) {
+		VkDeviceQueueCreateInfo queueCreateInfo = {
+			.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+			.queueFamilyIndex = family,
+			.queueCount = 1,
+			.pQueuePriorities = &priority
+		};
+		queueCreateInfos.push_back(queueCreateInfo);
+	}
 
+	VkPhysicalDeviceVulkan13Features features13 = {
+		.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
+		.synchronization2 = VK_TRUE,
+		.dynamicRendering = VK_TRUE
+	};
+
+	VkPhysicalDeviceFeatures2 features2 = {
+		.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
+		.pNext = &features13
+	};
 
 	VkDeviceCreateInfo createInfo = {
 		.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
-		
+		.pNext = &features2,
+		.queueCreateInfoCount = static_cast<u32>(queueCreateInfos.size()),
+		.pQueueCreateInfos = queueCreateInfos.data(),
+		.enabledExtensionCount = static_cast<u32>(requiredDeviceExtensions.size()),
+		.ppEnabledExtensionNames = requiredDeviceExtensions.data(),
+		.pEnabledFeatures = nullptr
 
 	};
 
@@ -208,4 +268,25 @@ VkDevice foto::Device::selectLogicalDevice(VkPhysicalDevice physicalDevice) {
 	}
 
 	return logicalDevice;
+}
+
+foto::SwapchainSupportDetails foto::Device::querySwapchainSupport(VkPhysicalDevice device, VkSurfaceKHR surface) {
+	SwapchainSupportDetails swapchainSupport;
+
+	u32 formatCount = 0;
+	vkGetPhysicalDeviceSurfaceFormatsKHR(device, surface, &formatCount, nullptr);
+	if (formatCount > 0) {
+		swapchainSupport.formats.resize(formatCount);
+		vkGetPhysicalDeviceSurfaceFormatsKHR(device, surface, &formatCount, swapchainSupport.formats.data());
+	} 
+
+	u32 presentModeCount = 0;
+	vkGetPhysicalDeviceSurfacePresentModesKHR(device, surface, &presentModeCount, nullptr);
+	if (presentModeCount > 0) {
+		swapchainSupport.presentModes.resize(presentModeCount);
+		vkGetPhysicalDeviceSurfacePresentModesKHR(device, surface, &presentModeCount, swapchainSupport.presentModes.data());
+	}
+
+	vkGetPhysicalDeviceSurfaceCapabilitiesKHR(device, surface, &swapchainSupport.capabilities);
+	return swapchainSupport;
 }
