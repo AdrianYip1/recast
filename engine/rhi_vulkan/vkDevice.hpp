@@ -21,6 +21,15 @@ namespace foto {
 		std::vector<VkPresentModeKHR> presentModes;
 	};
 
+	// Device functions of VK_KHR_acceleration_structure (not exported by the loader)
+	struct RayTracingFunctions {
+		PFN_vkCreateAccelerationStructureKHR createAccelerationStructure = nullptr;
+		PFN_vkDestroyAccelerationStructureKHR destroyAccelerationStructure = nullptr;
+		PFN_vkGetAccelerationStructureBuildSizesKHR getBuildSizes = nullptr;
+		PFN_vkCmdBuildAccelerationStructuresKHR cmdBuild = nullptr;
+		PFN_vkGetAccelerationStructureDeviceAddressKHR getAddress = nullptr;
+	};
+
 	class Device {
 	public :
 		Device(GLFWwindow* window);
@@ -51,6 +60,11 @@ namespace foto {
 		// Whether LINE/POINT polygon modes work (fillModeNonSolid is enabled whenever it's supported)
 		bool supportsWireframe();
 
+		// Acceleration structures + ray queries, enabled whenever the GPU has them
+		bool supportsRayTracing() { return rayTracing; };
+		const RayTracingFunctions& getRayTracingFunctions() { return rayTracingFunctions; };
+		VkDeviceSize getScratchAlignment() { return scratchAlignment; };
+
 		static SwapchainSupportDetails querySwapchainSupport(VkPhysicalDevice device, VkSurfaceKHR surface);
 		static std::optional<foto::QueueInfos> findQueueFamilies(VkPhysicalDevice device, VkSurfaceKHR surface);
 
@@ -60,7 +74,10 @@ namespace foto {
 		VkSurfaceKHR surface = VK_NULL_HANDLE;
 		VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
 		QueueInfos queueInfos;
+		bool rayTracing = false;
 		VkDevice logicalDevice = VK_NULL_HANDLE;
+		RayTracingFunctions rayTracingFunctions;
+		VkDeviceSize scratchAlignment = 256;
 
 		VkQueue graphicsQueue = VK_NULL_HANDLE;
 		VkQueue presentQueue = VK_NULL_HANDLE;
@@ -71,7 +88,8 @@ namespace foto {
 		
 		static VkSurfaceKHR createSurface(VkInstance instance, GLFWwindow* window);
 		static VkPhysicalDevice selectPhysicalDevice(VkInstance instance, VkSurfaceKHR surface);
-		static bool extensionsSuitable(VkPhysicalDevice device);
-		static VkDevice selectLogicalDevice(VkPhysicalDevice physicalDevice, const QueueInfos& queueInfo);
+		static bool extensionsSuitable(VkPhysicalDevice device, std::span<const char* const> required);
+		static bool rayTracingSuitable(VkPhysicalDevice device);
+		static VkDevice selectLogicalDevice(VkPhysicalDevice physicalDevice, const QueueInfos& queueInfo, bool rayTracing);
 	};
 } // namespace foto

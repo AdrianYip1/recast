@@ -6,9 +6,9 @@ foto::Mesh::Mesh(Device& device, VkCommandPool commandPool, std::span<const Vert
 	vertexCount(nonEmptyCount(vertices.size())),
 	indexCount(nonEmptyCount(indices.size())),
 	vertexBuffer(Buffer::createDeviceLocal(device, commandPool, vertices.data(), vertices.size_bytes(),
-										   VK_BUFFER_USAGE_VERTEX_BUFFER_BIT)),
+										   VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | rayTracingUsage(device))),
 	indexBuffer(Buffer::createDeviceLocal(device, commandPool, indices.data(), indices.size_bytes(),
-										  VK_BUFFER_USAGE_INDEX_BUFFER_BIT)),
+										  VK_BUFFER_USAGE_INDEX_BUFFER_BIT | rayTracingUsage(device))),
 	submeshes(std::move(submeshes))
 {
 	boundsMin = boundsMax = vertices[0].pos;
@@ -22,7 +22,19 @@ foto::Mesh::Mesh(Device& device, VkCommandPool commandPool, std::span<const Vert
 	if (this->submeshes.empty()) {
 		this->submeshes.push_back({ .firstIndex = 0, .indexCount = indexCount, .materialIndex = 0 });
 	}
+
+	if (device.supportsRayTracing()) {
+		bottomLevel = AccelerationStructure::buildBottomLevel(device, commandPool, *vertexBuffer, vertexCount, *indexBuffer, this->submeshes);
+	}
 };
+
+foto::Mesh::~Mesh() = default;
+
+VkBufferUsageFlags foto::Mesh::rayTracingUsage(Device& device) {
+	if (!device.supportsRayTracing()) return 0;
+	return VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
+		   VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
+}
 
 foto::u32 foto::Mesh::nonEmptyCount(size count) {
 	if (count == 0) {

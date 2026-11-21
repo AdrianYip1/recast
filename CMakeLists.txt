@@ -72,6 +72,7 @@ add_library(foto_engine STATIC
     engine/rhi_vulkan/vkBuffer.cpp  "engine/rhi_vulkan/vkDescriptorHelper.cpp"
     engine/rhi_vulkan/vkImage.cpp
     engine/rhi_vulkan/vkMesh.cpp
+    engine/rhi_vulkan/vkAccel.cpp
     engine/scene/camera.cpp
     engine/assets/gltfLoader.cpp
     engine/ui/imguiLayer.cpp)

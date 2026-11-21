@@ -7,6 +7,7 @@
 #include "vkDevice.hpp"
 #include "vkBuffer.hpp"
 #include "vkVertex.hpp"
+#include "vkAccel.hpp"
 
 namespace foto {
 	// A range of the mesh's index buffer drawn with one material
@@ -16,12 +17,14 @@ namespace foto {
 		u32 materialIndex = 0;
 	};
 
-	// Owns a device-local vertex + index buffer and the submeshes that split it by material
+	// Owns a device-local vertex + index buffer and the submeshes that split it by material.
+	// With ray tracing support it also gets a bottom level acceleration structure
 	class Mesh {
 	public:
 		// Empty submeshes = one submesh covering every index with material 0
 		Mesh(Device& device, VkCommandPool commandPool, std::span<const Vertex> vertices,
 			 std::span<const u32> indices, std::vector<Submesh> submeshes = {});
+		~Mesh();
 		Mesh(const Mesh& other) = delete;
 		Mesh& operator=(const Mesh& other) = delete;
 
@@ -35,6 +38,8 @@ namespace foto {
 		std::vector<Submesh>& getSubmeshes() { return submeshes; };
 		const enginemath::Vec3& getBoundsMin() { return boundsMin; };
 		const enginemath::Vec3& getBoundsMax() { return boundsMax; };
+		// nullptr without ray tracing support
+		AccelerationStructure* getBottomLevel() { return bottomLevel.get(); };
 
 	private:
 		u32 vertexCount = 0;
@@ -44,7 +49,9 @@ namespace foto {
 		std::vector<Submesh> submeshes;
 		enginemath::Vec3 boundsMin;
 		enginemath::Vec3 boundsMax;
+		std::unique_ptr<AccelerationStructure> bottomLevel;
 
 		static u32 nonEmptyCount(size count);
+		static VkBufferUsageFlags rayTracingUsage(Device& device);
 	};
 } // namespace foto
