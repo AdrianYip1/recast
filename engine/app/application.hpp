@@ -45,6 +45,8 @@ namespace foto {
 		u32 loadTexture(const std::string& filePath);
 		u32 loadTextureHDR(const std::string& filePath);
 		u32 createTexture(const void* rgba, u32 width, u32 height);
+		// Exact values (UNORM, no mips) for lookups like ids: read it with texelFetch
+		u32 createDataTexture(const void* rgba, u32 width, u32 height);
 		u32 createMaterial(const Material& material);
 		void updateMaterial(u32 index, const Material& material);
 		const Material& getMaterial(u32 index);
@@ -88,6 +90,8 @@ namespace foto {
 
 		bool supportsPathTracing();
 		void setPathTracing(bool enabled, u32 photoMaterial);
+		// Which cutout each photo pixel shows, so the path tracer can look past boxes where the photo shows something else
+		void setPathTraceOwners(u32 ownerTexture);
 		bool isPathTracing();
 		// Edge-aware filtering of the path traced noise, strongest right after a change (on by default)
 		void setDenoise(bool enabled);

@@ -66,6 +66,7 @@ namespace foto {
 		// Replaces the shadow + scene passes with pathtrace.comp, which composites the dynamic casters into photoTexture.
 		// Samples accumulate over frames and restart whenever the casters, lights or camera change
 		void setPathTracing(bool enabled, u32 photoTexture);
+		void setPathTraceOwners(u32 ownerTexture) { traceOwnerTexture = ownerTexture; };
 		bool isPathTracing() { return pathTracing; };
 		void setDenoise(bool enabled) { denoise = enabled; };
 		bool supportsPathTracing() { return pathTracePipeline != nullptr; };
@@ -120,6 +121,7 @@ namespace foto {
 
 		bool pathTracing = false;
 		u32 tracePhotoTexture = 0;
+		u32 traceOwnerTexture = 0;
 		u32 traceSamples = 0;
 		std::vector<u8> traceKey;
 		std::unique_ptr<DescriptorPool> traceDescriptorPool;

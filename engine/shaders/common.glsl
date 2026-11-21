@@ -31,7 +31,7 @@ struct Material {
 	float specular;
 	float transmission;
 	float ior;
-	float pad0;
+	uint maskId; // the cutout (owner image value) this room surface belongs to, 0 = none
 	float pad1;
 };
 

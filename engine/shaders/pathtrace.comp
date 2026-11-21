@@ -109,6 +109,14 @@ vec3 radiance(ivec2 pixel, vec2 viewportUV, vec2 pixelUV, inout uint state, out 
 
 	vec3 photo = photoAt(pixelUV);
 	Hit hit = traceClosest(origin, direction, MASK_ALL);
+	// A box stands in for furniture of another shape: where the photo's cutout says this pixel isn't that piece,
+	// the box isn't there, so look past it (a box is entered and left, both faces carry its mask)
+	uint owner = ownerAt(pixelUV);
+	for (int skip = 0; skip < 8 && hit.found && !hit.dynamic; skip++) {
+		uint maskId = materials[hit.material].maskId;
+		if (maskId == 0u || maskId == owner) break;
+		hit = traceClosest(hit.position + direction * 2e-3, direction, MASK_ALL);
+	}
 	objectCoverage = hit.found && hit.dynamic ? 1.0 : 0.0;
 	light = vec3(1.0);
 	surface = vec4(0.0);

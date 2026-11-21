@@ -10,6 +10,7 @@
 #include "scene/placement.hpp"
 
 #include <nlohmann/json.hpp>
+#include <stb_image.h>
 
 #include <array>
 #include <cctype>
@@ -354,6 +355,7 @@ void Visualizer::onUpdate(foto::f32 deltaTime) {
 	applySceneLighting();
 	if (editRoom) updateRoomEditing();
 	else if (!(showLights && updateLightEditing())) updateObjectInteraction();
+	setPathTraceOwners(ownerTexture);
 	setPathTracing(pathTrace && !showOriginal && !editRoom && !showLights && supportsPathTracing(), photoMaterial);
 	float pixelsPerPhotoPixel = getViewportSize().x / std::max(static_cast<float>(scene.image_size[0]), 1.0f);
 	setCameraMatch(cameraMatch.grain, cameraMatch.blur * pixelsPerPhotoPixel);
@@ -796,7 +798,9 @@ void Visualizer::rebuildProxyMeshes() {
 		proxyMeshes.push_back(mesh);
 		proxyMeshOrigins.push_back(proxy.point);
 		const recast::Vec3f& albedo = proxy.material.albedo;
-		proxyAlbedoMaterials.push_back(createMaterial({ .baseColor = { albedo[0], albedo[1], albedo[2], 1.0f } }));
+		auto mask = proxyMaskIds.find(proxy.id);
+		proxyAlbedoMaterials.push_back(createMaterial({ .baseColor = { albedo[0], albedo[1], albedo[2], 1.0f },
+														.maskId = mask == proxyMaskIds.end() ? 0u : mask->second }));
 	}
 }
 
@@ -831,20 +835,47 @@ namespace {
 	constexpr float HANDLE_RADIUS = 7.0f;
 }
 
-// Names from detect.json ("chair", "table"...), so the room list and the labels say what each box is
+// From detect.json: names ("chair", "table"...) for the room list and labels, and the owner image: each detected
+// object's cutout gets a number (its boxes' Material::maskId), which the path tracer uses to look past a box
+// wherever the photo shows something other than that object
 void Visualizer::loadProxyLabels() {
 	proxyLabels.clear();
+	proxyMaskIds.clear();
+	ownerTexture = 0;
 	std::ifstream file(scene.directory / "detect.json");
 	if (!file) return;
 	try {
 		nlohmann::json detect = nlohmann::json::parse(file);
+		std::vector<unsigned char> owners;
+		int ownerWidth = 0, ownerHeight = 0;
+		foto::u32 next = 1;
 		for (const auto& object : detect.value("objects", nlohmann::json::array())) {
 			std::string label = object.value("label", "object");
 			const auto& ids = object.value("proxy_ids", nlohmann::json::array());
 			for (size_t k = 0; k < ids.size(); k++) {
 				proxyLabels[ids[k].get<foto::u32>()] = ids.size() == 1 ? label : label + (k == 0 ? " (seat)" : " (back)");
 			}
+
+			std::string maskPath = object.value("mask", "");
+			if (maskPath.empty() || next > 255) continue;
+			int width = 0, height = 0, channels = 0;
+			unsigned char* mask = stbi_load((scene.directory / maskPath).string().c_str(), &width, &height, &channels, 1);
+			if (!mask) continue;
+			if (owners.empty()) {
+				ownerWidth = width;
+				ownerHeight = height;
+				owners.assign(static_cast<size_t>(width) * height * 4, 0);
+			}
+			if (width == ownerWidth && height == ownerHeight) {
+				for (size_t i = 0; i < static_cast<size_t>(width) * height; i++) {
+					if (mask[i] > 127) owners[i * 4] = static_cast<unsigned char>(next);
+				}
+				for (const auto& id : ids) proxyMaskIds[id.get<foto::u32>()] = next;
+				next++;
+			}
+			stbi_image_free(mask);
 		}
+		if (!owners.empty()) ownerTexture = createDataTexture(owners.data(), ownerWidth, ownerHeight);
 	}
 	catch (const std::exception& e) {
 		std::cerr << "[recast] detect.json: " << e.what() << std::endl;

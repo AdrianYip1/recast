@@ -74,7 +74,8 @@ namespace foto {
 		f32 specular = 1.0f; // KHR_materials_specular factor: 0 = no gloss at all (a purely diffuse surface)
 		f32 transmission = 0.0f; // KHR_materials_transmission: 1 = clear glass (path tracing only)
 		f32 ior = 1.5f;          // KHR_materials_ior
-		f32 _pad[2] = {};
+		u32 maskId = 0; // path tracing: the cutout (owner image value) this room surface belongs to, 0 = none
+		f32 _pad = 0.0f;
 	};
 	static_assert(sizeof(Material) == 64);
 
@@ -117,8 +118,10 @@ namespace foto {
 		u32 trace; // 0 = only show the accumulated result
 		u32 photonCount = CAUSTIC_PHOTONS;
 		enginemath::Vec4 objectSphere; // bounding sphere of the dynamic casters, w = radius (0 = none)
+		u32 ownerTexture = 0; // per photo pixel: which cutout it shows (Material::maskId), 0 = no owner image
+		u32 _pad[3] = {};
 	};
-	static_assert(sizeof(TracePush) == 32);
+	static_assert(sizeof(TracePush) == 48);
 
 	inline constexpr VkPushConstantRange TRACE_PUSH_RANGE = {
 		.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,

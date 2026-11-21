@@ -208,6 +208,15 @@ foto::u32 foto::Application::createTexture(const void* rgba, u32 width, u32 heig
 	return addTexture(Image::createTexture(*device, render->getCommandPool(), rgba, size, { width, height }));
 }
 
+foto::u32 foto::Application::createDataTexture(const void* rgba, u32 width, u32 height) {
+	VkDeviceSize size = static_cast<VkDeviceSize>(width) * height * 4;
+	return addTexture(Image::createTexture(*device, render->getCommandPool(), rgba, size, { width, height }, VK_FORMAT_R8G8B8A8_UNORM, false));
+}
+
+void foto::Application::setPathTraceOwners(u32 ownerTexture) {
+	render->setPathTraceOwners(ownerTexture);
+}
+
 foto::u32 foto::Application::addTexture(std::unique_ptr<Image> image) {
 	textures.push_back(std::move(image));
 	return render->addTexture(*textures.back(), *sampler);

@@ -118,6 +118,8 @@ private:
 	int hoveredHandle = -1;   // 0-5: faces of the selected box (x-, x+, y-, y+, z-, z+), 6: the selected wall
 	int draggingHandle = -1;  // -1 while dragging a whole box
 	std::map<foto::u32, std::string> proxyLabels;
+	std::map<foto::u32, foto::u32> proxyMaskIds; // proxy id -> its object's cutout number in the owner image
+	foto::u32 ownerTexture = 0;
 	void loadProxyLabels();
 	std::string proxyName(size_t index) const;
 	bool projectToScreen(const enginemath::Vec3& point, ImVec2& out);

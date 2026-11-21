@@ -7,6 +7,7 @@ layout(push_constant) uniform TracePush {
 	uint trace;
 	uint photonCount;
 	vec4 objectSphere; // bounding sphere of the dynamic casters (w = radius, 0 = none), where photons are aimed
+	uint ownerTexture; // which cutout each photo pixel shows (Material.maskId), 0 = none
 } push;
 
 layout(set = 1, binding = 0) uniform accelerationStructureEXT scene;
@@ -210,6 +211,14 @@ vec3 albedoOf(Hit hit) {
 
 vec3 photoAt(vec2 viewportUV) {
 	return textureLod(textures[push.photoTexture], viewportUV, 0.0).rgb;
+}
+
+// The cutout the photo shows at this pixel (exact, no filtering), 0 = none
+uint ownerAt(vec2 viewportUV) {
+	if (push.ownerTexture == 0u) return 0u;
+	ivec2 size = textureSize(textures[push.ownerTexture], 0);
+	ivec2 texel = clamp(ivec2(viewportUV * vec2(size)), ivec2(0), size - 1);
+	return uint(texelFetch(textures[push.ownerTexture], texel, 0).r * 255.0 + 0.5);
 }
 
 // Diffuse light leaving an inserted object (no further bounces). Glass mostly lets the room's ambient light through
