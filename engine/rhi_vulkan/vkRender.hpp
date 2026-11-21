@@ -17,11 +17,17 @@ namespace foto {
 		Render(const Render& other) = delete;
 		Render& operator=(const Render& other) = delete;
 
+		void drawFrame();
 	private:
-		VkDevice device = VK_NULL_HANDLE;
+		VkDevice _device = VK_NULL_HANDLE;
 		VkCommandPool _commandPool = VK_NULL_HANDLE;
 		VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
 
+		VkSemaphore imageAvailableSem = VK_NULL_HANDLE;
+		VkSemaphore renderFinishedSem = VK_NULL_HANDLE;
+		VkFence inFlightFence = VK_NULL_HANDLE;
+
+		void createSyncObjects(VkDevice _device);
 		void recordCommandBuffer(Swapchain& swapchain, Pipeline& pipeline, VkCommandBuffer commandBuffer, u32 imageIdx);
 		static VkCommandPool createCommandPool(Device& device);
 		static VkCommandBuffer createCommandBuffer(Device& device, VkCommandPool commandPool);
