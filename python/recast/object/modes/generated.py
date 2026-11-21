@@ -242,7 +242,7 @@ def upright(vertices: np.ndarray, max_tilt_deg: float = 45.0, iterations: int = 
 
 
 def build_generated(rgb8: np.ndarray, alpha: np.ndarray, resolution: int | None = None, texture_size: int = 1024,
-                    remove_lighting: bool = True, model=None, max_faces: int = 20000) -> tuple[trimesh.Trimesh, Texture, dict]:
+                    remove_lighting: bool = True, model=None, max_faces: int = 10000) -> tuple[trimesh.Trimesh, Texture, dict]:
     """Cutout (sRGB uint8 + alpha in [0, 1]) -> textured mesh, +Y up, front towards +Z, arbitrary scale."""
     import torch
     import xatlas

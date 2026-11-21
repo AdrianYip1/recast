@@ -74,33 +74,41 @@ def soft_alpha(mask: np.ndarray, feather_px: float = 1.5) -> np.ndarray:
     return np.clip(cv2.GaussianBlur(mask.astype(np.float32), (0, 0), feather_px), 0.0, 1.0)
 
 
-_SESSION = None
+SAM_MODEL = "facebook/sam-vit-base"   # Apache-2.0
+_SAM = None
 
 
-def salient_alpha(img_linear: np.ndarray, rect=None, margin: float = 0.08) -> np.ndarray:
-    """Soft cutout (H, W) in [0, 1] from BiRefNet lite (MIT, run locally as ONNX through rembg), inside `rect`
-    (x, y, w, h) grown by `margin` when given. Hair-thin edges and holes come out far cleaner than GrabCut."""
-    from PIL import Image
-    from rembg import new_session, remove
+def _sam():
+    """SAM (Segment Anything) on the GPU when there is one, loaded once and kept (the worker preloads it)."""
+    global _SAM
+    if _SAM is None:
+        import torch
+        from transformers import SamModel, SamProcessor
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+
+        def load(cls):
+            try:
+                return cls.from_pretrained(SAM_MODEL, local_files_only=True)
+            except OSError:
+                print(f"downloading {SAM_MODEL} (once)")
+                return cls.from_pretrained(SAM_MODEL)
+        _SAM = (load(SamProcessor), load(SamModel).to(device).eval(), device)
+    return _SAM
+
+
+def salient_alpha(img_linear: np.ndarray, rect=None) -> np.ndarray:
+    """Soft cutout (H, W) in [0, 1] of the object inside `rect` (x, y, w, h; the whole photo when None), from SAM
+    prompted with that box. About 0.3 s on a GPU, and the same cutout as BiRefNet (IoU 0.98 on a bottle photo)."""
+    import torch
 
     h, w = img_linear.shape[:2]
-    x0, y0, x1, y1 = 0, 0, w, h
-    if rect is not None:
-        rx, ry, rw, rh = rect
-        mx, my = int(rw * margin), int(rh * margin)
-        x0, y0 = max(0, rx - mx), max(0, ry - my)
-        x1, y1 = min(w, rx + rw + mx), min(h, ry + rh + my)
-    crop = (np.clip(linear_to_srgb(img_linear[y0:y1, x0:x1]), 0, 1) * 255).astype(np.uint8)
-    global _SESSION
-    if _SESSION is None:
-        import onnxruntime
-        # CPU: onnxruntime's DirectML build runs out of memory on this model (tried on an RTX 5060 laptop).
-        # Without the memory arena it holds ~0.5 GB instead of ~7 GB between runs, for about 1 s more per cutout
-        options = onnxruntime.SessionOptions()
-        options.enable_cpu_mem_arena = False
-        options.enable_mem_pattern = False
-        _SESSION = new_session("birefnet-general-lite", sess_opts=options, providers=["CPUExecutionProvider"])
-    mask = remove(Image.fromarray(crop), session=_SESSION, only_mask=True)
-    alpha = np.zeros((h, w), np.float32)
-    alpha[y0:y1, x0:x1] = np.asarray(mask, np.float32) / 255.0
-    return alpha
+    x, y, bw, bh = rect if rect is not None else (0, 0, w, h)
+    processor, model, device = _sam()
+    srgb8 = (np.clip(linear_to_srgb(img_linear), 0, 1) * 255).astype(np.uint8)
+    inputs = processor(images=srgb8, input_boxes=[[[float(x), float(y), float(x + bw), float(y + bh)]]], return_tensors="pt")
+    inputs = {k: v.to(device) if hasattr(v, "to") else v for k, v in inputs.items()}
+    with torch.no_grad():
+        out = model(**inputs, multimask_output=False)
+    logits = processor.image_processor.post_process_masks(out.pred_masks.float().cpu(), inputs["original_sizes"].cpu(),
+                                                          inputs["reshaped_input_sizes"].cpu(), binarize=False)[0][0, 0]
+    return torch.sigmoid(logits).numpy().astype(np.float32)

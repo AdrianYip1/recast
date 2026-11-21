@@ -27,8 +27,8 @@ pip install -e ".[models]"
 
 Models (all local, no online AI service): OneFormer ADE20K swin-tiny (MIT) and
 Depth Anything V2 Base (CC-BY-NC-4.0, non-commercial) for `detect`; TripoSR
-(MIT, code vendored in `third_party/TripoSR`) and BiRefNet lite (MIT, ONNX via
-rembg) for `--mode generated`.
+(MIT, code vendored in `third_party/TripoSR`) and SAM ViT-B (Apache-2.0) for
+`--mode generated`.
 
 ## Scene folder (the contract)
 
@@ -151,8 +151,8 @@ the same spot in the photo, standing on whatever surface is there now.
 
 **B. Object photo -> object.glb** (`recast.object`). One photo, one box drag, one real measurement.
 
-`--mode generated` (the panel's **3D model** and **glass**): BiRefNet cuts the object out inside the
-dragged box, TripoSR builds the whole shape (back included), the mesh is simplified to 20k faces and
+`--mode generated` (the panel's **3D model** and **glass**): SAM cuts the object out inside the
+dragged box, TripoSR builds the whole shape (back included), the mesh is simplified to 10k faces and
 unwrapped (xatlas), and a 1024 px texture is baked: the photo itself wherever the surface faced the
 camera (projected through TripoSR's input camera), TripoSR's predicted colour on the back. The photo's
 lighting is divided out (order-1 spherical harmonics fitted over the normals), the object is stood
