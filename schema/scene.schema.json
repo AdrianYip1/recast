@@ -7,7 +7,7 @@
   "required": ["version", "photo", "image_size", "camera"],
   "properties": {
     "version": { "const": 1 },
-    "photo": { "type": "string", "description": "path relative to scene.json, linear Radiance .hdr" },
+    "photo": { "type": "string", "description": "path relative to scene.json: .jpg (sRGB, the default photo.jpg) or .hdr (linear)" },
     "image_size": { "$ref": "#/$defs/size" },
     "camera": {
       "type": "object",

@@ -1,6 +1,6 @@
 {
   "mode": "revolution",
-  "photo": "C:\\Users\\catsr\\AppData\\Local\\Temp\\tmpltfswtlw\\vase.png",
+  "photo": "C:\\Users\\catsr\\AppData\\Local\\Temp\\tmp2v4ut2tv\\vase.jpg",
   "measurement": {
     "height_m": 0.3
   },
@@ -54,7 +54,7 @@
     ]
   },
   "scale_units_to_m": 0.5999999999999998,
-  "reprojection_iou": 0.9680705808213423,
+  "reprojection_iou": 0.9552813425468905,
   "vertices": 3074,
   "faces": 6144
 }

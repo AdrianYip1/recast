@@ -3,11 +3,12 @@
 Layout of a scene folder (data/<scene_name>/):
 
     scene.json        camera, paths, scale, proxies, lights, SH   (Python writes, engine adds proxies/lights)
-    photo.hdr         undistorted, linear float RGB scene photo   (Python)
+    photo.jpg         undistorted scene photo, sRGB               (Python)
     object.glb        extracted object, metres, +Y up, pivot at base (Python)
-    object_mask.png   optional cutout alpha, for debugging        (Python)
+    object_mask.jpg   cutout, for debugging                       (Python)
+    object_check.jpg  mesh outline reprojected on the object photo (Python)
     gbuffer/          normals.hdr, ids.png, depth.hdr             (engine, for the lighting fit)
-    render.png        final composite                             (engine)
+    render.jpg        final composite                             (engine)
 
 Rules: metres; world +Y up, right-handed; camera rotation is camera-to-world in
 engine convention (looks down -Z); pixel origin top-left; colours linear RGB.
@@ -30,6 +31,7 @@ import numpy as np
 from .camera import Camera
 
 SCHEMA_VERSION = 1
+PHOTO_NAME = "photo.jpg"
 GLOSSY_ROUGHNESS = 0.5  # proxies smoother than this get highlight masking in the lighting fit
 
 
@@ -178,7 +180,7 @@ class ObjectPlacement:
 @dataclass
 class Scene:
     camera: Camera
-    photo: str = "photo.hdr"
+    photo: str = PHOTO_NAME
     scale_reference: dict = field(default_factory=lambda: {"kind": "camera_height", "metres": 1.5})
     object: ObjectPlacement | None = None
     proxies: list[Proxy] = field(default_factory=list)
@@ -220,7 +222,7 @@ class Scene:
                  "proxies", "lights", "lighting"}
         return cls(
             camera=Camera.from_dict(d["camera"], d["image_size"]),
-            photo=d.get("photo", "photo.hdr"),
+            photo=d.get("photo", PHOTO_NAME),
             scale_reference=d.get("scale_reference", {"kind": "camera_height", "metres": 1.5}),
             object=None if not d.get("object") else ObjectPlacement.from_dict(d["object"]),
             proxies=[proxy_from_dict(p) for p in d.get("proxies", [])],

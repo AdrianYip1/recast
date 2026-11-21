@@ -1,7 +1,7 @@
 """Builds data/example/: a fake room in the exact layout the engine reads.
 
-    scene.json, photo.hdr, gbuffer/,
-    object.glb, object_mask.png, object_meta.json, object_check.png
+    scene.json, photo.jpg, gbuffer/,
+    object.glb, object_mask.jpg, object_meta.json, object_check.jpg
 
 The "photo" is rendered here from known lighting (soft SH light + a window
 area light with shadows), then stage C is run on it, so scene.json shows the
@@ -18,7 +18,7 @@ import numpy as np
 
 from recast.camera import Camera
 from recast.gbuffer import save_gbuffer
-from recast.io import save_hdr, save_png
+from recast.io import load_image_linear, save_jpg
 from recast.lighting import fit_scene_lighting, irradiance, light_irradiance
 from recast.object import check
 from recast.object.cli import main as object_main
@@ -49,8 +49,8 @@ def make_object():
     h = np.linspace(0, 0.5, 40)
     vase = revolve(h, 0.11 + 0.05 * np.sin(np.pi * h / 0.5) - 0.03 * (h / 0.5) ** 2, base, 64)
     img, _ = check.render_mesh(obj_cam, vase, colour=(0.15, 0.3, 0.6))
-    shot = Path(tempfile.mkdtemp()) / "vase.png"
-    save_png(shot, img)
+    shot = Path(tempfile.mkdtemp()) / "vase.jpg"
+    save_jpg(shot, img)
 
     b = obj_cam.project(base[None])[0]
     t = obj_cam.project((base + [0, 0.5, 0])[None])[0]
@@ -98,7 +98,8 @@ def main():
     sh_true = np.array([[0.30, 0.30, 0.33], [0.10, 0.10, 0.11], [0.0, 0.0, 0.0], [0.04, 0.03, 0.02]])
     radiance_true = [(3.0, 2.8, 2.4)]
     photo, gbuf = render_photo(scene, sh_true, radiance_true)
-    save_hdr(OUT / "photo.hdr", photo)
+    save_jpg(OUT / "photo.jpg", photo)
+    photo = load_image_linear(OUT / "photo.jpg")  # fit from the jpg, like a real run
     save_gbuffer(OUT / "gbuffer", *gbuf)
 
     sh, rad, used = fit_scene_lighting(photo, *gbuf, scene, order=1)

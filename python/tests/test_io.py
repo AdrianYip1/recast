@@ -41,3 +41,24 @@ def test_hdr_roundtrip(tmp_path):
     # RGBE: 8-bit mantissas sharing one exponent, so error scales with the brightest channel
     tol = img.max(axis=-1, keepdims=True) / 64
     assert (np.abs(back - img) <= tol).all()
+
+
+def test_jpg_roundtrip_is_close(tmp_path):
+    from recast.io import load_image_linear, save_jpg
+    yy, xx = np.mgrid[0:64, 0:64]
+    img = np.dstack([xx / 63, yy / 63, np.full_like(xx, 0.5, dtype=float)]).astype(np.float32) ** 2.2
+    p = tmp_path / "x.jpg"
+    save_jpg(p, img)
+    assert Image.open(p).format == "JPEG"
+    back = load_image_linear(p)
+    assert back.shape == img.shape
+    assert np.abs(back - img).mean() < 0.01
+
+
+def test_load_image_linear_reads_hdr_and_jpg(tmp_path):
+    from recast.io import load_image_linear, save_jpg
+    img = np.full((8, 8, 3), 0.25, np.float32)
+    save_hdr(tmp_path / "a.hdr", img)
+    save_jpg(tmp_path / "a.jpg", img)
+    assert np.allclose(load_image_linear(tmp_path / "a.hdr"), 0.25, atol=0.01)
+    assert np.allclose(load_image_linear(tmp_path / "a.jpg"), 0.25, atol=0.01)

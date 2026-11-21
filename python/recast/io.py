@@ -157,7 +157,27 @@ def load_hdr(path: str | Path) -> np.ndarray:
     return cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
 
 
+JPEG_QUALITY = 95
+
+
+def to_srgb8(linear_rgb: np.ndarray) -> np.ndarray:
+    return np.clip(linear_to_srgb(linear_rgb) * 255.0 + 0.5, 0, 255).astype(np.uint8)
+
+
 def save_png(path: str | Path, linear_rgb: np.ndarray) -> None:
-    """Write linear RGB as an 8-bit sRGB PNG (for previews)."""
-    srgb = np.clip(linear_to_srgb(linear_rgb) * 255.0 + 0.5, 0, 255).astype(np.uint8)
-    Image.fromarray(srgb).save(path)
+    """Write linear RGB as an 8-bit sRGB PNG."""
+    Image.fromarray(to_srgb8(linear_rgb)).save(path)
+
+
+def save_jpg(path: str | Path, image: np.ndarray, linear: bool = True, quality: int = JPEG_QUALITY) -> None:
+    """Write a .jpg. `image` is linear RGB float (converted to sRGB), or already
+    8-bit (sRGB colour, or a single-channel mask) when linear=False."""
+    data = to_srgb8(image) if linear else np.asarray(image, dtype=np.uint8)
+    Image.fromarray(data).save(path, quality=quality, subsampling=0)
+
+
+def load_image_linear(path: str | Path) -> np.ndarray:
+    """Linear RGB float from .hdr (already linear) or .jpg/.png (sRGB)."""
+    if Path(path).suffix.lower() == ".hdr":
+        return load_hdr(path)
+    return load_photo(path).pixels

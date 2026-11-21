@@ -22,9 +22,9 @@ from PIL import Image
 from . import evaluate, lens
 from .camera import solve_camera
 from .gbuffer import load_gbuffer, save_gbuffer
-from .io import Photo, linear_to_srgb, load_hdr, load_photo, save_hdr
+from .io import Photo, linear_to_srgb, load_image_linear, load_photo, save_jpg
 from .lighting import fit_scene_lighting
-from .scene import Lighting, Scene, floor_proxy, render_gbuffer, update_scene_file
+from .scene import PHOTO_NAME, Lighting, Scene, floor_proxy, render_gbuffer, update_scene_file
 from .vanishing import assign_axes, detect_segments, find_vanishing_points, vp_from_segments
 
 DEFAULT_DATA_ROOT = Path(__file__).resolve().parents[2] / "data"
@@ -101,7 +101,7 @@ def cmd_scene(args) -> None:
     print(f"camera: f = {cam.focal_px:.1f} px ({np.degrees(cam.fov_y):.1f} deg vertical fov), "
           f"height {args.camera_height} m")
 
-    save_hdr(out / "photo.hdr", img)
+    save_jpg(out / PHOTO_NAME, img)
     scale_ref = {"kind": "camera_height", "metres": args.camera_height}
     preprocess_info = {"lensfun": settings["lensfun"], "k1": args.k1, "k2": args.k2,
                        "focal_px": settings["focal_px"]}
@@ -109,11 +109,11 @@ def cmd_scene(args) -> None:
     path = out / "scene.json"
     if path.exists() and not args.overwrite:
         # keep the engine's proxies/lights/object; only the camera side is ours
-        update_scene_file(path, photo="photo.hdr", image_size=[w, h], camera=cam.to_dict(),
+        update_scene_file(path, photo=PHOTO_NAME, image_size=[w, h], camera=cam.to_dict(),
                           scale_reference=scale_ref, preprocess=preprocess_info)
         print(f"updated camera in {path}")
     else:
-        Scene(cam, scale_reference=scale_ref, proxies=[floor_proxy(0)],
+        Scene(cam, photo=PHOTO_NAME, scale_reference=scale_ref, proxies=[floor_proxy(0)],
               extra={"preprocess": preprocess_info}).save(path)
         print(f"wrote {path}")
 
@@ -124,7 +124,7 @@ def cmd_light(args) -> None:
     out = scene_dir(args)
     path = require(out / "scene.json", "run `python -m recast scene` (stage A) first")
     scene = Scene.load(path)
-    photo = load_hdr(out / scene.photo)
+    photo = load_image_linear(out / scene.photo)
 
     gdir = out / "gbuffer"
     if args.python_gbuffer or not (gdir / "ids.png").exists():
@@ -156,8 +156,11 @@ def _load_srgb(path: Path) -> np.ndarray:
 def cmd_eval(args) -> None:
     out = scene_dir(args)
     data = json.loads(require(out / "scene.json", "run `python -m recast scene` (stage A) first").read_text())
-    render_path = Path(args.render) if args.render else out / "render.png"
-    render = _load_srgb(require(render_path, "the engine writes render.png; or pass --render"))
+    if args.render:
+        render_path = Path(args.render)
+    else:  # render.jpg, or render.png if that's what the engine wrote
+        render_path = next((out / n for n in ("render.jpg", "render.png") if (out / n).exists()), out / "render.jpg")
+    render = _load_srgb(require(render_path, "the engine writes render.jpg; or pass --render"))
 
     # the ground truth went through the same lens, so undistort it the same way
     truth_photo = load_photo(args.truth)
@@ -168,7 +171,7 @@ def cmd_eval(args) -> None:
     if args.mask:
         region = np.asarray(Image.open(args.mask).convert("L")) > 127
     else:
-        empty = np.clip(linear_to_srgb(load_hdr(out / data.get("photo", "photo.hdr"))), 0, 1)
+        empty = np.clip(linear_to_srgb(load_image_linear(out / data.get("photo", PHOTO_NAME))), 0, 1)
         if empty.shape != render.shape:
             empty = cv2.resize(empty, (render.shape[1], render.shape[0]), interpolation=cv2.INTER_AREA)
         region = evaluate.change_mask(render, empty)
@@ -190,7 +193,7 @@ def main(argv=None) -> None:
         sp.add_argument("--name", required=True, help="scene folder name under data/")
         sp.add_argument("--data-root", default=str(DEFAULT_DATA_ROOT))
 
-    a = sub.add_parser("scene", help="stage A: scene photo -> photo.hdr + camera")
+    a = sub.add_parser("scene", help="stage A: scene photo (.jpg) -> photo.jpg + camera")
     common(a)
     a.add_argument("photo")
     a.add_argument("--camera-height", type=float, default=1.5, help="metres above the floor (sets scale)")

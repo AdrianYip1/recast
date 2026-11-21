@@ -22,12 +22,19 @@ Extras: `lens` = lensfun database for undistortion, `raw` = camera RAW files
 ```
 data/<scene_name>/
   scene.json        camera, paths, scale, proxies, lights, SH   (Python writes, engine adds proxies/lights)
-  photo.hdr         undistorted, linear float RGB scene photo   (Python)
+  photo.jpg         undistorted scene photo, sRGB               (Python)
   object.glb        extracted object, metres, +Y up, pivot at base (Python)
-  object_mask.png   cutout alpha, for debugging                 (Python)
+  object_mask.jpg   cutout, for debugging                       (Python)
+  object_check.jpg  mesh outline reprojected on the object photo (Python)
   gbuffer/          normals.hdr, ids.png, depth.hdr             (engine, for the lighting fit)
-  render.png        final composite                             (engine)
+  render.jpg        final composite (render.png also accepted)  (engine)
 ```
+
+Photos go in and come out as **.jpg** (quality 95, no chroma subsampling).
+`photo.jpg` is sRGB: the engine should load it with `stbi_load` and convert to
+linear (or use an `_SRGB` texture format) before lighting maths. The lighting fit
+also reads a linear `photo.hdr` if `scene.json` points at one. The gbuffer stays
+`.hdr`/`.png`: JPEG compression would corrupt proxy ids, normals and depths.
 
 Engine: `foto.exe data/<scene_name>/scene.json`
 
@@ -58,11 +65,11 @@ python -m recast scene  room.jpg --name living_room --camera-height 1.45   # A
 python -m recast object mug.jpg  --name living_room --mode revolution --height 0.12        # B
 #   ... engine: click proxies + lights, export gbuffer/ ...
 python -m recast light  --name living_room                                  # C
-#   ... engine: render.png ...
+#   ... engine: render.jpg ...
 python -m recast eval   --name living_room --truth with_real_mug.jpg        # D
 ```
 
-**A. Scene photo -> photo.hdr + camera** (`io`, `lens`, `vanishing`, `camera`)
+**A. Scene photo (.jpg) -> photo.jpg + camera** (`io`, `lens`, `vanishing`, `camera`)
 1. Decode to linear (RAW via rawpy, or inverse sRGB for JPEG).
 2. Undistort with lensfun (camera + lens from EXIF), or `--k1/--k2`.
 3. Focal length: solved from vanishing points, or `--trust-exif` / `--focal-mm --sensor-width-mm`.
@@ -98,7 +105,7 @@ python -m recast.object mug.jpg --mode revolution --height 0.12 --out ..\data\ro
    cropped to the mask; `--delight` divides out blurred luminance.
 6. Export: pivot at the base centre, +Y up, scaled to `--height` (or `--width`),
    `object.glb` + `object_meta.json` (mode, clicks, camera, measurement, scores).
-7. Check: the mesh is reprojected onto the photo; `object_check.png` shows mask
+7. Check: the mesh is reprojected onto the photo; `object_check.jpg` shows mask
    (green) vs mesh (red) and the IoU is printed. `--compare truth.glb` adds
    height error and Chamfer distance against a known mesh (e.g. a GLB the engine
    screenshotted from a known camera; `tests/test_object_modes.py` does the same with a Python render).
@@ -107,13 +114,13 @@ Engine side for cutout modes: `card`/`extrude` glbs use `alphaMode: MASK`
 (cutoff 0.5) and cards are `doubleSided`, so the engine needs an alpha-cutoff
 discard in the fragment shader and a no-culling path for double-sided materials.
 
-**C. Lighting fit** (`lighting`): loads photo.hdr + gbuffer, masks pixels that
+**C. Lighting fit** (`lighting`): loads photo.jpg + gbuffer, masks pixels that
 are off the proxies, clipped, highlights on glossy proxies (roughness < 0.5), or
 in the shadow of a clicked light; then one least-squares solve for the SH
 coefficients (order 1 = 4 by default, `--order 2` = 9) **and** each clicked area
 light's radiance (exact polygon-light irradiance). Writes `lighting` and the
 lights' `radiance` back into scene.json.
 
-**D. Evaluation** (`evaluate`): PSNR/SSIM of render.png vs. a ground-truth
+**D. Evaluation** (`evaluate`): PSNR/SSIM of render.jpg vs. a ground-truth
 photo (real object placed, same tripod position), over the whole image and the
 object region (object + shadow, found where the render differs from the empty room).

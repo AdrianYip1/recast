@@ -24,7 +24,10 @@ def grabcut(img_linear: np.ndarray, rect=None, fg_strokes: np.ndarray | None = N
     fg_strokes / bg_strokes: bool masks the user painted as definitely object /
     definitely background.
     """
-    bgr = _bgr8(img_linear)
+    # JPEG ringing around edges reads as "not background" to GrabCut's colour model and
+    # the mask bleeds outward; a 5x5 median removes the speckle but keeps edges.
+    # (Only GrabCut sees the filtered image; the texture uses the original.)
+    bgr = cv2.medianBlur(_bgr8(img_linear), 5)
     h, w = bgr.shape[:2]
     bgd = np.zeros((1, 65), np.float64)
     fgd = np.zeros((1, 65), np.float64)

@@ -18,7 +18,7 @@ from PIL import Image
 
 from .. import object3d
 from ..camera import Camera, solve_camera
-from ..io import load_photo
+from ..io import load_photo, save_jpg
 from ..scene import ObjectPlacement, update_scene_file
 from ..vanishing import assign_axes, detect_segments, find_vanishing_points, vp_from_segments
 from . import MODES, annotate, check
@@ -107,6 +107,7 @@ def run(args) -> dict:
         obj = object3d.build_object(img, mask, height_m=height, depth_ratio=args.depth_ratio,
                                     delight=args.delight)
         object3d.export_glb(obj, out / "object.glb")
+        save_jpg(out / "object_mask.jpg", mask.astype(np.uint8) * 255, linear=False)
         meta = {"mode": "inflate", "measurement": {"height_m": height}, "photo": str(args.photo)}
         write_meta(out / "object_meta.json", meta)
         _place_in_scene(out)
@@ -159,8 +160,8 @@ def run(args) -> dict:
     # --- check: reproject and compare with the mask
     sil = check.silhouette(cam, mesh)
     score = check.iou(sil, mask)
-    Image.fromarray(check.overlay(img, mask, sil)).save(out / "object_check.png")
-    print(f"reprojection IoU {score:.3f} (green = mask, red = mesh; see object_check.png)")
+    save_jpg(out / "object_check.jpg", check.overlay(img, mask, sil), linear=False)
+    print(f"reprojection IoU {score:.3f} (green = mask, red = mesh; see object_check.jpg)")
     if score < 0.8:
         print("  low IoU: check the ground contact / axis clicks or the camera solve")
 
@@ -173,7 +174,7 @@ def run(args) -> dict:
     world_mesh = mesh
     mesh, scale = normalize(mesh, base, height=height, width=width)
     export_glb(mesh, tex, out / "object.glb", alpha_cutout=cutout, double_sided=args.mode == "card")
-    Image.fromarray((mask * 255).astype(np.uint8)).save(out / "object_mask.png")
+    save_jpg(out / "object_mask.jpg", mask.astype(np.uint8) * 255, linear=False)
 
     meta = {
         "mode": args.mode,

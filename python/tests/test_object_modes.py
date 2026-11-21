@@ -12,7 +12,7 @@ import trimesh
 from PIL import Image
 from shapely.geometry import Polygon
 
-from recast.io import linear_to_srgb
+from recast.io import save_jpg
 from recast.object import check
 from recast.object.cli import main as object_main
 from recast.object.export import export_glb, normalize
@@ -199,7 +199,7 @@ def test_cli_revolution_end_to_end(tmp_path):
     base = _spot(cam)
     truth = _vase(base)
     img, mask = check.render_mesh(cam, truth)
-    Image.fromarray((np.clip(linear_to_srgb(img), 0, 1) * 255 + 0.5).astype(np.uint8)).save(tmp_path / "vase.png")
+    save_jpg(tmp_path / "vase.jpg", img)
     normalize(truth, base, height=0.5)[0].export(tmp_path / "truth.glb")
 
     # floor/table lines the user would trace, from the same camera
@@ -212,7 +212,7 @@ def test_cli_revolution_end_to_end(tmp_path):
     base_uv = cam.project(base[None])[0]
     top_uv = cam.project((base + [0, 0.5, 0])[None])[0]
     out = tmp_path / "scene"
-    object_main([str(tmp_path / "vase.png"), "--mode", "revolution", "--height", "0.5", "--out", str(out),
+    object_main([str(tmp_path / "vase.jpg"), "--mode", "revolution", "--height", "0.5", "--out", str(out),
                  "--rect", *map(str, rect), "--base", *map(str, base_uv), "--top", *map(str, top_uv),
                  "--lines", str(tmp_path / "lines.json"), "--no-ui", "--no-lensfun",
                  "--compare", str(tmp_path / "truth.glb")])
@@ -222,7 +222,8 @@ def test_cli_revolution_end_to_end(tmp_path):
     assert meta["reprojection_iou"] > 0.9
     assert meta["compare"]["height_error_pct"] < 1.0
     assert meta["compare"]["chamfer_pct_of_height"] < 4.0
-    for f in ("object.glb", "object_mask.png", "object_check.png"):
-        assert (out / f).exists()
+    assert (out / "object.glb").exists()
+    for f in ("object_mask.jpg", "object_check.jpg"):
+        assert Image.open(out / f).format == "JPEG"
     loaded = trimesh.load(out / "object.glb", force="mesh")
     assert np.isclose(loaded.bounds[0, 1], 0.0, atol=1e-6)
