@@ -504,7 +504,8 @@ def shape_carve(cam: Camera, P: np.ndarray, mask: np.ndarray, hidden: np.ndarray
     mesh.fix_normals()
     if len(mesh.faces) < 4:
         return None
-    vertices = np.asarray(mesh.vertices)
+    vertices = np.array(mesh.vertices)
+    vertices[vertices[:, 1] < lo[1] + 1e-3, 1] = lo[1]       # exactly on what it stands on (simplifying nudges it)
     anchor = vertices.mean(axis=0)
     return anchor, vertices - anchor, np.asarray(mesh.faces).tolist()
 
