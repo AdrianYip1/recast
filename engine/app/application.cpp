@@ -203,6 +203,26 @@ void foto::Application::setWhiteBalance(const Vec3& gains) {
 	whiteBalance = gains;
 }
 
+bool foto::Application::getCursorRay(Vec3& origin, Vec3& direction) {
+	if (imgui->wantsMouse()) return false;
+
+	VkRect2D rect = render->getSceneRect();
+	enginemath::Vec2 cursor = window->getFramebufferCursorPos();
+	f32 localX = cursor.x - static_cast<f32>(rect.offset.x);
+	f32 localY = cursor.y - static_cast<f32>(rect.offset.y);
+	if (localX < 0.0f || localY < 0.0f || localX > rect.extent.width || localY > rect.extent.height) return false;
+
+	f32 ndcX = localX / rect.extent.width * 2.0f - 1.0f;
+	f32 ndcY = localY / rect.extent.height * 2.0f - 1.0f;
+	origin = camera.position;
+	direction = camera.rayDirection(ndcX, ndcY, getAspectRatio());
+	return true;
+}
+
+bool foto::Application::isUiUsingMouse() {
+	return imgui->wantsMouse();
+}
+
 void foto::Application::screenshot(const std::string& filePath) {
 	render->requestScreenshot(filePath);
 }

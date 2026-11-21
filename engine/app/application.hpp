@@ -74,6 +74,10 @@ namespace foto {
 		// Hold right mouse to look, WASD to move, E/Q up/down, shift to go faster
 		void flyCamera(f32 deltaTime, f32 speed = 3.0f, f32 sensitivity = 0.003f);
 
+		// World ray under the mouse; false if the cursor is outside the 3D view or over the UI
+		bool getCursorRay(enginemath::Vec3& origin, enginemath::Vec3& direction);
+		bool isUiUsingMouse();
+
 	private:
 		std::unique_ptr<Window> window;
 		std::unique_ptr<Device> device;

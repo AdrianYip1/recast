@@ -62,6 +62,17 @@ enginemath::Vec2 foto::Window::getCursorPos() {
 	return enginemath::Vec2(static_cast<f32>(x), static_cast<f32>(y));
 }
 
+enginemath::Vec2 foto::Window::getFramebufferCursorPos() {
+	int windowWidth = 0, windowHeight = 0, framebufferWidth = 0, framebufferHeight = 0;
+	glfwGetWindowSize(window, &windowWidth, &windowHeight);
+	glfwGetFramebufferSize(window, &framebufferWidth, &framebufferHeight);
+
+	enginemath::Vec2 cursor = getCursorPos();
+	if (windowWidth > 0) cursor.x *= static_cast<f32>(framebufferWidth) / windowWidth;
+	if (windowHeight > 0) cursor.y *= static_cast<f32>(framebufferHeight) / windowHeight;
+	return cursor;
+}
+
 void foto::Window::setCursorCaptured(bool captured) {
 	if (captured == cursorCaptured) return;
 	cursorCaptured = captured;

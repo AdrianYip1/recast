@@ -33,6 +33,8 @@ namespace foto {
 		u32 getVertexCount() { return vertexCount; };
 		u32 getIndexCount() { return indexCount; };
 		std::vector<Submesh>& getSubmeshes() { return submeshes; };
+		const enginemath::Vec3& getBoundsMin() { return boundsMin; };
+		const enginemath::Vec3& getBoundsMax() { return boundsMax; };
 
 	private:
 		u32 vertexCount = 0;
@@ -40,6 +42,8 @@ namespace foto {
 		std::unique_ptr<Buffer> vertexBuffer;
 		std::unique_ptr<Buffer> indexBuffer;
 		std::vector<Submesh> submeshes;
+		enginemath::Vec3 boundsMin;
+		enginemath::Vec3 boundsMax;
 
 		static u32 nonEmptyCount(size count);
 	};

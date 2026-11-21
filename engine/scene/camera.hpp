@@ -34,6 +34,9 @@ namespace foto {
 		// Vulkan clip space: Y flipped (points down) and depth 0..1
 		enginemath::Mat4 getProjection(f32 aspect) const;
 
+		// World-space direction through a point of the view, in NDC (-1..1, y down like Vulkan)
+		enginemath::Vec3 rayDirection(f32 ndcX, f32 ndcY, f32 aspect) const;
+
 		void lookAt(const enginemath::Vec3& target);
 		void clampPitch();
 
