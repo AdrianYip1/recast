@@ -55,6 +55,7 @@ namespace foto {
 
 	private:
 		VkDevice _device;
+		std::vector<std::vector<char>> shaderCode;
 		std::vector<DescriptorLayoutBuilder> setLayoutInfos;
 		std::vector<VkDescriptorSetLayout> setLayouts;
 		VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
@@ -66,6 +67,7 @@ namespace foto {
 		static std::vector<VkDescriptorSetLayout> createDescriptorSetLayouts(Device& device, const std::vector<DescriptorLayoutBuilder>& infos);
 		static VkPipelineLayout createPipelineLayout(Device& device, const std::vector<VkDescriptorSetLayout>& setLayouts,
 													 const std::vector<VkPushConstantRange>& pushConstants);
-		static VkPipeline createGraphicsPipeline(Device& device, const GraphicsPipelineConfig& config, VkPipelineLayout layout);
+		static VkPipeline createGraphicsPipeline(Device& device, const GraphicsPipelineConfig& config, VkPipelineLayout layout,
+												const std::vector<std::vector<char>>& shaderCode);
 	};
 } // namespace foto

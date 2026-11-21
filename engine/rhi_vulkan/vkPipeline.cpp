@@ -2,12 +2,13 @@
 
 foto::Pipeline::Pipeline(Device& device, const GraphicsPipelineConfig& graphicsPipelineConfig) :
 	_device(device.getDevice()),
+	shaderCode({ readFile(graphicsPipelineConfig.vertexShaderFilePath), readFile(graphicsPipelineConfig.fragmentShaderFilePath) }),
 	setLayoutInfos(graphicsPipelineConfig.descriptorSetLayouts),
 	setLayouts(createDescriptorSetLayouts(device, setLayoutInfos)),
 	pipelineLayout(createPipelineLayout(device, setLayouts, graphicsPipelineConfig.pushConstants)),
-	pipeline(createGraphicsPipeline(device, graphicsPipelineConfig, pipelineLayout))
+	pipeline(createGraphicsPipeline(device, graphicsPipelineConfig, pipelineLayout, shaderCode))
 {
-
+	shaderCode.clear();
 };
 
 foto::Pipeline::~Pipeline() {
@@ -21,7 +22,7 @@ std::vector<char> foto::Pipeline::readFile(const std::string& fileName) {
 	std::ifstream file(fileName, std::ios::ate | std::ios::binary);
 
 	if (!file.is_open()) {
-		throw std::runtime_error("ERROR: vkPipeline.cpp -> readFile()");
+		throw std::runtime_error("ERROR: vkPipeline.cpp -> readFile(): can't open " + fileName);
 	}
 
 	size fileSize = (size)file.tellg();
@@ -84,13 +85,10 @@ VkPipelineLayout foto::Pipeline::createPipelineLayout(Device& device, const std:
 	return pipelineLayout;
 }
 
-VkPipeline foto::Pipeline::createGraphicsPipeline(Device& device, const GraphicsPipelineConfig& config, VkPipelineLayout layout) {
+VkPipeline foto::Pipeline::createGraphicsPipeline(Device& device, const GraphicsPipelineConfig& config, VkPipelineLayout layout,
+												  const std::vector<std::vector<char>>& shaderCode) {
 
 	// Shader Config
-	std::vector<std::vector<char>> shaderCode = {
-		readFile(config.vertexShaderFilePath),
-		readFile(config.fragmentShaderFilePath)
-	};
 	std::vector<VkShaderModule> shaderModules = createShaderModules(device, shaderCode);
 
 	VkPipelineShaderStageCreateInfo vertShaderStageInfo = {
