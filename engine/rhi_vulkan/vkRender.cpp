@@ -2,15 +2,15 @@
 
 foto::Render::Render(Device& device, Swapchain& swapchain, Pipeline& pipeline) :
 	_device(device.getDevice()), _commandPool(createCommandPool(device)), 
-	commandBuffer(createCommandBuffer(device, _commandPool))
+	commandBuffers(createCommandBuffers(device, _commandPool))
 {
-	createSyncObjects(_device);
+	createSyncObjects(_device, swapchain.getImages().size());
 };
 
 foto::Render::~Render() {
-	vkDestroySemaphore(_device, imageAvailableSem, nullptr);
-	vkDestroySemaphore(_device, renderFinishedSem, nullptr);
-	vkDestroyFence(_device, inFlightFence, nullptr);
+	for (VkSemaphore sem : imageAvailableSem) vkDestroySemaphore(_device, sem, nullptr);
+	for (VkSemaphore sem : renderFinishedSem) vkDestroySemaphore(_device, sem, nullptr);
+	for (VkFence fence : inFlightFence) vkDestroyFence(_device, fence, nullptr);
 
 	vkDestroyCommandPool(_device, _commandPool, nullptr);
 };
@@ -18,20 +18,21 @@ foto::Render::~Render() {
 // CPU -> recording command buffer
 // GPU -> submitting/executing command buffer
 void foto::Render::drawFrame(Device& device, Swapchain& swapchain, Pipeline& pipeline) {
-	vkWaitForFences(device.getDevice(), 1, &inFlightFence, VK_TRUE, UINT64_MAX);
-	vkResetFences(device.getDevice(), 1, &inFlightFence);
+	vkWaitForFences(device.getDevice(), 1, &inFlightFence[currentFrame], VK_TRUE, UINT64_MAX);
+	vkResetFences(device.getDevice(), 1, &inFlightFence[currentFrame]);
 
 	u32 imageIdx;
-	vkAcquireNextImageKHR(device.getDevice(), swapchain.getSwapchain(), UINT64_MAX, imageAvailableSem, VK_NULL_HANDLE, &imageIdx);
+	vkAcquireNextImageKHR(device.getDevice(), swapchain.getSwapchain(), UINT64_MAX, imageAvailableSem[currentFrame], VK_NULL_HANDLE, &imageIdx);
 
+	VkCommandBuffer commandBuffer = commandBuffers[currentFrame];
 	vkResetCommandBuffer(commandBuffer, 0);
 	recordCommandBuffer(swapchain, pipeline, commandBuffer, imageIdx);
 
 	// Submit info
-	VkSemaphore waitSemaphore[] = { imageAvailableSem };
+	VkSemaphore waitSemaphore[] = { imageAvailableSem[currentFrame] };
 	VkPipelineStageFlags waitStage[] = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
 
-	VkSemaphore signalSemaphore[] = { renderFinishedSem };
+	VkSemaphore signalSemaphore[] = { renderFinishedSem[imageIdx] };
 
 	VkSubmitInfo submitInfo = {
 		.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
@@ -47,7 +48,7 @@ void foto::Render::drawFrame(Device& device, Swapchain& swapchain, Pipeline& pip
 	};
 
 	// Fence must be unsignaled, same with signalSemaphores
-	if (vkQueueSubmit(device.getGraphicsQ(), 1, &submitInfo, inFlightFence) != VK_SUCCESS) {
+	if (vkQueueSubmit(device.getGraphicsQ(), 1, &submitInfo, inFlightFence[currentFrame]) != VK_SUCCESS) {
 		throw std::runtime_error("ERROR: vkRender.cpp -> drawFrame()");
 	}
 
@@ -66,10 +67,13 @@ void foto::Render::drawFrame(Device& device, Swapchain& swapchain, Pipeline& pip
 		.pImageIndices = &imageIdx,
 	};
 
+	// vkQueuePresentKHR doesn't wait, returns right away
 	vkQueuePresentKHR(device.getPresentQ(), &presentInfo);
+
+	currentFrame = (currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
 }
 
-void foto::Render::createSyncObjects(VkDevice _device) {
+void foto::Render::createSyncObjects(VkDevice device, size swapchainImageCount) {
 	VkSemaphoreCreateInfo semaphoreCreateInfo = {
 		.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO
 	};
@@ -79,10 +83,24 @@ void foto::Render::createSyncObjects(VkDevice _device) {
 		.flags = VK_FENCE_CREATE_SIGNALED_BIT
 	};
 
-	if (vkCreateSemaphore(_device, &semaphoreCreateInfo, nullptr, &imageAvailableSem) != VK_SUCCESS ||
-		vkCreateSemaphore(_device, &semaphoreCreateInfo, nullptr, &renderFinishedSem) != VK_SUCCESS ||
-		vkCreateFence(_device, &fenceCreateInfo, nullptr, &inFlightFence) != VK_SUCCESS) {
-		throw std::runtime_error("ERROR: vkRender.cpp -> createSyncObjects()");
+	// Per frame in flight: CPU frame pacing
+	imageAvailableSem.resize(MAX_FRAMES_IN_FLIGHT);
+	inFlightFence.resize(MAX_FRAMES_IN_FLIGHT);
+
+	for (size i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+		if (vkCreateSemaphore(device, &semaphoreCreateInfo, nullptr, &imageAvailableSem[i]) != VK_SUCCESS ||
+			vkCreateFence(device, &fenceCreateInfo, nullptr, &inFlightFence[i]) != VK_SUCCESS) {
+			throw std::runtime_error("ERROR: vkRender.cpp -> createSyncObjects()");
+		}
+	}
+
+	// Per swapchain image: presentation engine holds it until that image is reacquired
+	renderFinishedSem.resize(swapchainImageCount);
+
+	for (size i = 0; i < swapchainImageCount; i++) {
+		if (vkCreateSemaphore(device, &semaphoreCreateInfo, nullptr, &renderFinishedSem[i]) != VK_SUCCESS) {
+			throw std::runtime_error("ERROR: vkRender.cpp -> createSyncObjects()");
+		}
 	}
 }
 
@@ -212,19 +230,19 @@ VkCommandPool foto::Render::createCommandPool(Device& device) {
 	return commandPool;
 }
 
-VkCommandBuffer foto::Render::createCommandBuffer(Device& device, VkCommandPool commandPool) {
+std::vector<VkCommandBuffer> foto::Render::createCommandBuffers(Device& device, VkCommandPool commandPool) {
+	std::vector<VkCommandBuffer> commandBuffers(MAX_FRAMES_IN_FLIGHT);
+
 	VkCommandBufferAllocateInfo commandBufferAllocInfo = {
 		.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
 		.commandPool = commandPool,
 		.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-		.commandBufferCount = 1
+		.commandBufferCount = static_cast<u32>(commandBuffers.size())
 	};
 
-	VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
-
-	if (vkAllocateCommandBuffers(device.getDevice(), &commandBufferAllocInfo, &commandBuffer) != VK_SUCCESS) {
-		throw std::runtime_error("ERROR: vkRender.cpp -> createCommandBuffer()");
+	if (vkAllocateCommandBuffers(device.getDevice(), &commandBufferAllocInfo, commandBuffers.data()) != VK_SUCCESS) {
+		throw std::runtime_error("ERROR: vkRender.cpp -> createCommandBuffers()");
 	}
 
-	return commandBuffer;
+	return commandBuffers;
 }
