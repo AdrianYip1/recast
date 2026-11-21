@@ -98,6 +98,7 @@ add_executable(foto sandbox/main.cpp
     sandbox/scene/raycast.cpp
     sandbox/scene/placement.cpp)
 target_include_directories(foto PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/sandbox ${CMAKE_CURRENT_SOURCE_DIR}/external)
+target_compile_definitions(foto PRIVATE RECAST_SAMPLE_SCENE="${CMAKE_CURRENT_SOURCE_DIR}/data/sample/scene.json")
 
 target_link_libraries(foto PRIVATE foto_engine glfw Vulkan::Vulkan stb)
 
