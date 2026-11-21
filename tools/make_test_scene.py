@@ -10,7 +10,7 @@ Outputs (in the target folder):
   photo_with_object.hdr  ground truth with the object physically present
   ground_truth.json      true light + object placement (for evaluation only, the engine doesn't read it)
 
-usage: python tools/make_test_scene.py data/sample [--light=directional] [--light-size=S]  (S: metres for the point light, degrees for the sun)
+usage: python tools/make_test_scene.py data/sample [--light=directional] [--light-size=S]
 """
 import json
 import struct
@@ -235,50 +235,84 @@ def ambient_near_can(points, normals, steps=16):
     return total / (steps * steps)
 
 
+def trace_room(origins, directions):
+    """Closest hit on the floor, walls and box: t (inf on a miss), albedo, normal facing the ray"""
+    best_t = np.full(directions.shape[:-1], np.inf)
+    albedo = np.zeros(directions.shape)
+    normal = np.zeros(directions.shape)
+
+    def consider(t, surface_albedo, surface_normal):
+        nonlocal best_t
+        closer = np.isfinite(t) & (t > 1e-4) & (t < best_t)
+        best_t = np.where(closer, t, best_t)
+        albedo[closer] = surface_albedo[closer] if np.ndim(surface_albedo) == directions.ndim else surface_albedo
+        normal[closer] = surface_normal[closer] if np.ndim(surface_normal) == directions.ndim else surface_normal
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        t = (FLOOR_Y - origins[..., 1]) / directions[..., 1]
+        p = origins + directions * t[..., None]
+        checker = ((np.floor(p[..., 0] / 0.5) + np.floor(p[..., 2] / 0.5)) % 2)[..., None]
+        consider(np.where(t > 0, t, np.inf), np.where(checker > 0, [0.55, 0.52, 0.48], [0.30, 0.28, 0.26]), [0, 1, 0])
+
+        t = (BACK_WALL_Z - origins[..., 2]) / directions[..., 2]
+        p = origins + directions * t[..., None]
+        wall = np.where(grid_lines(p[..., 0], p[..., 1])[..., None], [0.15, 0.15, 0.18], [0.62, 0.66, 0.72])
+        consider(np.where((t > 0) & (p[..., 1] >= FLOOR_Y), t, np.inf), wall, [0, 0, 1])
+
+        t = (LEFT_WALL_X - origins[..., 0]) / directions[..., 0]
+        p = origins + directions * t[..., None]
+        wall = np.where(grid_lines(p[..., 2], p[..., 1])[..., None], [0.18, 0.12, 0.10], [0.72, 0.60, 0.52])
+        consider(np.where((t > 0) & (p[..., 1] >= FLOOR_Y) & (p[..., 2] >= BACK_WALL_Z), t, np.inf), wall, [1, 0, 0])
+
+    t_box, axis = intersect_box(origins, directions)
+    box_normal = np.zeros(directions.shape)
+    for a in range(3):
+        box_normal[..., a] = np.where(axis == a, -np.sign(directions[..., a]), 0.0)
+    consider(t_box, np.array([0.60, 0.18, 0.14]), box_normal)
+    return best_t, albedo, normal
+
+
+def ambient_on_can(points, normals, steps=16):
+    """Ambient light reaching the can: the room's own light (albedo * (ambient + direct)) where a ray hits a room
+    surface, AMBIENT where it escapes. Same stratified cosine-weighted directions as ambient_near_can"""
+    helper = np.where(np.abs(normals[:, :1]) > 0.5, [0.0, 1.0, 0.0], [1.0, 0.0, 0.0])
+    tangent = np.cross(normals, helper)
+    tangent /= np.linalg.norm(tangent, axis=-1, keepdims=True)
+    bitangent = np.cross(normals, tangent)
+    origins = points + normals * 1e-3
+
+    total = np.zeros(points.shape)
+    for i in range(steps):
+        for j in range(steps):
+            u = (i + 0.5) / steps
+            phi = 2 * np.pi * (j + 0.5) / steps
+            r = np.sqrt(u)
+            directions = tangent * (r * np.cos(phi)) + bitangent * (r * np.sin(phi)) + normals * np.sqrt(1 - u)
+            t, albedo, normal = trace_room(origins, directions)
+            hit = np.isfinite(t)
+            incoming = np.broadcast_to(AMBIENT, points.shape).copy()
+            if hit.any():
+                p = origins[hit] + directions[hit] * t[hit][:, None]
+                incoming[hit] = albedo[hit] * (AMBIENT + direct_light(p, normal[hit], with_can=False))
+            total += incoming
+    return total / (steps * steps)
+
+
 def render(rotation, with_can):
     u, v = np.meshgrid(np.arange(WIDTH) + 0.5, np.arange(HEIGHT) + 0.5)
     directions = np.stack([(u - CX) / FX, -(v - CY) / FY, -np.ones_like(u)], axis=-1) @ rotation.T
     directions /= np.linalg.norm(directions, axis=-1, keepdims=True)
     origins = np.broadcast_to(CAMERA_POS, directions.shape)
 
-    best_t = np.full(u.shape, np.inf)
-    albedo = np.zeros(u.shape + (3,))
-    normal = np.zeros(u.shape + (3,))
-
-    def consider(t, surface_albedo, surface_normal):
-        nonlocal best_t
-        closer = np.isfinite(t) & (t > 1e-4) & (t < best_t)
-        best_t = np.where(closer, t, best_t)
-        albedo[closer] = surface_albedo[closer] if np.ndim(surface_albedo) == 3 else surface_albedo
-        normal[closer] = surface_normal[closer] if np.ndim(surface_normal) == 3 else surface_normal
-
-    with np.errstate(divide="ignore", invalid="ignore"):
-        t = (FLOOR_Y - CAMERA_POS[1]) / directions[..., 1]
-        p = CAMERA_POS + directions * t[..., None]
-        checker = ((np.floor(p[..., 0] / 0.5) + np.floor(p[..., 2] / 0.5)) % 2)[..., None]
-        consider(np.where(t > 0, t, np.inf), np.where(checker > 0, [0.55, 0.52, 0.48], [0.30, 0.28, 0.26]), [0, 1, 0])
-
-        t = (BACK_WALL_Z - CAMERA_POS[2]) / directions[..., 2]
-        p = CAMERA_POS + directions * t[..., None]
-        wall = np.where(grid_lines(p[..., 0], p[..., 1])[..., None], [0.15, 0.15, 0.18], [0.62, 0.66, 0.72])
-        consider(np.where((t > 0) & (p[..., 1] >= FLOOR_Y), t, np.inf), wall, [0, 0, 1])
-
-        t = (LEFT_WALL_X - CAMERA_POS[0]) / directions[..., 0]
-        p = CAMERA_POS + directions * t[..., None]
-        wall = np.where(grid_lines(p[..., 2], p[..., 1])[..., None], [0.18, 0.12, 0.10], [0.72, 0.60, 0.52])
-        consider(np.where((t > 0) & (p[..., 1] >= FLOOR_Y) & (p[..., 2] >= BACK_WALL_Z), t, np.inf), wall, [1, 0, 0])
-
-    t_box, axis = intersect_box(origins, directions)
-    box_normal = np.zeros(u.shape + (3,))
-    for a in range(3):
-        box_normal[..., a] = np.where(axis == a, -np.sign(directions[..., a]), 0.0)
-    consider(t_box, [0.60, 0.18, 0.14], box_normal)
+    best_t, albedo, normal = trace_room(origins, directions)
 
     is_can = np.zeros(u.shape, dtype=bool)
     if with_can:
         t_can, can_normal, cu, cv, is_side = intersect_can(origins, directions)
-        consider(t_can, can_albedo_at(cu, cv, is_side), can_normal)
-        is_can = np.isfinite(t_can) & (t_can == best_t)
+        is_can = np.isfinite(t_can) & (t_can < best_t)
+        best_t = np.where(is_can, t_can, best_t)
+        albedo[is_can] = can_albedo_at(cu, cv, is_side)[is_can]
+        normal[is_can] = can_normal[is_can]
 
     hit = np.isfinite(best_t)
     points = CAMERA_POS + directions * np.where(hit, best_t, 0.0)[..., None]
@@ -287,6 +321,7 @@ def render(rotation, with_can):
         offset = points - CAN_POS
         near = hit & ~is_can & (np.hypot(offset[..., 0], offset[..., 2]) < 0.8) & (offset[..., 1] < CAN_HEIGHT + 0.6)
         ambient[near] = ambient_near_can(points[near], normal[near])
+        ambient[is_can] = ambient_on_can(points[is_can], normal[is_can])
 
     image = albedo * (ambient + direct_light(points, normal, with_can))
     image[~hit] = [0.02, 0.02, 0.025]

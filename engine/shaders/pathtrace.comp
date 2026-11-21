@@ -276,7 +276,8 @@ vec3 shadeObject(Hit hit, vec3 view, inout uint state, uint lightSeed) {
 	vec3 irradiance, specular;
 	directLight(hit.position, hit.normal, view, MASK_ALL, lightSeed, alpha, f0, irradiance, specular);
 	vec3 diffuseColor = albedo * (1.0 - metallic) * (1.0 - fresnel(f0, max(dot(hit.normal, view), 0.0)));
-	vec3 diffuse = diffuseColor * (ambientLight(hit.position, hit.normal, state, lightSeed) + irradiance);
+	vec3 ambient = incomingRadiance(hit.position + hit.normal * SURFACE_OFFSET, cosineSample(hit.normal, state), lightSeed);
+	vec3 diffuse = diffuseColor * (ambient + irradiance);
 	return diffuse + specular + reflection(hit.position, hit.normal, view, alpha, f0, state, lightSeed) + material.emissive.rgb;
 }
 
