@@ -69,6 +69,12 @@ private:
 	std::future<FitJob> fitJob;
 	std::string fitStatus;
 
+	recast::LinearImage photoPixels;
+	bool autoCalibrate = true;
+	enginemath::Vec3 calibrationTarget = enginemath::Vec3(1.0f, 1.0f, 1.0f);
+	enginemath::Vec3 calibration = enginemath::Vec3(1.0f, 1.0f, 1.0f);
+	std::vector<float> calibrationKey;
+
 	void loadScene();
 	void applySceneCamera();
 	void drawPhotoView();
@@ -83,4 +89,5 @@ private:
 	void startLightingFit(bool refinePositions);
 	void finishLightingFit();
 	void drawLightingPanel();
+	void updateCalibration(foto::f32 deltaTime);
 };

@@ -210,6 +210,74 @@ recast::LightingFit recast::fitLightIntensities(const SceneFile& scene, const st
 	return fit;
 }
 
+Vec3 recast::localLightingCalibration(const SceneFile& scene, const LinearImage& photo, const Vec3& center, float radius) {
+	const SceneCamera& camera = scene.camera;
+	Vec3 cameraPosition(camera.position[0], camera.position[1], camera.position[2]);
+	float scaleX = static_cast<float>(photo.width) / static_cast<float>(scene.image_size[0]);
+	float scaleY = static_cast<float>(photo.height) / static_cast<float>(scene.image_size[1]);
+
+	double photoSum[3] = {}, modelSum[3] = {};
+	int used = 0;
+	constexpr int grid = 17;
+
+	for (int i = 0; i < grid; i++) {
+		for (int j = 0; j < grid; j++) {
+			float dx = (2.0f * i / (grid - 1) - 1.0f) * radius;
+			float dz = (2.0f * j / (grid - 1) - 1.0f) * radius;
+			if (dx * dx + dz * dz > radius * radius) continue;
+
+			Vec3 probe(center.x + dx, center.y + 0.01f, center.z + dz);
+			RayHit surface = raycastProxies(scene.proxies, probe, Vec3(0.0f, -1.0f, 0.0f), 0.7f);
+			if (!surface.valid() || surface.t > 0.05f) continue;
+
+			Vec3 toPoint = surface.point - cameraPosition;
+			float distance = std::sqrt(toPoint.dot(toPoint));
+			RayHit seen = raycastProxies(scene.proxies, cameraPosition, toPoint / distance);
+			if (!seen.valid() || std::abs(seen.t - distance) > 0.01f) continue;
+
+			Vec3 local;
+			for (int a = 0; a < 3; a++) {
+				local[a] = camera.rotation[0][a] * toPoint.x + camera.rotation[1][a] * toPoint.y + camera.rotation[2][a] * toPoint.z;
+			}
+			if (local.z >= -1e-4f) continue;
+			int px = static_cast<int>((camera.cx + camera.fx * local.x / -local.z) * scaleX);
+			int py = static_cast<int>((camera.cy - camera.fy * local.y / -local.z) * scaleY);
+			if (px < 0 || py < 0 || px >= photo.width || py >= photo.height) continue;
+
+			Vec3 pixelLocal(((px + 0.5f) / scaleX - camera.cx) / camera.fx, -((py + 0.5f) / scaleY - camera.cy) / camera.fy, -1.0f);
+			Vec3 pixelDirection;
+			for (int a = 0; a < 3; a++) {
+				pixelDirection[a] = camera.rotation[a][0] * pixelLocal.x + camera.rotation[a][1] * pixelLocal.y + camera.rotation[a][2] * pixelLocal.z;
+			}
+			RayHit pixelHit = raycastProxies(scene.proxies, cameraPosition, pixelDirection.normalized());
+			if (!pixelHit.valid() || pixelHit.proxyIndex != surface.proxyIndex || pixelHit.normal.dot(surface.normal) < 0.99f) continue;
+
+			LightingSample sample = { photo.at(px, py), surface.point, surface.normal, surface.proxyIndex };
+			const Vec3f& albedo = scene.proxies[surface.proxyIndex].material.albedo;
+			Vec3 irradiance(scene.lighting.ambient[0], scene.lighting.ambient[1], scene.lighting.ambient[2]);
+			for (const SceneLight& light : scene.lights) {
+				if (light.type != "point") continue;
+				double term = lightTerm(scene.proxies, sample, Vec3(light.position[0], light.position[1], light.position[2]));
+				for (int c = 0; c < 3; c++) irradiance[c] += static_cast<float>(light.intensity[c] * term);
+			}
+
+			for (int c = 0; c < 3; c++) {
+				photoSum[c] += sample.color[c];
+				modelSum[c] += albedo[c] * irradiance[c];
+			}
+			used++;
+		}
+	}
+
+	if (used < 8) return Vec3(1.0f, 1.0f, 1.0f);
+
+	Vec3 ratio;
+	for (int c = 0; c < 3; c++) {
+		ratio[c] = static_cast<float>(std::clamp(modelSum[c] > 1e-9 ? photoSum[c] / modelSum[c] : 1.0, 0.25, 4.0));
+	}
+	return ratio;
+}
+
 recast::LightingFit recast::fitLighting(const SceneFile& scene, const std::vector<LightingSample>& samples, std::vector<Vec3>& positions) {
 	if (samples.empty()) return {};
 

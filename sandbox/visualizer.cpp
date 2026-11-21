@@ -115,6 +115,7 @@ void Visualizer::loadScene() {
 			foto::u32 photoTexture = loadTextureHDR(photoPath);
 			photoMaterial = createMaterial({ .baseColorTexture = photoTexture });
 			loadedPhotoPath = photoPath;
+			photoPixels = recast::loadLinearImage(photoPath);
 		}
 		catch (const std::exception& e) {
 			std::cerr << "[recast] " << e.what() << std::endl;
@@ -154,6 +155,10 @@ void Visualizer::loadScene() {
 	draggingObject = false;
 	applySceneCamera();
 
+	calibrationKey.clear();
+	bool hasPointLight = std::any_of(scene.lights.begin(), scene.lights.end(), [](const recast::SceneLight& l) { return l.type == "point"; });
+	if (!hasPointLight && !loadedPhotoPath.empty()) startLightingFit(true);
+
 	std::cout << "[recast] loaded " << scenePath << ": " << scene.image_size[0] << "x" << scene.image_size[1]
 			  << " photo, " << scene.proxies.size() << " proxies, " << scene.lights.size() << " lights" << std::endl;
 }
@@ -192,6 +197,7 @@ void Visualizer::onUpdate(foto::f32 deltaTime) {
 		applySceneLighting();
 		updateLightPlacement();
 		if (placingLight < 0) updateObjectInteraction();
+		updateCalibration(deltaTime);
 		drawPhotoView();
 	}
 	else {
@@ -219,7 +225,8 @@ void Visualizer::drawPhotoView() {
 	}
 
 	if (objectMesh && viewMode != ViewMode::Photo) {
-		draw(objectMesh, objectTransform(), foto::NO_MATERIAL_OVERRIDE, nullptr, foto::ShadowCaster::Dynamic);
+		draw(objectMesh, objectTransform(), foto::NO_MATERIAL_OVERRIDE, nullptr, foto::ShadowCaster::Dynamic,
+			 autoCalibrate ? calibration : Vec3(1.0f, 1.0f, 1.0f));
 	}
 
 	if (showLights) {
@@ -248,6 +255,30 @@ void Visualizer::applySceneLighting() {
 
 	const recast::Vec3f& ambient = scene.lighting.ambient;
 	setAmbient(Vec3(ambient[0], ambient[1], ambient[2]));
+}
+
+void Visualizer::updateCalibration(foto::f32 deltaTime) {
+	if (!objectMesh || photoPixels.rgb.empty() || !autoCalibrate) return;
+
+	const recast::ObjectTransform& transform = scene.object.transform;
+	std::vector<float> key = { transform.position[0], transform.position[1], transform.position[2], transform.scale,
+							   scene.lighting.ambient[0], scene.lighting.ambient[1], scene.lighting.ambient[2] };
+	for (const recast::SceneLight& light : scene.lights) {
+		key.insert(key.end(), light.position.begin(), light.position.end());
+		key.insert(key.end(), light.intensity.begin(), light.intensity.end());
+	}
+
+	if (key != calibrationKey) {
+		calibrationKey = key;
+		Vec3 worldMin, worldMax;
+		recast::objectWorldBounds(transform, objectMesh->getBoundsMin(), objectMesh->getBoundsMax(), worldMin, worldMax);
+		float footprint = std::max(worldMax.x - worldMin.x, worldMax.z - worldMin.z);
+		Vec3 base((worldMin.x + worldMax.x) * 0.5f, transform.position[1], (worldMin.z + worldMax.z) * 0.5f);
+		calibrationTarget = recast::localLightingCalibration(scene, photoPixels, base, std::max(footprint * 1.5f, 0.4f));
+	}
+
+	float blend = std::min(1.0f, deltaTime * 8.0f);
+	calibration = calibration + (calibrationTarget - calibration) * blend;
 }
 
 void Visualizer::updateLightPlacement() {
@@ -336,6 +367,8 @@ void Visualizer::drawLightingPanel() {
 	ImGui::RadioButton("estimated lighting", &mode, 2);
 	viewMode = static_cast<ViewMode>(mode);
 	ImGui::Checkbox("show lights", &showLights);
+	ImGui::Checkbox("auto calibrate object lighting", &autoCalibrate);
+	if (autoCalibrate) ImGui::TextDisabled("local calibration (%.2f, %.2f, %.2f)", calibration.x, calibration.y, calibration.z);
 
 	unsavedChanges |= ImGui::DragFloat3("ambient", scene.lighting.ambient.data(), 0.005f, 0.0f, 10.0f);
 
