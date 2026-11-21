@@ -21,7 +21,9 @@ foto::Swapchain::~Swapchain() {
 void foto::Swapchain::recreate() {
 	int w = 0, h = 0;
 	glfwGetFramebufferSize(_window, &w, &h);
+	// Minimized: wait until the window has a size again, or give up if it's being closed
 	while (w == 0 || h == 0) {
+		if (glfwWindowShouldClose(_window)) return;
 		glfwWaitEvents();
 		glfwGetFramebufferSize(_window, &w, &h);
 	}

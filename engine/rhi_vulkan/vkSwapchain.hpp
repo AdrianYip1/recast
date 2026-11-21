@@ -23,6 +23,7 @@ namespace foto {
 		std::vector<VkImage>& getImages() { return images; };
 		std::vector<VkImageView>& getImageViews() { return imageViews; };
 
+		// Rebuilds for the current window size. Returns without recreating if the window closes while minimized.
 		void recreate();
 
 	private:
