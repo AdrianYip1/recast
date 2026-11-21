@@ -20,6 +20,9 @@ namespace foto {
 
 	class Render {
 	public:
+		// Depth attachment format. Pipelines drawn by Render need it as GraphicsPipelineConfig::depthFormat
+		static constexpr VkFormat DEPTH_FORMAT = VK_FORMAT_D32_SFLOAT;
+
 		Render(Device& device, Swapchain& swapchain, Pipeline& pipeline);
 		~Render();
 		Render(const Render& other) = delete;
@@ -49,6 +52,9 @@ namespace foto {
 		DescriptorPool descriptorPool;
 		std::vector<VkDescriptorSet> descriptorSets; // set 0, one per frame in flight, freed with the pool
 
+		// Swapchain-sized, shared by the frames in flight (the barrier at the start of each frame orders them)
+		std::unique_ptr<Image> depthImage;
+
 		std::vector<VkSemaphore> imageAvailableSem;
 		std::vector<VkSemaphore> renderFinishedSem;
 		std::vector<VkFence> inFlightFence;
@@ -61,5 +67,6 @@ namespace foto {
 		static VkCommandPool createCommandPool(Device& device);
 		static std::vector<VkCommandBuffer> createCommandBuffers(Device& device, VkCommandPool commandPool);
 		static std::vector<std::unique_ptr<Buffer>> createUniformBuffers(Device& device);
+		static std::unique_ptr<Image> createDepthImage(Device& device, VkExtent2D extent);
 	};
 } // namespace foto

@@ -8,7 +8,8 @@ foto::Render::Render(Device& device, Swapchain& swapchain, Pipeline& pipeline) :
 	uniformBuffers(createUniformBuffers(device)),
 	// Pool sized from the pipeline's set 0 bindings, one set per frame in flight
 	descriptorPool(device, MAX_FRAMES_IN_FLIGHT, pipeline.getDescriptorSetLayoutInfo(0).poolSizes(MAX_FRAMES_IN_FLIGHT)),
-	descriptorSets(descriptorPool.allocate(pipeline.getDescriptorSetLayout(0), MAX_FRAMES_IN_FLIGHT))
+	descriptorSets(descriptorPool.allocate(pipeline.getDescriptorSetLayout(0), MAX_FRAMES_IN_FLIGHT)),
+	depthImage(createDepthImage(device, swapchain.getExtent()))
 {
 	// Point binding 0 of each frame's set at that frame's uniform buffer
 	for (size i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
@@ -119,6 +120,9 @@ void foto::Render::onSwapchainRecreated() {
 	for (VkSemaphore sem : renderFinishedSem) vkDestroySemaphore(_device, sem, nullptr);
 	renderFinishedSem.clear();
 	createRenderFinishedSems(_device, swapchain.getImages().size());
+
+	// Swapchain::recreate() already waited for the device to go idle, so the old one isn't in use
+	depthImage = createDepthImage(device, swapchain.getExtent());
 }
 
 void foto::Render::createSyncObjects(VkDevice device, size swapchainImageCount) {
@@ -185,10 +189,29 @@ void foto::Render::recordCommandBuffer(VkCommandBuffer commandBuffer, u32 imageI
 		.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
 	};
 
+	// Depth: previous contents are discarded (cleared below). src = last frame's depth writes, so the
+	// frames in flight sharing this one image never overlap
+	VkImageMemoryBarrier2 toDepth = {
+		.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+		.srcStageMask = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+		.srcAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+		.dstStageMask = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+		.dstAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+
+		.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+		.newLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+		.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+		.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+		.image = depthImage->getImage(),
+		.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1},
+	};
+
+	VkImageMemoryBarrier2 beginBarriers[] = { toColor, toDepth };
+
 	VkDependencyInfo toColorDep = {
 		.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-		.imageMemoryBarrierCount = 1,
-		.pImageMemoryBarriers = &toColor,
+		.imageMemoryBarrierCount = 2,
+		.pImageMemoryBarriers = beginBarriers,
 	};
 	vkCmdPipelineBarrier2(commandBuffer, &toColorDep);
 
@@ -206,6 +229,18 @@ void foto::Render::recordCommandBuffer(VkCommandBuffer commandBuffer, u32 imageI
 		}
 	};
 
+	// Depth is only needed during the pass: cleared to the far plane, not stored
+	VkRenderingAttachmentInfo depthAttachment = {
+		.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+		.imageView = depthImage->getView(),
+		.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+		.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+		.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+		.clearValue = {
+			.depthStencil = {1.0f, 0}
+		}
+	};
+
 	VkRenderingInfo rendering = {
 		.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
 		.renderArea = {
@@ -215,6 +250,7 @@ void foto::Render::recordCommandBuffer(VkCommandBuffer commandBuffer, u32 imageI
 		.layerCount = 1,
 		.colorAttachmentCount = 1,
 		.pColorAttachments = &colorAttachment,
+		.pDepthAttachment = &depthAttachment,
 	};
 	vkCmdBeginRendering(commandBuffer, &rendering);
 
@@ -325,4 +361,9 @@ std::vector<std::unique_ptr<foto::Buffer>> foto::Render::createUniformBuffers(De
 	}
 
 	return buffers;
+}
+
+std::unique_ptr<foto::Image> foto::Render::createDepthImage(Device& device, VkExtent2D extent) {
+	return std::make_unique<Image>(device, extent, DEPTH_FORMAT, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+								   VK_IMAGE_ASPECT_DEPTH_BIT);
 }
