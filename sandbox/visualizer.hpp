@@ -14,6 +14,7 @@
 #include "lighting/lightFit.hpp"
 #include "lighting/cameraMatch.hpp"
 #include "scene/raycast.hpp"
+#include "pipeline/pythonJob.hpp"
 
 class Visualizer : public foto::Application {
 public:
@@ -73,6 +74,27 @@ private:
 	foto::f32 shadowRadius = 5.0f;
 
 	bool exportRequested = false;
+
+	// The Python pipeline (python/README.md) run from the panel. Its results land in scene.json, which hot reload picks up
+	recast::PythonWorker pythonWorker;
+	recast::PythonJob pythonJob;
+	std::string pythonLabel;
+	std::string pipelineStatus;
+	bool pythonFailed = false;
+	std::string pendingScenePath;
+	bool pendingPhotoReload = false;
+	bool pendingObjectReload = false;
+	std::string followUpLabel;
+	std::vector<std::string> followUpArguments;
+	bool loadIfFollowUpFails = false;
+	int objectMode = 0;
+	float objectHeight = 0.3f;
+	std::string pythonCommand(const std::vector<std::string>& arguments) const;
+	void startPythonWorker();
+	void runPython(const std::string& label, const std::string& module, const std::vector<std::string>& arguments,
+				   const std::string& resultScene = "", bool reloadPhoto = false, bool reloadObject = false);
+	void finishPython();
+	void drawPipeline();
 
 	std::vector<recast::SceneLight> detectedLights; // what "reset lights" goes back to
 	recast::Vec3f detectedAmbient = { 0.0f, 0.0f, 0.0f };

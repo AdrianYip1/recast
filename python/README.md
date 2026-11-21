@@ -54,6 +54,14 @@ also reads a linear `photo.hdr` if `scene.json` points at one. The gbuffer stays
 
 Engine: `foto.exe data/<scene_name>/scene.json`
 
+Or run `foto.exe` and pick the photos from its panel: **scene photo...** runs `scene` then `detect`,
+**object photo...** runs `recast.object` (one box drag; 3D model, glass or flat), using `python/.venv` if
+it exists, otherwise `python` from PATH, and loads the result. The engine runs these through
+`python -m recast.worker`, started with it, which keeps torch and the models loaded (detect ~9 s,
+object ~20 s instead of ~21 s and ~45 s); it falls back to a fresh process per step if the worker is down.
+**edit room** in the panel drags boxes and walls, resizes/raises/deletes boxes, adds one, and resets to
+the loaded room; **save scene** writes the edits.
+
 `scene.json` is described by [`schema/scene.schema.json`](../schema/scene.schema.json)
 (both sides can validate against it). Rules: metres; world +Y up, right-handed;
 camera `rotation` is camera-to-world in engine convention (looks down -Z);

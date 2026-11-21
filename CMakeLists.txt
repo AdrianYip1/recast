@@ -92,10 +92,17 @@ add_executable(foto sandbox/main.cpp
     sandbox/scene/raycast.cpp
     sandbox/scene/placement.cpp
     sandbox/lighting/lightFit.cpp
-    sandbox/lighting/cameraMatch.cpp)
+    sandbox/lighting/cameraMatch.cpp
+    sandbox/pipeline/pythonJob.cpp)
 target_include_directories(foto PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/sandbox ${CMAKE_CURRENT_SOURCE_DIR}/external)
-target_compile_definitions(foto PRIVATE RECAST_SAMPLE_SCENE="${CMAKE_CURRENT_SOURCE_DIR}/data/sample/scene.json")
+target_compile_definitions(foto PRIVATE
+    RECAST_SAMPLE_SCENE="${CMAKE_CURRENT_SOURCE_DIR}/data/sample/scene.json"
+    RECAST_PYTHON_DIR="${CMAKE_CURRENT_SOURCE_DIR}/python"
+    RECAST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
 
 target_link_libraries(foto PRIVATE foto_engine glfw Vulkan::Vulkan stb)
+if(WIN32)
+    target_link_libraries(foto PRIVATE comdlg32)
+endif()
 
 add_dependencies(foto shaders)

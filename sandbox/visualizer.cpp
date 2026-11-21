@@ -19,8 +19,56 @@
 #include <cstdlib>
 #include <ctime>
 
+#ifndef RECAST_PYTHON_DIR
+#define RECAST_PYTHON_DIR "python"
+#endif
+#ifndef RECAST_DATA_DIR
+#define RECAST_DATA_DIR "data"
+#endif
+
 using enginemath::Vec3;
 using enginemath::Mat4;
+
+namespace {
+	constexpr const char* PHOTO_FILTER = "Photos\0*.jpg;*.jpeg;*.png;*.tif;*.tiff;*.hdr;*.dng;*.cr2;*.cr3;*.nef;*.arw\0All files\0*.*\0";
+	constexpr const char* OBJECT_MODES[] = { "generated", "generated", "card" };
+	constexpr const char* OBJECT_SHAPES[] = { "3D model", "glass", "flat" };
+	constexpr int GLASS_SHAPE = 1;
+
+	std::string shellQuoted(const std::string& text) {
+		return "\"" + text + "\"";
+	}
+
+	std::string nativePath(const std::filesystem::path& path) {
+		return std::filesystem::path(path).make_preferred().string();
+	}
+
+	// The README's venv when it exists, otherwise python from PATH
+	std::string pythonExecutable() {
+		std::filesystem::path dir = RECAST_PYTHON_DIR;
+#ifdef _WIN32
+		std::filesystem::path venv = dir / ".venv" / "Scripts" / "python.exe";
+#else
+		std::filesystem::path venv = dir / ".venv" / "bin" / "python";
+#endif
+		std::error_code error;
+		return std::filesystem::exists(venv, error) ? nativePath(venv) : "python";
+	}
+
+	std::string folderName(const std::string& photoPath) {
+		std::string name = std::filesystem::path(photoPath).stem().string();
+		for (char& c : name) {
+			if (!std::isalnum(static_cast<unsigned char>(c)) && c != '-' && c != '_') c = '_';
+		}
+		return name.empty() ? "scene" : name;
+	}
+
+	std::string pickPhoto(const char* title) {
+		std::string path = recast::openFileDialog(title, PHOTO_FILTER);
+		ImGui::GetIO().AddMouseButtonEvent(ImGuiMouseButton_Left, false); // the dialog swallowed the release
+		return path;
+	}
+}
 
 Visualizer::Visualizer(const foto::ApplicationConfig& config, std::string scenePath) :
 	Application(config), scenePath(std::move(scenePath))
@@ -74,6 +122,7 @@ void Visualizer::onInit() {
 	lightMarkerMaterial = createMaterial({ .baseColor = { 0.0f, 0.0f, 0.0f, 1.0f }, .emissive = { 4.0f, 3.6f, 1.2f, 0.0f } });
 	selectedMarkerMaterial = createMaterial({ .baseColor = { 0.0f, 0.0f, 0.0f, 1.0f }, .emissive = { 0.8f, 3.0f, 4.0f, 0.0f } });
 
+	startPythonWorker();
 	if (!scenePath.empty()) {
 		loadScene();
 		sceneWatcher = foto::FileWatcher(scenePath);
@@ -293,7 +342,12 @@ void Visualizer::onUpdate(foto::f32 deltaTime) {
 	if (screenshotKeyDown && !screenshotKeyWasDown) screenshot("screenshot.png");
 	screenshotKeyWasDown = screenshotKeyDown;
 
+	finishPython();
 	if (!sceneLoaded) return;
+	if (proxyMeshesDirty) {
+		proxyMeshesDirty = false;
+		rebuildProxyMeshes();
+	}
 
 	applySceneCamera();
 	finishLightingDetection();
@@ -533,13 +587,15 @@ void Visualizer::onImGui() {
 	ImGui::Begin("recast");
 
 	if (!sceneLoaded) {
-		ImGui::TextWrapped("no scene loaded: run with a path to scene.json");
+		ImGui::TextWrapped("no scene loaded: pick a scene photo, or run with a path to scene.json");
+		drawPipeline();
 		ImGui::End();
 		return;
 	}
 
 	ImGui::TextDisabled("drag the object, scroll to rotate, shift+scroll to scale");
 	ImGui::TextWrapped("%s", lightingStatus.c_str());
+	drawPipeline();
 
 	ImGui::BeginDisabled(detectJob.valid());
 	if (ImGui::Button("re-detect lighting")) detectLighting();
@@ -593,6 +649,132 @@ void Visualizer::onImGui() {
 	}
 
 	ImGui::End();
+}
+
+std::string Visualizer::pythonCommand(const std::vector<std::string>& arguments) const {
+	std::string joined;
+	for (const std::string& argument : arguments) joined += " " + shellQuoted(argument);
+#ifdef _WIN32
+	std::string command = "cd /d " + shellQuoted(nativePath(RECAST_PYTHON_DIR)) + " && " + shellQuoted(pythonExecutable()) + " -u" + joined + " 2>&1";
+	return shellQuoted(command); // cmd /c strips one pair of outer quotes
+#else
+	return "cd " + shellQuoted(RECAST_PYTHON_DIR) + " && " + shellQuoted(pythonExecutable()) + " -u" + joined + " 2>&1";
+#endif
+}
+
+// The worker keeps torch and the models loaded, so steps skip ~25 s of start-up each.
+// It warms up in the background while the photos are being picked
+void Visualizer::startPythonWorker() {
+	if (std::getenv("RECAST_NO_WORKER")) return;
+	std::filesystem::path queue = std::filesystem::temp_directory_path() / ("recast_worker_" + std::to_string(recast::currentProcessId()));
+	pythonWorker.start(pythonCommand({ "-m", "recast.worker", nativePath(queue), "--parent", std::to_string(recast::currentProcessId()) }), queue);
+}
+
+void Visualizer::runPython(const std::string& label, const std::string& module, const std::vector<std::string>& arguments,
+						   const std::string& resultScene, bool reloadPhoto, bool reloadObject) {
+	if (pythonJob.running()) return;
+	// Python rewrites scene.json and the reload replaces what's in memory, so unsaved drags are saved first
+	if (sceneLoaded && unsavedChanges) saveScene();
+
+	pythonLabel = label;
+	pendingScenePath = resultScene;
+	pendingPhotoReload = reloadPhoto;
+	pendingObjectReload = reloadObject;
+	pythonFailed = false;
+	loadIfFollowUpFails = false;
+	pipelineStatus = label + "...";
+	if (pythonWorker.alive()) {
+		nlohmann::json request = { { "module", module }, { "args", arguments } };
+		pythonJob.startInWorker(pythonWorker.queue(), request.dump(), [this]() { return pythonWorker.alive(); });
+	}
+	else {
+		std::vector<std::string> command = { "-m", module };
+		command.insert(command.end(), arguments.begin(), arguments.end());
+		pythonJob.start(pythonCommand(command));
+	}
+}
+
+void Visualizer::finishPython() {
+	if (!pythonJob.finished()) return;
+
+	bool succeeded = pythonJob.exitCode() == 0;
+	pythonFailed = !succeeded;
+	pipelineStatus = pythonLabel + (succeeded ? " done" : " failed");
+
+	// the next step runs before loading, so lighting is detected once, with the whole room
+	if (succeeded && !followUpArguments.empty()) {
+		std::string label = std::move(followUpLabel);
+		std::vector<std::string> arguments = std::move(followUpArguments);
+		followUpLabel.clear();
+		followUpArguments.clear();
+		std::string result = pendingScenePath;
+		bool reloadPhoto = pendingPhotoReload, reloadObject = pendingObjectReload;
+		runPython(label, "recast", arguments, result, reloadPhoto, reloadObject);
+		loadIfFollowUpFails = true;
+		return;
+	}
+	followUpLabel.clear();
+	followUpArguments.clear();
+	bool load = succeeded || loadIfFollowUpFails;
+	loadIfFollowUpFails = false;
+	if (!load || pendingScenePath.empty()) {
+		pendingScenePath.clear();
+		return;
+	}
+
+	// Same file names get rewritten (photo.jpg, object.glb), so the loaded copies are dropped to force a reload
+	if (pendingPhotoReload) loadedPhotoPath.clear();
+	if (pendingObjectReload) loadedObjectPath.clear();
+	scenePath = pendingScenePath;
+	pendingScenePath.clear();
+	loadScene();
+	sceneWatcher = foto::FileWatcher(scenePath);
+}
+
+void Visualizer::drawPipeline() {
+	ImGui::BeginDisabled(pythonJob.running());
+	if (ImGui::Button("scene photo...")) {
+		std::string photo = pickPhoto("scene photo");
+		if (!photo.empty()) {
+			std::string name = folderName(photo);
+			std::filesystem::path result = std::filesystem::path(RECAST_DATA_DIR) / name / "scene.json";
+			std::string dataRoot = nativePath(RECAST_DATA_DIR);
+			runPython("building scene " + name, "recast", { "scene", photo, "--name", name, "--data-root", dataRoot, "--overwrite" },
+					  nativePath(result), true, false);
+			followUpLabel = "finding walls and furniture";
+			followUpArguments = { "detect", "--name", name, "--data-root", dataRoot };
+		}
+	}
+
+	ImGui::BeginDisabled(!sceneLoaded);
+	ImGui::SameLine();
+	if (ImGui::Button("object photo...")) {
+		std::string photo = pickPhoto("object photo");
+		if (!photo.empty()) {
+			char height[32];
+			std::snprintf(height, sizeof(height), "%.3f", std::max(objectHeight, 0.01f));
+			std::vector<std::string> arguments = { photo, "--mode", OBJECT_MODES[objectMode], "--height", height,
+												   "--out", nativePath(scene.directory) };
+			if (objectMode == GLASS_SHAPE) arguments.push_back("--glass");
+			runPython("adding object", "recast.object", arguments, scenePath, false, true);
+		}
+	}
+	ImGui::SameLine();
+	ImGui::SetNextItemWidth(90.0f);
+	ImGui::Combo("##shape", &objectMode, OBJECT_SHAPES, IM_ARRAYSIZE(OBJECT_SHAPES));
+	ImGui::SameLine();
+	ImGui::SetNextItemWidth(70.0f);
+	ImGui::InputFloat("m tall", &objectHeight, 0.0f, 0.0f, "%.2f");
+	ImGui::EndDisabled();
+	ImGui::EndDisabled();
+
+	if (!pipelineStatus.empty()) ImGui::TextWrapped("%s", pipelineStatus.c_str());
+	if (pythonFailed) {
+		std::string log = pythonJob.output();
+		ImGui::BeginChild("python log", ImVec2(0.0f, 140.0f), ImGuiChildFlags_Borders, ImGuiWindowFlags_HorizontalScrollbar);
+		ImGui::TextUnformatted(log.c_str(), log.c_str() + log.size());
+		ImGui::EndChild();
+	}
 }
 
 // Boxes share one unit cube placed by a matrix, so dragging and resizing never rebuild a mesh.
