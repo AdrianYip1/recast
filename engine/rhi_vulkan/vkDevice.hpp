@@ -30,6 +30,12 @@ namespace foto {
 		PFN_vkGetAccelerationStructureDeviceAddressKHR getAddress = nullptr;
 	};
 
+	// Size of the shaders' bindless texture array on this GPU
+	struct TextureBinding {
+		u32 capacity = 0;
+		bool updateAfterBind = false; // needed by GPUs (e.g. Intel) that only allow large sampler arrays this way
+	};
+
 	class Device {
 	public :
 		Device(GLFWwindow* window);
@@ -65,6 +71,9 @@ namespace foto {
 		const RayTracingFunctions& getRayTracingFunctions() { return rayTracingFunctions; };
 		VkDeviceSize getScratchAlignment() { return scratchAlignment; };
 
+		// The engine's texture count (MAX_TEXTURES) when the GPU allows it, otherwise the most it allows
+		const TextureBinding& getTextureBinding() { return textureBinding; };
+
 		static SwapchainSupportDetails querySwapchainSupport(VkPhysicalDevice device, VkSurfaceKHR surface);
 		static std::optional<foto::QueueInfos> findQueueFamilies(VkPhysicalDevice device, VkSurfaceKHR surface);
 
@@ -75,6 +84,7 @@ namespace foto {
 		VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
 		QueueInfos queueInfos;
 		bool rayTracing = false;
+		TextureBinding textureBinding;
 		VkDevice logicalDevice = VK_NULL_HANDLE;
 		RayTracingFunctions rayTracingFunctions;
 		VkDeviceSize scratchAlignment = 256;
@@ -90,6 +100,8 @@ namespace foto {
 		static VkPhysicalDevice selectPhysicalDevice(VkInstance instance, VkSurfaceKHR surface);
 		static bool extensionsSuitable(VkPhysicalDevice device, std::span<const char* const> required);
 		static bool rayTracingSuitable(VkPhysicalDevice device);
-		static VkDevice selectLogicalDevice(VkPhysicalDevice physicalDevice, const QueueInfos& queueInfo, bool rayTracing);
+		static TextureBinding chooseTextureBinding(VkPhysicalDevice device);
+		static VkDevice selectLogicalDevice(VkPhysicalDevice physicalDevice, const QueueInfos& queueInfo, bool rayTracing,
+											const TextureBinding& textureBinding);
 	};
 } // namespace foto

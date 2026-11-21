@@ -1,6 +1,5 @@
 // Must match engine/rhi_vulkan/vkRenderTypes.hpp
 
-#define MAX_TEXTURES 1024
 #define MAX_LIGHTS 4
 
 struct Light {
@@ -36,7 +35,9 @@ layout(std430, set = 0, binding = 1) readonly buffer Materials {
 	Material materials[];
 };
 
-layout(set = 0, binding = 2) uniform sampler2D textures[MAX_TEXTURES];
+// Set per GPU by the pipelines (1024 unless the GPU can't bind that many)
+layout(constant_id = 0) const uint TEXTURE_CAPACITY = 1024;
+layout(set = 0, binding = 2) uniform sampler2D textures[TEXTURE_CAPACITY];
 
 #ifndef CUSTOM_PUSH
 layout(push_constant) uniform Push {

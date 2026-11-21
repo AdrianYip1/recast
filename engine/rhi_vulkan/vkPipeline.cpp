@@ -1,5 +1,19 @@
 #include "vkPipeline.hpp"
 
+namespace {
+	// Specialization constant 0 = size of the bindless texture array (TEXTURE_CAPACITY in common.glsl)
+	struct TextureCapacitySpecialization {
+		foto::u32 capacity;
+		VkSpecializationMapEntry entry = { .constantID = 0, .offset = 0, .size = sizeof(foto::u32) };
+		VkSpecializationInfo info;
+
+		explicit TextureCapacitySpecialization(foto::Device& device) : capacity(device.getTextureBinding().capacity) {
+			info = { .mapEntryCount = 1, .pMapEntries = &entry, .dataSize = sizeof(capacity), .pData = &capacity };
+		}
+		TextureCapacitySpecialization(const TextureCapacitySpecialization&) = delete;
+	};
+}
+
 foto::Pipeline::Pipeline(Device& device, const GraphicsPipelineConfig& graphicsPipelineConfig) :
 	_device(device.getDevice()),
 	shaderCode({ readFile(graphicsPipelineConfig.vertexShaderFilePath), readFile(graphicsPipelineConfig.fragmentShaderFilePath) }),
@@ -99,13 +113,15 @@ VkPipelineLayout foto::Pipeline::createPipelineLayout(Device& device, const std:
 VkPipeline foto::Pipeline::createComputePipeline(Device& device, VkPipelineLayout layout, const std::vector<char>& shaderCode) {
 	VkShaderModule shaderModule = createShaderModules(device, { shaderCode })[0];
 
+	TextureCapacitySpecialization specialization(device);
 	VkComputePipelineCreateInfo createInfo = {
 		.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
 		.stage = {
 			.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
 			.stage = VK_SHADER_STAGE_COMPUTE_BIT,
 			.module = shaderModule,
-			.pName = "main"
+			.pName = "main",
+			.pSpecializationInfo = &specialization.info
 		},
 		.layout = layout,
 	};
@@ -125,17 +141,20 @@ VkPipeline foto::Pipeline::createGraphicsPipeline(Device& device, const Graphics
 	// Shader Config
 	std::vector<VkShaderModule> shaderModules = createShaderModules(device, shaderCode);
 
+	TextureCapacitySpecialization specialization(device);
 	VkPipelineShaderStageCreateInfo vertShaderStageInfo = {
 		.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
 		.stage = VK_SHADER_STAGE_VERTEX_BIT,
 		.module = shaderModules[0],
-		.pName = "main"
+		.pName = "main",
+		.pSpecializationInfo = &specialization.info
 	};
 	VkPipelineShaderStageCreateInfo fragShaderStageInfo = {
 		.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
 		.stage = VK_SHADER_STAGE_FRAGMENT_BIT,
 		.module = shaderModules[1],
-		.pName = "main"
+		.pName = "main",
+		.pSpecializationInfo = &specialization.info
 	};
 
 	VkPipelineShaderStageCreateInfo shaderStagesCreateInfo[] = { vertShaderStageInfo, fragShaderStageInfo };

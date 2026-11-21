@@ -58,7 +58,8 @@ namespace foto {
 
 	inline constexpr u32 NO_MATERIAL_OVERRIDE = UINT32_MAX;
 
-	inline constexpr u32 MAX_TEXTURES = 1024;
+	inline constexpr u32 MAX_TEXTURES = 1024; // bindless texture array size, smaller on GPUs that can't bind this many
+	inline constexpr u32 MIN_TEXTURES = 16;
 	inline constexpr u32 MAX_MATERIALS = 1024;
 	inline constexpr u32 DEFAULT_TEXTURE = 0;
 	inline constexpr u32 DEFAULT_MATERIAL = 0;

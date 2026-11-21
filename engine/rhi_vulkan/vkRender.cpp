@@ -12,18 +12,12 @@ foto::Render::Render(Device& device, Swapchain& swapchain, Pipeline& pipeline, P
 	commandBuffers(createCommandBuffers(device, _commandPool)),
 	uniformBuffers(createUniformBuffers(device)),
 	// Pool sized from the pipeline's set 0 bindings, one set per frame in flight
-	descriptorPool(device, MAX_FRAMES_IN_FLIGHT, pipeline.getDescriptorSetLayoutInfo(0).poolSizes(MAX_FRAMES_IN_FLIGHT)),
+	descriptorPool(device, MAX_FRAMES_IN_FLIGHT, pipeline.getDescriptorSetLayoutInfo(0).poolSizes(MAX_FRAMES_IN_FLIGHT),
+				   pipeline.getDescriptorSetLayoutInfo(0).updatesAfterBind() ? VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT : 0u),
 	descriptorSets(descriptorPool.allocate(pipeline.getDescriptorSetLayout(0), MAX_FRAMES_IN_FLIGHT)),
 	materialBuffers(createMaterialBuffers(device)),
 	depthImage(createDepthImage(device, swapchain.getExtent()))
 {
-	VkPhysicalDeviceProperties properties;
-	vkGetPhysicalDeviceProperties(device.getPhysicalDevice(), &properties);
-	if (properties.limits.maxPerStageDescriptorSampledImages < MAX_TEXTURES ||
-		properties.limits.maxPerStageDescriptorSamplers < MAX_TEXTURES) {
-		throw std::runtime_error("ERROR: vkRender.cpp -> Render(): GPU can't bind MAX_TEXTURES textures");
-	}
-
 	for (size i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
 		DescriptorWriter()
 			.writeBuffer(0, uniformBuffers[i]->getBuffer(), sizeof(FrameUbo))
@@ -72,8 +66,8 @@ foto::Render::~Render() {
 };
 
 foto::u32 foto::Render::addTexture(Image& texture, Sampler& sampler) {
-	if (textureCount >= MAX_TEXTURES) {
-		throw std::runtime_error("ERROR: vkRender.cpp -> addTexture(): MAX_TEXTURES reached");
+	if (textureCount >= device.getTextureBinding().capacity) {
+		throw std::runtime_error("ERROR: vkRender.cpp -> addTexture(): all " + std::to_string(device.getTextureBinding().capacity) + " texture slots used");
 	}
 
 	vkDeviceWaitIdle(_device);

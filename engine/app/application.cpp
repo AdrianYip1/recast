@@ -17,12 +17,15 @@
 using enginemath::Vec3;
 using enginemath::Mat4;
 
-static foto::DescriptorLayoutBuilder sceneSetLayout() {
+static foto::DescriptorLayoutBuilder sceneSetLayout(foto::Device& device) {
 	constexpr VkShaderStageFlags stages = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT;
+	const foto::TextureBinding& textures = device.getTextureBinding();
+	VkDescriptorBindingFlags textureFlags = VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT;
+	if (textures.updateAfterBind) textureFlags |= VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT;
 	return foto::DescriptorLayoutBuilder()
 		.addBinding(0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, stages)
 		.addBinding(1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, stages)
-		.addBinding(2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, stages, foto::MAX_TEXTURES, VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT);
+		.addBinding(2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, stages, textures.capacity, textureFlags);
 }
 
 static std::unique_ptr<foto::Pipeline> createPathTracePipeline(foto::Device& device) {
@@ -30,7 +33,7 @@ static std::unique_ptr<foto::Pipeline> createPathTracePipeline(foto::Device& dev
 	return std::make_unique<foto::Pipeline>(device, foto::ComputePipelineConfig{
 		.shaderFilePath = "shaders/pathtrace.comp.spv",
 		.descriptorSetLayouts = {
-			sceneSetLayout(),
+			sceneSetLayout(device),
 			foto::DescriptorLayoutBuilder()
 				.addBinding(0, VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, VK_SHADER_STAGE_COMPUTE_BIT)
 				.addBinding(1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_SHADER_STAGE_COMPUTE_BIT)
@@ -50,14 +53,14 @@ foto::Application::Application(const ApplicationConfig& config) :
 				.fragmentShaderFilePath = "shaders/basic.frag.spv",
 				.colorFormat = Render::HDR_FORMAT,
 				.depthFormat = Render::DEPTH_FORMAT,
-				.descriptorSetLayouts = { sceneSetLayout() },
+				.descriptorSetLayouts = { sceneSetLayout(*device) },
 				.pushConstants = { DRAW_PUSH_RANGE },
 			})),
 	presentPipeline(std::make_unique<Pipeline>(*device, GraphicsPipelineConfig{
 				.vertexShaderFilePath = "shaders/fullscreen.vert.spv",
 				.fragmentShaderFilePath = "shaders/tonemap.frag.spv",
 				.colorFormat = swapchain->getFormat(),
-				.descriptorSetLayouts = { sceneSetLayout() },
+				.descriptorSetLayouts = { sceneSetLayout(*device) },
 				.pushConstants = { DRAW_PUSH_RANGE },
 				.useVertexInput = false,
 				.cullMode = VK_CULL_MODE_NONE,
@@ -68,7 +71,7 @@ foto::Application::Application(const ApplicationConfig& config) :
 				.vertexShaderFilePath = "shaders/shadow.vert.spv",
 				.fragmentShaderFilePath = "shaders/shadow.frag.spv",
 				.depthFormat = Render::DEPTH_FORMAT,
-				.descriptorSetLayouts = { sceneSetLayout() },
+				.descriptorSetLayouts = { sceneSetLayout(*device) },
 				.pushConstants = { DRAW_PUSH_RANGE },
 				.cullMode = VK_CULL_MODE_NONE,
 				.depthBiasConstant = 1.25f,
@@ -256,7 +259,7 @@ void foto::Application::drawFullscreen(Pipeline* pipeline, u32 material) {
 foto::Pipeline* foto::Application::createPipeline(GraphicsPipelineConfig config) {
 	config.colorFormat = Render::HDR_FORMAT;
 	config.depthFormat = Render::DEPTH_FORMAT;
-	config.descriptorSetLayouts = { sceneSetLayout() };
+	config.descriptorSetLayouts = { sceneSetLayout(*device) };
 	config.pushConstants = { DRAW_PUSH_RANGE };
 	pipelines.push_back(std::make_unique<Pipeline>(*device, config));
 	return pipelines.back().get();

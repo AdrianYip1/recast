@@ -24,6 +24,9 @@ namespace foto {
 		// Pool sizes needed to allocate setCount sets of this layout
 		std::vector<VkDescriptorPoolSize> poolSizes(u32 setCount) const;
 
+		// A binding with UPDATE_AFTER_BIND needs a pool created with VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT
+		bool updatesAfterBind() const;
+
 		const std::vector<VkDescriptorSetLayoutBinding>& getBindings() const { return bindings; };
 
 	private:
@@ -34,7 +37,7 @@ namespace foto {
 	// Owns a VkDescriptorPool. Destroying it frees every set allocated from it.
 	class DescriptorPool {
 	public:
-		DescriptorPool(Device& device, u32 maxSets, std::span<const VkDescriptorPoolSize> poolSizes);
+		DescriptorPool(Device& device, u32 maxSets, std::span<const VkDescriptorPoolSize> poolSizes, VkDescriptorPoolCreateFlags flags = 0);
 		~DescriptorPool();
 		DescriptorPool(const DescriptorPool& other) = delete;
 		DescriptorPool& operator=(const DescriptorPool& other) = delete;
@@ -47,7 +50,7 @@ namespace foto {
 		VkDevice _device = VK_NULL_HANDLE;
 		VkDescriptorPool pool = VK_NULL_HANDLE;
 
-		static VkDescriptorPool createPool(Device& device, u32 maxSets, std::span<const VkDescriptorPoolSize> poolSizes);
+		static VkDescriptorPool createPool(Device& device, u32 maxSets, std::span<const VkDescriptorPoolSize> poolSizes, VkDescriptorPoolCreateFlags flags);
 	};
 
 	// Collects descriptor writes, then points a set's bindings at real resources.
