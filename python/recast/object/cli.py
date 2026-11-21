@@ -313,7 +313,7 @@ def _table_spot(cam: Camera, data: dict, out: Path, boxes, walls) -> np.ndarray 
     table_ids = {pid for o in detected.get("objects", []) if o.get("label") in TABLE_LIKE for pid in o.get("proxy_ids", [])}
     best, best_area = None, 0.0
     for p in data.get("proxies", []):
-        if p.get("type") != "box" or p.get("id") not in table_ids:
+        if p.get("type") not in ("box", "hull") or p.get("id") not in table_ids:
             continue
         lo, hi = np.asarray(p["min"], float), np.asarray(p["max"], float)
         top = np.array([0.5 * (lo[0] + hi[0]), hi[1], 0.5 * (lo[2] + hi[2])])
@@ -339,7 +339,7 @@ def _place_in_scene(out: Path) -> None:
     data = json.loads(path.read_text())
     cam = Camera.from_dict(data["camera"], data["image_size"])
     boxes = [(np.asarray(p["min"], float), np.asarray(p["max"], float))
-             for p in data.get("proxies", []) if p.get("type") == "box"]
+             for p in data.get("proxies", []) if p.get("type") in ("box", "hull")]
     walls = [(np.asarray(p["point"], float), np.asarray(p["normal"], float))
              for p in data.get("proxies", []) if p.get("type") == "plane" and abs(p["normal"][1]) < 0.5]
     spot = _table_spot(cam, data, out, boxes, walls)

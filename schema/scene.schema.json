@@ -76,6 +76,21 @@
               "max": { "$ref": "#/$defs/vec3" },
               "material": { "$ref": "#/$defs/material" }
             }
+          },
+          {
+            "type": "object",
+            "description": "convex shape fitted around a detected object: vertices relative to point, faces counter-clockwise seen from outside; min/max = its world bounding box",
+            "required": ["type", "id", "min", "max", "point", "vertices", "faces", "material"],
+            "properties": {
+              "type": { "const": "hull" },
+              "id": { "$ref": "#/$defs/id" },
+              "min": { "$ref": "#/$defs/vec3" },
+              "max": { "$ref": "#/$defs/vec3" },
+              "point": { "$ref": "#/$defs/vec3" },
+              "vertices": { "type": "array", "items": { "$ref": "#/$defs/vec3" } },
+              "faces": { "type": "array", "items": { "type": "array", "items": { "type": "integer", "minimum": 0 }, "minItems": 3, "maxItems": 3 } },
+              "material": { "$ref": "#/$defs/material" }
+            }
           }
         ]
       }

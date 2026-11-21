@@ -125,12 +125,14 @@ ceiling, sofa, table, vase, ...), Depth Anything V2 Base (CC-BY-NC-4.0, non-comm
 relative depth. The rest is ours:
 1. Depth in metres: fit `disparity = a / z + b` on the floor pixels, whose true
    depth the solved camera gives exactly.
-2. Each object -> its 3D points -> an axis-aligned box (two stacked boxes when it
+2. Each object -> its 3D points -> a convex hull fitted around them (hidden back mirrored unless its top is
+   seen, reaching down to what it stands on), inside an axis-aligned envelope box (two stacked boxes when it
    has a clear seat and back). Objects whose outline meets the floor (checked
    against depth, so a table top's overhang doesn't count) are pinned to y = 0
    and their feet widen the footprint; the outline's top edge, put on the plane
    of the top by the camera, fixes the far side that depth sees edge-on.
-3. Each box rests on the floor or on the box under it (vase on table); boxes
+3. Tables, desks, benches and stools are only their top (6 cm slab): light, shadows and objects pass under them.
+   Each box rests on the floor or on the box under it (vase on table); boxes
    inside bigger ones (cushions in a sofa) are dropped.
 4. Pixels where the depth jumps (outlines) are skipped: the model blurs depth across them, which
    stretches boxes. An object touching the floor has its depth scaled so its feet land where the

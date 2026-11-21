@@ -89,6 +89,21 @@ class BoxProxy:
                 "material": self.material.to_dict()}
 
 
+@dataclass
+class HullProxy(BoxProxy):
+    """Convex shape fitted around a detected object: `vertices` (local, around `point`) and outward `faces`.
+    min/max hold its world bounding box, so everything that handles boxes treats it as that box."""
+
+    point: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    vertices: list = field(default_factory=list)    # [[x, y, z], ...] relative to point
+    faces: list = field(default_factory=list)       # [[i, j, k], ...], counter-clockwise seen from outside
+
+    def to_dict(self) -> dict:
+        return {"type": "hull", "id": self.id, "min": _vec(self.min), "max": _vec(self.max), "point": _vec(self.point),
+                "vertices": [_vec(v) for v in self.vertices], "faces": [[int(i) for i in f] for f in self.faces],
+                "material": self.material.to_dict()}
+
+
 Proxy = PlaneProxy | BoxProxy
 
 
@@ -97,6 +112,9 @@ def proxy_from_dict(d: dict) -> Proxy:
         return PlaneProxy(int(d["id"]), tuple(d["point"]), tuple(d["normal"]), Material.from_dict(d.get("material")))
     if d["type"] == "box":
         return BoxProxy(int(d["id"]), tuple(d["min"]), tuple(d["max"]), Material.from_dict(d.get("material")))
+    if d["type"] == "hull":
+        return HullProxy(int(d["id"]), tuple(d["min"]), tuple(d["max"]), Material.from_dict(d.get("material")),
+                         tuple(d.get("point", (0.0, 0.0, 0.0))), list(d.get("vertices", [])), list(d.get("faces", [])))
     raise ValueError(f"unknown proxy type {d['type']!r}")
 
 

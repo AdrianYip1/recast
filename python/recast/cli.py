@@ -213,7 +213,7 @@ def cmd_detect(args) -> None:
         if o["label"] in detect.OPEN_BELOW and o.get("shape") != "seat_back":
             rests = f"top at {hi[1]:.2f} m (open below)"
         print(f"  {o['label']:<14} {size[0]:.2f} x {size[1]:.2f} x {size[2]:.2f} m, {rests}"
-              f"{'  (2 boxes: seat + back)' if o.get('shape') == 'seat_back' else f'  ({len(boxes)} slices)' if len(boxes) > 1 else ''}")
+              f"{'  (2 boxes: seat + back)' if o.get('shape') == 'seat_back' else '  (fitted shape)' if o.get('shape') == 'hull' else ''}")
         objects.append({"label": o["label"], "score": o["score"], "proxy_ids": o["proxy_ids"], "shape": o.get("shape", "box"),
                         "mask": f"masks/{name}"})
     for w in det.walls:

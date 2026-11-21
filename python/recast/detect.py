@@ -25,7 +25,7 @@ import cv2
 import numpy as np
 
 from .camera import Camera
-from .scene import BoxProxy, Material, PlaneProxy
+from .scene import BoxProxy, HullProxy, Material, PlaneProxy
 
 SEG_MODEL = "shi-labs/oneformer_ade20k_swin_tiny"
 # Base is CC-BY-NC-4.0 (non-commercial); Small (Apache-2.0) is the drop-in fallback for a commercial build
@@ -383,70 +383,46 @@ def geometry_segments(cam: Camera, P: np.ndarray, segments: list[Segment], kind:
     return out
 
 
-SLICES = 8               # thin boxes that follow an object's outline from above
+HULL_POINTS = 1500       # points a hull is fitted to (a random subset: plenty for its outline, fast)
 
 
-def _footprint(points_xz: np.ndarray, lo: np.ndarray, hi: np.ndarray, mirror: bool) -> np.ndarray | None:
-    """Convex outline (N, 2) of an object seen from above, clipped to its box: its visible points, plus their mirror
-    image through the box's centre when only the front is seen (most furniture is as deep behind its middle as in
-    front). Seen from above, its top already covers the whole outline and no mirroring is needed."""
-    centre = 0.5 * (lo[[0, 2]] + hi[[0, 2]])
-    pts = np.vstack([points_xz, 2.0 * centre - points_xz]) if mirror else points_xz
-    pts = np.clip(pts, lo[[0, 2]], hi[[0, 2]]).astype(np.float32)
-    if len(pts) < 20:
-        return None
-    hull = cv2.convexHull(pts).reshape(-1, 2).astype(np.float64)
-    return hull if len(hull) >= 3 else None
+def shape_hull(points: np.ndarray, lo: np.ndarray, hi: np.ndarray, top_seen: bool):
+    """Convex shape around an object's 3D points, inside its box: (anchor, local vertices, outward faces), or None.
+    Only its front is seen, so the points are mirrored through the box's centre to fill in the back, unless the top is
+    seen (it then covers the whole outline). It reaches down to the bottom of its box: what it stands on (the floor or
+    the box under it) was settled there."""
+    from scipy.spatial import ConvexHull, QhullError
 
-
-def _cross_section(hull: np.ndarray, axis: int, value: float) -> tuple[float, float] | None:
-    """[min, max] of the other coordinate where the line `axis = value` crosses the convex outline."""
-    other = 1 - axis
-    found = []
-    for a, b in zip(hull, np.roll(hull, -1, axis=0)):
-        if (a[axis] - value) * (b[axis] - value) > 0:
-            continue
-        if abs(b[axis] - a[axis]) < 1e-9:
-            found += [a[other], b[other]]
-        else:
-            t = (value - a[axis]) / (b[axis] - a[axis])
-            if 0.0 <= t <= 1.0:
-                found.append(a[other] + t * (b[other] - a[other]))
-    return (min(found), max(found)) if found else None
-
-
-def shape_slices(points: np.ndarray, lo: np.ndarray, hi: np.ndarray, top_seen: bool, count: int = SLICES) -> list[tuple]:
-    """The box as `count` thin boxes across its longer side, each as deep as the object's outline there. Boxes that
-    are small or already fill their outline stay one box (empty list)."""
     points = points[np.isfinite(points).all(axis=1)]
-    points = points[points[:, 1] > lo[1] + 0.05]           # floor and shadow at the base often leak into the cutout
-    size = hi - lo
-    if len(points) < 50 or max(size[0], size[2]) < 0.3:
-        return []
-    hull = _footprint(points[:, [0, 2]], lo, hi, mirror=not top_seen)
-    if hull is None:
-        return []
-    across = 0 if size[0] >= size[2] else 1                 # slice along the longer side (index into x, z)
-    axis3, other3 = (0, 2) if across == 0 else (2, 0)
-    edges = np.linspace(lo[axis3], hi[axis3], count + 1)
-    slices, filled = [], 0.0
-    for s0, s1 in zip(edges[:-1], edges[1:]):
-        ranges = [_cross_section(hull, across, v) for v in [s0, s1, *[p[across] for p in hull if s0 < p[across] < s1]]]
-        ranges = [r for r in ranges if r is not None]
-        if not ranges:
-            continue
-        r_lo, r_hi = min(r[0] for r in ranges), max(r[1] for r in ranges)
-        if r_hi - r_lo < 0.02:
-            continue
-        p_lo, p_hi = lo.copy(), hi.copy()
-        p_lo[axis3], p_hi[axis3] = s0, s1
-        p_lo[other3], p_hi[other3] = max(r_lo, lo[other3]), min(r_hi, hi[other3])
-        slices.append((p_lo, p_hi))
-        filled += (s1 - s0) * (p_hi[other3] - p_lo[other3])
-    # already box-shaped (fills 92% of its box from above): one box is simpler and exact
-    if not slices or filled > 0.92 * size[0] * size[2]:
-        return []
-    return slices
+    points = points[points[:, 1] > lo[1] + 0.05]            # floor and shadow at the base often leak into the cutout
+    if len(points) < 50 or (hi - lo).min() < 0.03:
+        return None
+    if len(points) > HULL_POINTS:
+        points = points[np.random.default_rng(0).choice(len(points), HULL_POINTS, replace=False)]
+    if not top_seen:
+        centre = 0.5 * (lo + hi)
+        mirrored = points.copy()
+        mirrored[:, [0, 2]] = 2.0 * centre[[0, 2]] - points[:, [0, 2]]
+        points = np.vstack([points, mirrored])
+    base = points.copy()                                    # its outline at the bottom, so it stands on its support
+    base[:, 1] = lo[1]
+    points = np.vstack([points, base])
+    points = np.clip(points, lo, hi)
+    try:
+        hull = ConvexHull(points)
+    except (QhullError, ValueError):
+        return None
+    used = np.unique(hull.simplices)
+    remap = {int(v): k for k, v in enumerate(used)}
+    faces = []
+    for simplex, equation in zip(hull.simplices, hull.equations):
+        a, b, c = (points[i] for i in simplex)
+        f = [remap[int(i)] for i in simplex]
+        if np.dot(np.cross(b - a, c - a), equation[:3]) < 0:
+            f = [f[0], f[2], f[1]]                          # outward: counter-clockwise seen from outside
+        faces.append(f)
+    anchor = points[used].mean(axis=0)
+    return anchor, points[used] - anchor, faces
 
 
 def build_proxies(cam: Camera, segments: list[Segment], disparity: np.ndarray, first_id: int,
@@ -595,24 +571,37 @@ def build_proxies(cam: Camera, segments: list[Segment], disparity: np.ndarray, f
     proxies, objects = [], []
     next_id = first_id
     by_obj: dict[int, list[int]] = {}
-    parts_of = {}
+    # Each object as a convex hull around its points, inside the envelope of its boxes. Open furniture (tables,
+    # benches) keeps its box, which becomes just its top later: a hull would close off the space under it
+    envelope = {}
     for lo, hi, i in keep:
-        parts_of.setdefault(i, []).append((lo, hi))
+        e_lo, e_hi = envelope.get(i, (lo.copy(), hi.copy()))
+        envelope[i] = (np.minimum(e_lo, lo), np.maximum(e_hi, hi))
+    hulled = set()
     for lo, hi, i in keep:
         f = found[i]
-        # a single box follows the object's outline from above as thin slices (a round ottoman becomes a stepped
-        # circle); seat + back pairs stay as they are
-        pieces = [(lo, hi)]
-        if len(parts_of[i]) == 1:
-            pieces = shape_slices(P[f["segment"].mask], lo, hi, top_seen=cam.position[1] > hi[1] + 0.1) or pieces
-        for p_lo, p_hi in pieces:
-            proxies.append(BoxProxy(next_id, tuple(float(v) for v in p_lo), tuple(float(v) for v in p_hi),
-                                    Material(f["albedo"], 0.8)))
-            by_obj.setdefault(i, []).append(next_id)
-            next_id += 1
+        material = Material(f["albedo"], 0.8)
+        if short_label(f["segment"].label) not in OPEN_BELOW:
+            if i in hulled:
+                continue
+            e_lo, e_hi = envelope[i]
+            shape = shape_hull(P[f["segment"].mask], e_lo, e_hi, top_seen=cam.position[1] > e_hi[1] + 0.1)
+            if shape is not None:
+                anchor, local, faces = shape
+                world = local + anchor
+                proxies.append(HullProxy(next_id, tuple(float(v) for v in world.min(axis=0)),
+                                         tuple(float(v) for v in world.max(axis=0)), material,
+                                         tuple(float(v) for v in anchor), local.tolist(), faces))
+                by_obj.setdefault(i, []).append(next_id)
+                next_id += 1
+                hulled.add(i)
+                continue
+        proxies.append(BoxProxy(next_id, tuple(float(v) for v in lo), tuple(float(v) for v in hi), material))
+        by_obj.setdefault(i, []).append(next_id)
+        next_id += 1
     for i, ids in by_obj.items():
         s = found[i]["segment"]
-        shape = "seat_back" if len(parts_of[i]) > 1 else "slices" if len(ids) > 1 else "box"
+        shape = "hull" if i in hulled else "seat_back" if len(ids) > 1 else "box"
         objects.append({"label": short_label(s.label), "score": round(s.score, 3), "proxy_ids": ids, "segment": s,
                         "shape": shape})
 
@@ -765,7 +754,7 @@ def open_below_slabs(det: Detection) -> Detection:
     open_ids = {pid for o in det.objects if o["label"] in OPEN_BELOW and o.get("shape") != "seat_back" for pid in o["proxy_ids"]}
     proxies = []
     for p in det.proxies:
-        if isinstance(p, BoxProxy) and p.id in open_ids and p.max[1] - p.min[1] > SLAB:
+        if isinstance(p, BoxProxy) and not isinstance(p, HullProxy) and p.id in open_ids and p.max[1] - p.min[1] > SLAB:
             p = replace(p, min=(p.min[0], p.max[1] - SLAB, p.min[2]))
         proxies.append(p)
     return replace(det, proxies=proxies)
@@ -776,7 +765,11 @@ def scaled(det: Detection, k: float) -> Detection:
     from dataclasses import replace
     proxies = []
     for p in det.proxies:
-        if isinstance(p, BoxProxy):
+        if isinstance(p, HullProxy):
+            proxies.append(replace(p, min=tuple(float(v) * k for v in p.min), max=tuple(float(v) * k for v in p.max),
+                                   point=tuple(float(v) * k for v in p.point),
+                                   vertices=[[float(c) * k for c in v] for v in p.vertices]))
+        elif isinstance(p, BoxProxy):
             proxies.append(replace(p, min=tuple(float(v) * k for v in p.min), max=tuple(float(v) * k for v in p.max)))
         else:
             proxies.append(replace(p, point=tuple(float(v) * k for v in p.point)))
@@ -821,6 +814,12 @@ def draw_check(rgb8: np.ndarray, cam: Camera, det: Detection) -> np.ndarray:
             p[o], q[o] = -12.0, 12.0
             _draw_segment(right, cam, p, q, (0, 200, 255), 2, n=200)
     for p in det.proxies:
+        if isinstance(p, HullProxy):
+            world = np.asarray(p.vertices, float) + np.asarray(p.point, float)
+            edges = {tuple(sorted((f[e], f[(e + 1) % 3]))) for f in p.faces for e in range(3)}
+            for i, j in edges:
+                _draw_segment(right, cam, world[i], world[j], (255, 0, 255), 1, n=8)
+            continue
         if not isinstance(p, BoxProxy):
             continue
         lo, hi = np.array(p.min), np.array(p.max)

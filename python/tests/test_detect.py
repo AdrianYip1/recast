@@ -141,17 +141,19 @@ def test_scale_from_a_table():
     assert np.isclose(small.proxies[1].point[2], -5.0 * k)
 
 
-def test_round_object_becomes_slices_that_follow_it():
-    from recast.detect import shape_slices
+def test_round_object_becomes_a_fitted_hull():
+    from recast.detect import shape_hull
     rng = np.random.default_rng(0)
     a = rng.uniform(0, 2 * np.pi, 4000)
     r = 0.3 * np.sqrt(rng.uniform(0, 1, 4000))
     top = np.column_stack([r * np.cos(a), np.full(4000, 0.45), r * np.sin(a) - 3.0])   # a round top, 0.3 m radius
     lo, hi = np.array([-0.3, 0.0, -3.3]), np.array([0.3, 0.45, -2.7])
-    slices = shape_slices(top, lo, hi, top_seen=True)
-    assert 4 <= len(slices) <= 8
-    area = sum((h[0] - l[0]) * (h[2] - l[2]) for l, h in slices)
-    assert area < 0.9 * 0.36                                  # less than the square box, close to the circle (0.28)
-    assert area > 0.25
-    square = np.column_stack([rng.uniform(-0.3, 0.3, 4000), np.full(4000, 0.45), rng.uniform(-3.3, -2.7, 4000)])
-    assert shape_slices(square, lo, hi, top_seen=True) == []  # already a box: stays one box
+    anchor, local, faces = shape_hull(top, lo, hi, top_seen=True)
+    world = local + anchor
+    assert np.isclose(world[:, 1].min(), 0.0) and np.isclose(world[:, 1].max(), 0.45)   # floor to top
+    corner = np.array([0.29, 0.2, -2.71])                    # inside the box, outside the round shape
+    normals = [np.cross(world[f[1]] - world[f[0]], world[f[2]] - world[f[0]]) for f in faces]
+    outside = any(np.dot(n, corner - world[f[0]]) > 1e-9 for n, f in zip(normals, faces))
+    assert outside                                            # the hull follows the circle, not the square box
+    centre = world.mean(axis=0)
+    assert all(np.dot(n, centre - world[f[0]]) < 0 for n, f in zip(normals, faces))   # faces point outwards
