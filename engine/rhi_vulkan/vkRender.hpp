@@ -17,7 +17,7 @@ namespace foto {
 		Render(const Render& other) = delete;
 		Render& operator=(const Render& other) = delete;
 
-		void drawFrame();
+		void drawFrame(Device& device, Swapchain& swapchain, Pipeline& pipeline);
 	private:
 		VkDevice _device = VK_NULL_HANDLE;
 		VkCommandPool _commandPool = VK_NULL_HANDLE;

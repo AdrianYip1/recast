@@ -6,6 +6,7 @@
 #include "../rhi_vulkan/vkDevice.hpp"
 #include "../rhi_vulkan/vkSwapchain.hpp"
 #include "../rhi_vulkan/vkPipeline.hpp"
+#include "../rhi_vulkan/vkRender.hpp"
 
 foto::Application::Application(const ApplicationConfig& config) :
 	window(std::make_unique<Window>(config.width, config.height, config.title)),
@@ -15,7 +16,8 @@ foto::Application::Application(const ApplicationConfig& config) :
 				.vertexShaderFilePath = "shaders/basic.vert.spv",
 				.fragmentShaderFilePath = "shaders/basic.frag.spv",
 				.colorFormat = swapchain->getFormat(),
-			}))
+			})),
+	render(std::make_unique<Render>(*device, *swapchain, *pipeline))
 {
 	 
 }
@@ -29,6 +31,8 @@ void foto::Application::run() {
 	while (!window->shouldClose()) {
 		window->pollEvents();
 		onUpdate(0.0f);
+
+		render->drawFrame(*device, *swapchain, *pipeline);
 	}
 	onShutdown();
 }

@@ -15,8 +15,57 @@ foto::Render::~Render() {
 	vkDestroyCommandPool(_device, _commandPool, nullptr);
 };
 
-void foto::Render::drawFrame() {
+// CPU -> recording command buffer
+// GPU -> submitting/executing command buffer
+void foto::Render::drawFrame(Device& device, Swapchain& swapchain, Pipeline& pipeline) {
+	vkWaitForFences(device.getDevice(), 1, &inFlightFence, VK_TRUE, UINT64_MAX);
 
+	u32 imageIdx;
+	vkAcquireNextImageKHR(device.getDevice(), swapchain.getSwapchain(), UINT64_MAX, imageAvailableSem, VK_NULL_HANDLE, &imageIdx);
+
+	vkResetCommandBuffer(commandBuffer, 0);
+	recordCommandBuffer(swapchain, pipeline, commandBuffer, imageIdx);
+
+	// Submit info
+	VkSemaphore waitSemaphore[] = { imageAvailableSem };
+	VkPipelineStageFlags waitStage[] = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
+
+	VkSemaphore signalSemaphore[] = { renderFinishedSem };
+
+	VkSubmitInfo submitInfo = {
+		.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+		.waitSemaphoreCount = 1,
+		.pWaitSemaphores = waitSemaphore,
+		.pWaitDstStageMask = waitStage,
+
+		.commandBufferCount = 1,
+		.pCommandBuffers = &commandBuffer,
+
+		.signalSemaphoreCount = 1,
+		.pSignalSemaphores = signalSemaphore,
+	};
+
+	// Fence must be unsignaled, same with signalSemaphores
+	if (vkQueueSubmit(device.getGraphicsQ(), 1, &submitInfo, inFlightFence) != VK_SUCCESS) {
+		throw std::runtime_error("ERROR: vkRender.cpp -> drawFrame()");
+	}
+
+	// Present queue
+	VkSwapchainKHR swapchains[] = { swapchain.getSwapchain()};
+
+	VkPresentInfoKHR presentInfo = {
+		.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+
+		.waitSemaphoreCount = 1,
+		.pWaitSemaphores = signalSemaphore,
+
+		.swapchainCount = 1,
+		.pSwapchains = swapchains,
+
+		.pImageIndices = &imageIdx,
+	};
+
+	vkQueuePresentKHR(device.getPresentQ(), &presentInfo);
 }
 
 void foto::Render::createSyncObjects(VkDevice _device) {
@@ -25,7 +74,8 @@ void foto::Render::createSyncObjects(VkDevice _device) {
 	};
 
 	VkFenceCreateInfo fenceCreateInfo = {
-		.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO
+		.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+		.flags = VK_FENCE_CREATE_SIGNALED_BIT
 	};
 
 	if (vkCreateSemaphore(_device, &semaphoreCreateInfo, nullptr, &imageAvailableSem) != VK_SUCCESS ||
