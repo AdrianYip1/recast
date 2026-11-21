@@ -24,18 +24,21 @@ namespace foto {
 		Pipeline(const Pipeline& other) = delete;
 		Pipeline& operator=(const Pipeline& other) = delete;
 
+		VkDescriptorSetLayout getDescriptorSetLayout() { return setLayout; };
 		VkPipelineLayout getPipelineLayout() { return pipelineLayout; };
 		VkPipeline getPipeline() { return pipeline; };
 
 	private:
 		VkDevice _device;
+		VkDescriptorSetLayout setLayout = VK_NULL_HANDLE;
 		VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
 		VkPipeline pipeline = VK_NULL_HANDLE;
 
 		static std::vector<char> readFile(const std::string& fileName);
 		static std::vector<VkShaderModule> createShaderModules(Device& device, const std::vector<std::vector<char>>& code);
 
-		static VkPipelineLayout createPipelineLayout(Device& device);
+		static VkDescriptorSetLayout createDescriptorSetLayout(Device& device);
+		static VkPipelineLayout createPipelineLayout(Device& device, VkDescriptorSetLayout setLayout);
 		static VkPipeline createGraphicsPipeline(Device& device, const GraphicsPipelineConfig& config, VkPipelineLayout layout);
 	};
 } // namespace foto

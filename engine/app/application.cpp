@@ -52,7 +52,11 @@ void foto::Application::run() {
 		window->pollEvents();
 		onUpdate(0.0f);
 
-		bool outOfDate = render->drawFrame(vertexBuffers, *indexBuffer);
+		// Placeholder camera
+		Ubo ubo = { enginemath::Mat4::identity(), enginemath::Mat4::identity(), enginemath::Mat4::identity() };
+		ubo.proj.m[1][1] = -1.0f;
+
+		bool outOfDate = render->drawFrame(vertexBuffers, *indexBuffer, ubo);
 		if (outOfDate || window->getFramebufferResized()) {
 			window->setFramebufferResized(false);
 			swapchain->recreate();

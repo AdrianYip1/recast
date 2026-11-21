@@ -3,7 +3,10 @@
 foto::Render::Render(Device& device, Swapchain& swapchain, Pipeline& pipeline) :
 	device(device), swapchain(swapchain), pipeline(pipeline),
 	_device(device.getDevice()), _commandPool(createCommandPool(device)), 
-	commandBuffers(createCommandBuffers(device, _commandPool))
+	commandBuffers(createCommandBuffers(device, _commandPool)),
+	uniformBuffers(createUniformBuffers(device)),
+	descriptorPool(createDescriptorPool(device)),
+	descriptorSets(createDescriptorSets(device, descriptorPool, pipeline.getDescriptorSetLayout(), uniformBuffers))
 {
 	createSyncObjects(_device, swapchain.getImages().size());
 };
@@ -13,12 +16,13 @@ foto::Render::~Render() {
 	for (VkSemaphore sem : renderFinishedSem) vkDestroySemaphore(_device, sem, nullptr);
 	for (VkFence fence : inFlightFence) vkDestroyFence(_device, fence, nullptr);
 
+	vkDestroyDescriptorPool(_device, descriptorPool, nullptr); // also frees its sets
 	vkDestroyCommandPool(_device, _commandPool, nullptr);
 };
 
 // CPU -> recording command buffer
 // GPU -> submitting/executing command buffer
-bool foto::Render::drawFrame(const std::vector<std::unique_ptr<Buffer>>& vertexBuffers, Buffer& indexBuffer) {
+bool foto::Render::drawFrame(const std::vector<std::unique_ptr<Buffer>>& vertexBuffers, Buffer& indexBuffer, const Ubo& ubo) {
 	vkWaitForFences(device.getDevice(), 1, &inFlightFence[currentFrame], VK_TRUE, UINT64_MAX);
 
 	u32 imageIdx;
@@ -32,6 +36,9 @@ bool foto::Render::drawFrame(const std::vector<std::unique_ptr<Buffer>>& vertexB
 
 	// Reset only once we know we will submit, otherwise an early return leaves it unsignaled -> deadlock
 	vkResetFences(device.getDevice(), 1, &inFlightFence[currentFrame]);
+
+	// Update uniforms
+	uniformBuffers[currentFrame]->upload(&ubo, sizeof(ubo));
 
 	VkCommandBuffer commandBuffer = commandBuffers[currentFrame];
 	vkResetCommandBuffer(commandBuffer, 0);
@@ -197,6 +204,10 @@ void foto::Render::recordCommandBuffer(VkCommandBuffer commandBuffer, u32 imageI
 	// Bind pipeline/viewport/scissor
 	vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.getPipeline());
 
+	// Bind descriptor
+	vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.getPipelineLayout(),
+							0, 1, &descriptorSets[currentFrame], 0, nullptr);
+
 	VkViewport viewport = {
 		.x = 0.0f,
 		.y = 0.0f,
@@ -286,4 +297,82 @@ std::vector<VkCommandBuffer> foto::Render::createCommandBuffers(Device& device, 
 	}
 
 	return commandBuffers;
+}
+
+std::vector<std::unique_ptr<foto::Buffer>> foto::Render::createUniformBuffers(Device& device) {
+	std::vector<std::unique_ptr<Buffer>> buffers;
+	buffers.reserve(MAX_FRAMES_IN_FLIGHT);
+
+	// HOST_VISIBLE: rewritten from the CPU every frame, so no staging buffer
+	for (size i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+		buffers.push_back(std::make_unique<Buffer>(device, sizeof(Ubo), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT));
+	}
+
+	return buffers;
+}
+
+VkDescriptorPool foto::Render::createDescriptorPool(Device& device) {
+	// One UBO descriptor per frame in flight
+	VkDescriptorPoolSize poolSize = {
+		.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+		.descriptorCount = MAX_FRAMES_IN_FLIGHT
+	};
+
+	VkDescriptorPoolCreateInfo poolCreateInfo = {
+		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+		.maxSets = MAX_FRAMES_IN_FLIGHT,
+		.poolSizeCount = 1,
+		.pPoolSizes = &poolSize
+	};
+
+	VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
+
+	if (vkCreateDescriptorPool(device.getDevice(), &poolCreateInfo, nullptr, &descriptorPool) != VK_SUCCESS) {
+		throw std::runtime_error("ERROR: vkRender.cpp -> createDescriptorPool()");
+	}
+
+	return descriptorPool;
+}
+
+std::vector<VkDescriptorSet> foto::Render::createDescriptorSets(Device& device, VkDescriptorPool descriptorPool,
+																VkDescriptorSetLayout setLayout,
+																const std::vector<std::unique_ptr<Buffer>>& uniformBuffers) {
+	// Same layout for every frame, allocate all sets in one call
+	std::vector<VkDescriptorSetLayout> layouts(MAX_FRAMES_IN_FLIGHT, setLayout);
+
+	VkDescriptorSetAllocateInfo allocInfo = {
+		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+		.descriptorPool = descriptorPool,
+		.descriptorSetCount = static_cast<u32>(layouts.size()),
+		.pSetLayouts = layouts.data()
+	};
+
+	std::vector<VkDescriptorSet> descriptorSets(MAX_FRAMES_IN_FLIGHT);
+	if (vkAllocateDescriptorSets(device.getDevice(), &allocInfo, descriptorSets.data()) != VK_SUCCESS) {
+		throw std::runtime_error("ERROR: vkRender.cpp -> createDescriptorSets()");
+	}
+
+	// Point each set's binding 0 at its frame's uniform buffer
+	for (size i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+		VkDescriptorBufferInfo bufferInfo = {
+			.buffer = uniformBuffers[i]->getBuffer(),
+			.offset = 0,
+			.range = sizeof(Ubo)
+		};
+
+		VkWriteDescriptorSet descriptorWrite = {
+			.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+			.dstSet = descriptorSets[i],
+			.dstBinding = 0,
+			.dstArrayElement = 0,
+			.descriptorCount = 1,
+			.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+			.pBufferInfo = &bufferInfo
+		};
+
+		vkUpdateDescriptorSets(device.getDevice(), 1, &descriptorWrite, 0, nullptr);
+	}
+
+	return descriptorSets;
 }

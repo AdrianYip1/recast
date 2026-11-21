@@ -10,6 +10,7 @@
 #include "vkPipeline.hpp"
 
 #include "vkBuffer.hpp"
+#include "vkUbo.hpp"
 
 namespace foto {
 	class Render {
@@ -20,7 +21,7 @@ namespace foto {
 		Render& operator=(const Render& other) = delete;
 
 		// Returns true if the swapchain is out of date / suboptimal and must be recreated
-		bool drawFrame(const std::vector<std::unique_ptr<Buffer>>& vertexBuffers, Buffer& indexBuffer);
+		bool drawFrame(const std::vector<std::unique_ptr<Buffer>>& vertexBuffers, Buffer& indexBuffer, const Ubo& ubo);
 
 		// Call after Swapchain::recreate() (image count may change)
 		void onSwapchainRecreated();
@@ -35,6 +36,10 @@ namespace foto {
 		VkCommandPool _commandPool = VK_NULL_HANDLE;
 		std::vector<VkCommandBuffer> commandBuffers;
 
+		std::vector<std::unique_ptr<Buffer>> uniformBuffers;
+		VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
+		std::vector<VkDescriptorSet> descriptorSets; // one per frame in flight, freed with the pool
+
 		std::vector<VkSemaphore> imageAvailableSem;
 		std::vector<VkSemaphore> renderFinishedSem;
 		std::vector<VkFence> inFlightFence;
@@ -47,5 +52,10 @@ namespace foto {
 								 const std::vector<std::unique_ptr<Buffer>>& vertexBuffers, Buffer& indexBuffer);
 		static VkCommandPool createCommandPool(Device& device);
 		static std::vector<VkCommandBuffer> createCommandBuffers(Device& device, VkCommandPool commandPool);
+		static std::vector<std::unique_ptr<Buffer>> createUniformBuffers(Device& device);
+		static VkDescriptorPool createDescriptorPool(Device& device);
+		static std::vector<VkDescriptorSet> createDescriptorSets(Device& device, VkDescriptorPool descriptorPool,
+																 VkDescriptorSetLayout setLayout,
+																 const std::vector<std::unique_ptr<Buffer>>& uniformBuffers);
 	};
 } // namespace foto
