@@ -29,7 +29,7 @@ struct Material {
 	float roughness;
 	float metallic;
 	uint baseColorTexture;
-	uint pad;
+	float specular;
 };
 
 layout(std430, set = 0, binding = 1) readonly buffer Materials {

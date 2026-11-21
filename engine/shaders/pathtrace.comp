@@ -122,24 +122,88 @@ bool occluded(vec3 origin, vec3 direction, float maxDistance, uint mask) {
 	return rayQueryGetIntersectionTypeEXT(query, true) != gl_RayQueryCommittedIntersectionNoneEXT;
 }
 
-vec3 directLight(vec3 position, vec3 normal, uint mask) {
+mat3 basis(vec3 normal) {
+	vec3 tangent = normalize(cross(normal, abs(normal.x) > 0.5 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0)));
+	return mat3(tangent, cross(normal, tangent), normal);
+}
+
+vec3 sampleSphere(inout uint state) {
+	float z = 1.0 - 2.0 * random(state);
+	float phi = 2.0 * PI * random(state);
+	float r = sqrt(max(0.0, 1.0 - z * z));
+	return vec3(r * cos(phi), r * sin(phi), z);
+}
+
+vec3 sampleCone(vec3 axis, float angle, inout uint state) {
+	float cosTheta = mix(1.0, cos(angle), random(state));
+	float sinTheta = sqrt(max(0.0, 1.0 - cosTheta * cosTheta));
+	float phi = 2.0 * PI * random(state);
+	return basis(axis) * vec3(sinTheta * cos(phi), sinTheta * sin(phi), cosTheta);
+}
+
+vec3 fresnel(vec3 f0, float cosine) {
+	return f0 + (1.0 - f0) * pow(1.0 - cosine, 5.0);
+}
+
+float smithG(float NdotL, float NdotV, float alpha) {
+	float k = alpha * 0.5;
+	return NdotL / (NdotL * (1.0 - k) + k) * NdotV / (NdotV * (1.0 - k) + k);
+}
+
+// Irradiance from the lights (in the photo's units: radiance = albedo * irradiance), each sampled at a random
+// point of its shape so shadows soften. alpha > 0 also returns the glossy radiance reflected towards `view`.
+// Calls with the same seed pick the same light points
+void directLight(vec3 position, vec3 normal, vec3 view, uint mask, uint seed, float alpha, vec3 f0,
+				 out vec3 irradiance, out vec3 specular) {
+	irradiance = vec3(0.0);
+	specular = vec3(0.0);
 	uint count = frame.lightInfo.x;
-	if (count == 0u) return vec3(0.65 * abs(dot(normal, -frame.lightDir.xyz)));
+	if (count == 0u) {
+		irradiance = vec3(0.65 * abs(dot(normal, -frame.lightDir.xyz)));
+		return;
+	}
 
 	vec3 origin = position + normal * SURFACE_OFFSET;
-	vec3 result = vec3(0.0);
 	for (uint i = 0u; i < count; i++) {
 		Light light = frame.lights[i];
 		bool directional = light.intensity.w > 0.5;
-		vec3 toLight = directional ? -light.direction.xyz : light.position.xyz - position;
-		float distance = directional ? 1e30 : length(toLight);
-		vec3 direction = normalize(toLight);
-		float cosine = dot(normal, direction);
-		if (cosine <= 0.0) continue;
+		vec3 direction;
+		float distance;
+		vec3 incoming;
+		if (directional) {
+			direction = sampleCone(-light.direction.xyz, light.direction.w, seed);
+			distance = 1e30;
+			incoming = light.intensity.rgb;
+		}
+		else {
+			vec3 toLight = light.position.xyz + sampleSphere(seed) * light.direction.w - position;
+			distance = length(toLight);
+			direction = toLight / max(distance, 1e-4);
+			incoming = light.intensity.rgb / max(distance * distance, 1e-4);
+		}
+
+		float NdotL = dot(normal, direction);
+		if (NdotL <= 0.0) continue;
 		if (light.position.w > 0.5 && occluded(origin, direction, distance, mask)) continue;
-		result += light.intensity.rgb * cosine / (directional ? 1.0 : max(distance * distance, 1e-4));
+		irradiance += incoming * NdotL;
+
+		if (alpha > 0.0) {
+			float NdotV = max(dot(normal, view), 1e-4);
+			vec3 halfway = normalize(direction + view);
+			float NdotH = max(dot(normal, halfway), 0.0);
+			float a2 = alpha * alpha;
+			float denominator = NdotH * NdotH * (a2 - 1.0) + 1.0;
+			float D = a2 / (PI * denominator * denominator);
+			vec3 brdf = D * smithG(NdotL, NdotV, alpha) * fresnel(f0, max(dot(view, halfway), 0.0)) / (4.0 * NdotL * NdotV);
+			specular += PI * brdf * incoming * NdotL;
+		}
 	}
-	return result;
+}
+
+vec3 directIrradiance(vec3 position, vec3 normal, uint mask, uint seed) {
+	vec3 irradiance, specular;
+	directLight(position, normal, vec3(0.0), mask, seed, 0.0, vec3(0.0), irradiance, specular);
+	return irradiance;
 }
 
 vec3 albedoOf(Hit hit) {
@@ -147,29 +211,88 @@ vec3 albedoOf(Hit hit) {
 	return material.baseColor.rgb * textureLod(textures[nonuniformEXT(material.baseColorTexture)], hit.uv, 0.0).rgb;
 }
 
+vec3 photoAt(vec2 viewportUV) {
+	return textureLod(textures[push.photoTexture], viewportUV, 0.0).rgb;
+}
+
+// Diffuse light leaving an inserted object (no further bounces)
+vec3 objectDiffuse(Hit hit, uint lightSeed) {
+	vec3 diffuseColor = albedoOf(hit) * (1.0 - clamp(materials[hit.material].metallic, 0.0, 1.0));
+	return diffuseColor * (frame.ambient.rgb + directIrradiance(hit.position, hit.normal, MASK_ALL, lightSeed));
+}
+
+// Light leaving a photo surface: the photo itself where the camera sees that point, otherwise its albedo lit by the scene
+vec3 roomRadiance(Hit hit, uint lightSeed) {
+	vec4 clip = frame.proj * frame.view * vec4(hit.position, 1.0);
+	if (clip.w > 0.0) {
+		vec2 viewportUV = clip.xy / clip.w * 0.5 + 0.5;
+		if (all(greaterThanEqual(viewportUV, vec2(0.0))) && all(lessThanEqual(viewportUV, vec2(1.0)))) {
+			vec3 toPoint = hit.position - frame.cameraPos.xyz;
+			float distance = length(toPoint);
+			if (!occluded(frame.cameraPos.xyz, toPoint / distance, distance - 1e-2, MASK_STATIC)) return photoAt(viewportUV);
+		}
+	}
+	return albedoOf(hit) * (frame.ambient.rgb + directIrradiance(hit.position, hit.normal, MASK_STATIC, lightSeed));
+}
+
+vec3 incomingRadiance(vec3 origin, vec3 direction, uint lightSeed) {
+	Hit hit = traceClosest(origin, direction, MASK_ALL);
+	if (!hit.found) return frame.ambient.rgb;
+	return hit.dynamic ? objectDiffuse(hit, lightSeed) : roomRadiance(hit, lightSeed);
+}
+
 // One cosine-weighted sample of the ambient irradiance
-vec3 ambientLight(vec3 position, vec3 normal, inout uint state) {
+vec3 ambientLight(vec3 position, vec3 normal, inout uint state, uint lightSeed) {
 	Hit hit = traceClosest(position + normal * SURFACE_OFFSET, cosineSample(normal, state), MASK_ALL);
 	if (!hit.found || !hit.dynamic) return frame.ambient.rgb;
-	return albedoOf(hit) * (frame.ambient.rgb + directLight(hit.position, hit.normal, MASK_ALL));
+	return objectDiffuse(hit, lightSeed);
+}
+
+// One GGX importance sample of the glossy reflection
+vec3 reflection(vec3 position, vec3 normal, vec3 view, float alpha, vec3 f0, inout uint state, uint lightSeed) {
+	float u = random(state);
+	float phi = 2.0 * PI * random(state);
+	float cosTheta = sqrt((1.0 - u) / (1.0 + (alpha * alpha - 1.0) * u));
+	float sinTheta = sqrt(max(0.0, 1.0 - cosTheta * cosTheta));
+	vec3 halfway = basis(normal) * vec3(sinTheta * cos(phi), sinTheta * sin(phi), cosTheta);
+	vec3 direction = reflect(-view, halfway);
+
+	float NdotL = dot(normal, direction);
+	float NdotV = max(dot(normal, view), 1e-4);
+	if (NdotL <= 0.0) return vec3(0.0);
+	float VdotH = max(dot(view, halfway), 0.0);
+	vec3 weight = fresnel(f0, VdotH) * smithG(NdotL, NdotV, alpha) * VdotH / (max(dot(normal, halfway), 1e-4) * NdotV);
+	return weight * incomingRadiance(position + normal * SURFACE_OFFSET, direction, lightSeed);
+}
+
+vec3 shadeObject(Hit hit, vec3 view, inout uint state, uint lightSeed) {
+	Material material = materials[hit.material];
+	vec3 albedo = albedoOf(hit);
+	float metallic = clamp(material.metallic, 0.0, 1.0);
+	float roughness = clamp(material.roughness, 0.05, 1.0);
+	float alpha = roughness * roughness;
+	vec3 f0 = mix(vec3(0.04 * clamp(material.specular, 0.0, 1.0)), albedo, metallic);
+
+	vec3 irradiance, specular;
+	directLight(hit.position, hit.normal, view, MASK_ALL, lightSeed, alpha, f0, irradiance, specular);
+	vec3 diffuseColor = albedo * (1.0 - metallic) * (1.0 - fresnel(f0, max(dot(hit.normal, view), 0.0)));
+	vec3 diffuse = diffuseColor * (ambientLight(hit.position, hit.normal, state, lightSeed) + irradiance);
+	return diffuse + specular + reflection(hit.position, hit.normal, view, alpha, f0, state, lightSeed) + material.emissive.rgb;
 }
 
 vec3 radiance(vec2 viewportUV, vec2 pixelUV, inout uint state) {
 	vec4 target = inverse(frame.proj * frame.view) * vec4(viewportUV * 2.0 - 1.0, 0.5, 1.0);
 	vec3 origin = frame.cameraPos.xyz;
 	vec3 direction = normalize(target.xyz / target.w - origin);
+	uint lightSeed = hash(state ^ 0x9e3779b9u);
 
-	vec3 photo = textureLod(textures[push.photoTexture], pixelUV, 0.0).rgb;
+	vec3 photo = photoAt(pixelUV);
 	Hit hit = traceClosest(origin, direction, MASK_ALL);
 	if (!hit.found) return photo;
+	if (hit.dynamic) return shadeObject(hit, -direction, state, lightSeed);
 
-	if (hit.dynamic) {
-		vec3 irradiance = ambientLight(hit.position, hit.normal, state) + directLight(hit.position, hit.normal, MASK_ALL);
-		return albedoOf(hit) * irradiance + materials[hit.material].emissive.rgb;
-	}
-
-	vec3 withoutObjects = frame.ambient.rgb + directLight(hit.position, hit.normal, MASK_STATIC);
-	vec3 withObjects = ambientLight(hit.position, hit.normal, state) + directLight(hit.position, hit.normal, MASK_ALL);
+	vec3 withoutObjects = frame.ambient.rgb + directIrradiance(hit.position, hit.normal, MASK_STATIC, lightSeed);
+	vec3 withObjects = ambientLight(hit.position, hit.normal, state, lightSeed) + directIrradiance(hit.position, hit.normal, MASK_ALL, lightSeed);
 	return photo * withObjects / max(withoutObjects, vec3(1e-4));
 }
 

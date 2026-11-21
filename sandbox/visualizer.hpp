@@ -34,6 +34,7 @@ private:
 	foto::u32 lightMarkerMaterial = foto::DEFAULT_MATERIAL;
 	foto::Mesh* lightMarker = nullptr;
 	std::vector<foto::Mesh*> proxyMeshes;
+	std::vector<foto::u32> proxyAlbedoMaterials;
 	std::string loadedPhotoPath;
 	recast::LinearImage photoPixels;
 

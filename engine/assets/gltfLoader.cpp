@@ -122,6 +122,7 @@ namespace {
 		else {
 			material.baseColorTexture = foto::NO_TEXTURE;
 		}
+		if (source.has_specular) material.specular = source.specular.specular_factor;
 
 		float strength = source.has_emissive_strength ? source.emissive_strength.emissive_strength : 1.0f;
 		material.emissive = { source.emissive_factor[0] * strength, source.emissive_factor[1] * strength,

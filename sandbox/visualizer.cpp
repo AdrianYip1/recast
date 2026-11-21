@@ -85,9 +85,13 @@ void Visualizer::loadScene() {
 
 	for (foto::Mesh* mesh : proxyMeshes) destroyMesh(mesh);
 	proxyMeshes.clear();
+	proxyAlbedoMaterials.clear();
 	for (const recast::Proxy& proxy : loaded.proxies) {
 		recast::MeshData data = recast::buildProxyMesh(proxy);
-		if (!data.indices.empty()) proxyMeshes.push_back(createMesh(data.vertices, data.indices));
+		if (data.indices.empty()) continue;
+		proxyMeshes.push_back(createMesh(data.vertices, data.indices));
+		const recast::Vec3f& albedo = proxy.material.albedo;
+		proxyAlbedoMaterials.push_back(createMaterial({ .baseColor = { albedo[0], albedo[1], albedo[2], 1.0f } }));
 	}
 
 	std::string objectPath = loaded.object.path.empty() ? "" : loaded.resolve(loaded.object.path);
@@ -173,6 +177,7 @@ void Visualizer::applySceneLighting() {
 			.position = Vec3(light.position[0], light.position[1], light.position[2]),
 			.direction = Vec3(light.direction[0], light.direction[1], light.direction[2]),
 			.intensity = Vec3(light.intensity[0], light.intensity[1], light.intensity[2]),
+			.size = light.type == "directional" ? enginemath::toRad(light.angular_radius_deg) : light.radius,
 		});
 	}
 	setLights(lights);
@@ -301,9 +306,10 @@ void Visualizer::updateObjectInteraction() {
 void Visualizer::drawScene() {
 	if (!loadedPhotoPath.empty()) drawFullscreen(backgroundPipeline, photoMaterial);
 
-	for (foto::Mesh* mesh : proxyMeshes) {
-		if (showOriginal) draw(mesh, Mat4::identity(), overlayMaterial, proxyDepthPipeline, foto::ShadowCaster::Static);
-		else draw(mesh, Mat4::identity(), photoMaterial, compositePipeline, foto::ShadowCaster::Static);
+	for (size_t i = 0; i < proxyMeshes.size(); i++) {
+		if (showOriginal) draw(proxyMeshes[i], Mat4::identity(), overlayMaterial, proxyDepthPipeline, foto::ShadowCaster::Static);
+		else if (isPathTracing()) draw(proxyMeshes[i], Mat4::identity(), proxyAlbedoMaterials[i], nullptr, foto::ShadowCaster::Static);
+		else draw(proxyMeshes[i], Mat4::identity(), photoMaterial, compositePipeline, foto::ShadowCaster::Static);
 	}
 
 	if (objectMesh && !showOriginal) draw(objectMesh, objectTransform(), foto::NO_MATERIAL_OVERRIDE, nullptr, foto::ShadowCaster::Dynamic);

@@ -20,7 +20,7 @@ namespace foto {
 	struct GpuLight {
 		alignas(16) enginemath::Vec4 position;  // xyz, w = 1 if it casts shadows
 		alignas(16) enginemath::Vec4 intensity; // rgb, w = 1 for directional. Point: irradiance = intensity * cos / distance^2, directional: intensity * cos
-		alignas(16) enginemath::Vec4 direction; // xyz = the way a directional light travels
+		alignas(16) enginemath::Vec4 direction; // xyz = the way a directional light travels, w = Light::size
 		alignas(16) enginemath::Mat4 faceViewProj[6] = {
 			enginemath::Mat4::identity(), enginemath::Mat4::identity(), enginemath::Mat4::identity(),
 			enginemath::Mat4::identity(), enginemath::Mat4::identity(), enginemath::Mat4::identity()
@@ -70,7 +70,7 @@ namespace foto {
 		f32 roughness = 1.0f;
 		f32 metallic = 0.0f;
 		u32 baseColorTexture = DEFAULT_TEXTURE;
-		u32 _pad = 0;
+		f32 specular = 1.0f; // KHR_materials_specular factor: 0 = no gloss at all (a purely diffuse surface)
 	};
 	static_assert(sizeof(Material) == 48);
 
@@ -125,6 +125,7 @@ namespace foto {
 		enginemath::Vec3 position;
 		enginemath::Vec3 direction = enginemath::Vec3(0.0f, -1.0f, 0.0f);
 		enginemath::Vec3 intensity;
+		f32 size = 0.0f; // point: radius in metres, directional: angular radius in radians. Path tracing only (soft shadows)
 		bool castsShadows = true;
 	};
 

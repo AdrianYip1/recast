@@ -60,6 +60,8 @@ namespace recast {
 		Vec3f position = { 0, 0, 0 };
 		Vec3f direction = { 0, -1, 0 };
 		Vec3f intensity = { 0, 0, 0 };
+		float radius = 0.05f;             // point: size of the bulb in metres, softens shadows
+		float angular_radius_deg = 0.27f; // directional: the sun's apparent radius
 		std::array<Vec3f, 4> corners = {};
 		Vec3f radiance = { 0, 0, 0 };
 	};

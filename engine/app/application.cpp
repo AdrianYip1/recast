@@ -130,7 +130,7 @@ void foto::Application::run() {
 			Vec3 direction = light.direction.normalized();
 			frameUbo.lights[i].position = { light.position.x, light.position.y, light.position.z, light.castsShadows ? 1.0f : 0.0f };
 			frameUbo.lights[i].intensity = { light.intensity.x, light.intensity.y, light.intensity.z, directional ? 1.0f : 0.0f };
-			frameUbo.lights[i].direction = { direction.x, direction.y, direction.z, 0.0f };
+			frameUbo.lights[i].direction = { direction.x, direction.y, direction.z, light.size };
 			if (directional) frameUbo.lights[i].faceViewProj[0] = shadowDirectionalMatrix(direction, shadowCenter, shadowRadius);
 			else shadowFaceMatrices(light.position, frameUbo.lights[i].faceViewProj);
 		}

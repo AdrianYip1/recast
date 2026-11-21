@@ -12,7 +12,7 @@ namespace recast {
 	NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(SceneObject, path, transform)
 	NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(ProxyMaterial, albedo, roughness)
 	NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(Proxy, type, id, point, normal, min, max, material)
-	NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(SceneLight, type, position, direction, intensity, corners, radiance)
+	NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(SceneLight, type, position, direction, intensity, radius, angular_radius_deg, corners, radiance)
 	NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(Lighting, ambient, sh_order, sh)
 	NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(SceneFile, version, photo, image_size, camera, scale_reference,
 													object, proxies, lights, lighting)
