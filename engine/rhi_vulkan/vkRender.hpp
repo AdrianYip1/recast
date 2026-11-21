@@ -11,8 +11,12 @@
 
 #include "vkBuffer.hpp"
 #include "vkUbo.hpp"
+#include "vkDescriptorHelper.hpp"
 
 namespace foto {
+	class Image;
+	class Sampler;
+
 	class Render {
 	public:
 		Render(Device& device, Swapchain& swapchain, Pipeline& pipeline);
@@ -26,6 +30,10 @@ namespace foto {
 		// Call after Swapchain::recreate() (image count may change)
 		void onSwapchainRecreated();
 
+		// Points `binding` of every frame's descriptor set (set 0) at the texture.
+		// Only call when no frame is in flight: at init, or after vkDeviceWaitIdle.
+		void setTexture(u32 binding, Image& texture, Sampler& sampler);
+
 		VkCommandPool getCommandPool() { return _commandPool; };
 	private:
 		Device& device;
@@ -37,8 +45,8 @@ namespace foto {
 		std::vector<VkCommandBuffer> commandBuffers;
 
 		std::vector<std::unique_ptr<Buffer>> uniformBuffers;
-		VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
-		std::vector<VkDescriptorSet> descriptorSets; // one per frame in flight, freed with the pool
+		DescriptorPool descriptorPool;
+		std::vector<VkDescriptorSet> descriptorSets; // set 0, one per frame in flight, freed with the pool
 
 		std::vector<VkSemaphore> imageAvailableSem;
 		std::vector<VkSemaphore> renderFinishedSem;
@@ -53,9 +61,5 @@ namespace foto {
 		static VkCommandPool createCommandPool(Device& device);
 		static std::vector<VkCommandBuffer> createCommandBuffers(Device& device, VkCommandPool commandPool);
 		static std::vector<std::unique_ptr<Buffer>> createUniformBuffers(Device& device);
-		static VkDescriptorPool createDescriptorPool(Device& device);
-		static std::vector<VkDescriptorSet> createDescriptorSets(Device& device, VkDescriptorPool descriptorPool,
-																 VkDescriptorSetLayout setLayout,
-																 const std::vector<std::unique_ptr<Buffer>>& uniformBuffers);
 	};
 } // namespace foto

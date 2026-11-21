@@ -53,17 +53,24 @@ add_library(foto_engine STATIC
     engine/rhi_vulkan/vkSwapchain.cpp 
     engine/rhi_vulkan/vkRender.cpp
     engine/rhi_vulkan/vkPipeline.cpp
-    engine/rhi_vulkan/vkBuffer.cpp  "engine/rhi_vulkan/vkDescriptorHelper.cpp")
+    engine/rhi_vulkan/vkBuffer.cpp  "engine/rhi_vulkan/vkDescriptorHelper.cpp"
+    engine/rhi_vulkan/vkImage.cpp)
 
 target_include_directories(foto_engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
 target_link_libraries(foto_engine
     PUBLIC enginemath::enginemath
-    PRIVATE glfw Vulkan::Vulkan)
+    PRIVATE glfw Vulkan::Vulkan stb)
+
+# Textures: copied next to the shaders so they load with the same relative paths
+add_custom_target(assets
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        ${CMAKE_CURRENT_SOURCE_DIR}/assets/textures ${CMAKE_BINARY_DIR}/textures
+    COMMENT "copying textures")
 
 add_executable(foto sandbox/main.cpp 
 "sandbox/visualizer.cpp")
 
 target_link_libraries(foto PRIVATE foto_engine glfw Vulkan::Vulkan stb)
 
-add_dependencies(foto shaders)
+add_dependencies(foto shaders assets)

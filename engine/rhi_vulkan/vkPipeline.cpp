@@ -1,8 +1,10 @@
 #include "vkPipeline.hpp"
 
 foto::Pipeline::Pipeline(Device& device, const GraphicsPipelineConfig& graphicsPipelineConfig) :
-	_device(device.getDevice()), setLayout(createDescriptorSetLayout(device)),
-	pipelineLayout(createPipelineLayout(device, setLayout)),
+	_device(device.getDevice()),
+	setLayoutInfos(graphicsPipelineConfig.descriptorSetLayouts),
+	setLayouts(createDescriptorSetLayouts(device, setLayoutInfos)),
+	pipelineLayout(createPipelineLayout(device, setLayouts)),
 	pipeline(createGraphicsPipeline(device, graphicsPipelineConfig, pipelineLayout))
 {
 
@@ -11,7 +13,7 @@ foto::Pipeline::Pipeline(Device& device, const GraphicsPipelineConfig& graphicsP
 foto::Pipeline::~Pipeline() {
 	vkDestroyPipeline(_device, pipeline, nullptr);
 	vkDestroyPipelineLayout(_device, pipelineLayout, nullptr);
-	vkDestroyDescriptorSetLayout(_device, setLayout, nullptr);
+	for (VkDescriptorSetLayout setLayout : setLayouts) vkDestroyDescriptorSetLayout(_device, setLayout, nullptr);
 };
 
 
@@ -51,37 +53,25 @@ std::vector<VkShaderModule> foto::Pipeline::createShaderModules(Device& device, 
 	return shaderModules;
 }
 
-VkDescriptorSetLayout foto::Pipeline::createDescriptorSetLayout(Device& device) {
-	VkDescriptorSetLayoutBinding layoutBinding = {
-		.binding = 0,
-		.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-		.descriptorCount = 1,
-		.stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
-	};
+std::vector<VkDescriptorSetLayout> foto::Pipeline::createDescriptorSetLayouts(Device& device, const std::vector<DescriptorLayoutBuilder>& infos) {
+	std::vector<VkDescriptorSetLayout> setLayouts;
+	setLayouts.reserve(infos.size());
 
-	VkDescriptorSetLayoutCreateInfo layoutCreateInfo = {
-		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-		.bindingCount = 1,
-		.pBindings = &layoutBinding
-	};
-
-	VkDescriptorSetLayout setLayout = VK_NULL_HANDLE;
-
-	if (vkCreateDescriptorSetLayout(device.getDevice(), &layoutCreateInfo, nullptr, &setLayout) != VK_SUCCESS) {
-		throw std::runtime_error("ERROR: vkPipeline.cpp -> createDescriptorSetLayout()");
+	for (const DescriptorLayoutBuilder& info : infos) {
+		setLayouts.push_back(info.build(device));
 	}
 
-	return setLayout;
+	return setLayouts;
 }
 
-VkPipelineLayout foto::Pipeline::createPipelineLayout(Device& device, VkDescriptorSetLayout setLayout) {
+VkPipelineLayout foto::Pipeline::createPipelineLayout(Device& device, const std::vector<VkDescriptorSetLayout>& setLayouts) {
 	// Pipeline Layout
 	VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
 
 	VkPipelineLayoutCreateInfo pipelineLayoutCreateInfo = {
 		.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-		.setLayoutCount = 1,
-		.pSetLayouts = &setLayout
+		.setLayoutCount = static_cast<u32>(setLayouts.size()),
+		.pSetLayouts = setLayouts.data()
 	};
 
 	if (vkCreatePipelineLayout(device.getDevice(), &pipelineLayoutCreateInfo, nullptr, &pipelineLayout) != VK_SUCCESS) {

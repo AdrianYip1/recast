@@ -10,6 +10,7 @@ namespace foto {
 	struct Vertex {
 		enginemath::Vec2 pos;
 		enginemath::Vec3 color;
+		enginemath::Vec2 uv; // (0,0) = top-left of the texture
 
 		static VkVertexInputBindingDescription getBindingDescription() {
 			VkVertexInputBindingDescription bindingDescription = {
@@ -21,8 +22,8 @@ namespace foto {
 			return bindingDescription;
 		}
 
-		static std::array<VkVertexInputAttributeDescription, 2> getAttributeDescriptions() {
-			std::array<VkVertexInputAttributeDescription, 2> attributeDescriptions{{
+		static std::array<VkVertexInputAttributeDescription, 3> getAttributeDescriptions() {
+			std::array<VkVertexInputAttributeDescription, 3> attributeDescriptions{{
 				{
 					.location = 0,
 					.binding = 0,
@@ -34,6 +35,12 @@ namespace foto {
 					.binding = 0,
 					.format = VK_FORMAT_R32G32B32_SFLOAT,
 					.offset = offsetof(Vertex, color)
+				},
+				{
+					.location = 2,
+					.binding = 0,
+					.format = VK_FORMAT_R32G32_SFLOAT,
+					.offset = offsetof(Vertex, uv)
 				},
 			}};
 

@@ -9,12 +9,15 @@
 #include "../rhi_vulkan/vkRender.hpp"
 #include "../rhi_vulkan/vkBuffer.hpp"
 #include "../rhi_vulkan/vkVertex.hpp"
+#include "../rhi_vulkan/vkImage.hpp"
+#include "../rhi_vulkan/vkDescriptorHelper.hpp"
 
+// pos, color, uv. +Y is up (proj flips Y), uv (0,0) is the texture's top-left
 static const std::vector<foto::Vertex> vertices = {
-	{{-0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}},
-	{{0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}},
-	{{0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}},
-	{{-0.5f, 0.5f}, {1.0f, 1.0f, 1.0f}}
+	{{-0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}, {0.0f, 1.0f}},
+	{{0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}, {1.0f, 1.0f}},
+	{{0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}, {1.0f, 0.0f}},
+	{{-0.5f, 0.5f}, {1.0f, 1.0f, 1.0f}, {0.0f, 0.0f}}
 };
 
 static const std::vector<foto::u16> indices = {
@@ -29,6 +32,12 @@ foto::Application::Application(const ApplicationConfig& config) :
 				.vertexShaderFilePath = "shaders/basic.vert.spv",
 				.fragmentShaderFilePath = "shaders/basic.frag.spv",
 				.colorFormat = swapchain->getFormat(),
+				.descriptorSetLayouts = {
+					// set 0 matches the bindings in basic.vert / basic.frag
+					DescriptorLayoutBuilder()
+						.addBinding(0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_SHADER_STAGE_VERTEX_BIT)
+						.addBinding(1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_FRAGMENT_BIT)
+				},
 			})),
 	render(std::make_unique<Render>(*device, *swapchain, *pipeline))
 {
@@ -40,6 +49,11 @@ foto::Application::Application(const ApplicationConfig& config) :
 	VkDeviceSize indexBytes = sizeof(u16) * indices.size();
 	indexBuffer = Buffer::createDeviceLocal(*device, render->getCommandPool(),
 		indices.data(), indexBytes, VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
+
+	// handle textures
+	texture = Image::loadTexture(*device, render->getCommandPool(), "textures/checker.png");
+	sampler = std::make_unique<Sampler>(*device);
+	render->setTexture(1, *texture, *sampler);
 }
 
 foto::Application::~Application() {

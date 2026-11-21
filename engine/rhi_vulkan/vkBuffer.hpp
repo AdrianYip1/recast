@@ -34,6 +34,5 @@ namespace foto {
 
 		static VkBuffer createBuffer(Device& device, VkDeviceSize size, VkBufferUsageFlags usage);
 		static VkDeviceMemory allocateMemory(Device& device, VkBuffer buffer, VkMemoryPropertyFlags memoryProperties);
-		static u32 findMemoryType(VkPhysicalDevice physDevice, u32 typeFilter, VkMemoryPropertyFlags properties);
 	};
 } // namespace foto

@@ -10,6 +10,8 @@ namespace foto {
 	class Pipeline;
 	class Render;
 	class Buffer;
+	class Image;
+	class Sampler;
 
 	struct ApplicationConfig {
 		const char* title = "foto";
@@ -40,5 +42,7 @@ namespace foto {
 		std::unique_ptr<Render> render;
 		std::vector<std::unique_ptr<Buffer>> vertexBuffers;
 		std::unique_ptr<Buffer> indexBuffer;
+		std::unique_ptr<Image> texture;
+		std::unique_ptr<Sampler> sampler;
 	};
 } // namespace foto

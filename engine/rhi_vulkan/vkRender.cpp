@@ -1,13 +1,22 @@
 #include "vkRender.hpp"
+#include "vkImage.hpp"
 
 foto::Render::Render(Device& device, Swapchain& swapchain, Pipeline& pipeline) :
 	device(device), swapchain(swapchain), pipeline(pipeline),
-	_device(device.getDevice()), _commandPool(createCommandPool(device)), 
+	_device(device.getDevice()), _commandPool(createCommandPool(device)),
 	commandBuffers(createCommandBuffers(device, _commandPool)),
 	uniformBuffers(createUniformBuffers(device)),
-	descriptorPool(createDescriptorPool(device)),
-	descriptorSets(createDescriptorSets(device, descriptorPool, pipeline.getDescriptorSetLayout(), uniformBuffers))
+	// Pool sized from the pipeline's set 0 bindings, one set per frame in flight
+	descriptorPool(device, MAX_FRAMES_IN_FLIGHT, pipeline.getDescriptorSetLayoutInfo(0).poolSizes(MAX_FRAMES_IN_FLIGHT)),
+	descriptorSets(descriptorPool.allocate(pipeline.getDescriptorSetLayout(0), MAX_FRAMES_IN_FLIGHT))
 {
+	// Point binding 0 of each frame's set at that frame's uniform buffer
+	for (size i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+		DescriptorWriter()
+			.writeBuffer(0, uniformBuffers[i]->getBuffer(), sizeof(Ubo))
+			.update(device, descriptorSets[i]);
+	}
+
 	createSyncObjects(_device, swapchain.getImages().size());
 };
 
@@ -16,9 +25,18 @@ foto::Render::~Render() {
 	for (VkSemaphore sem : renderFinishedSem) vkDestroySemaphore(_device, sem, nullptr);
 	for (VkFence fence : inFlightFence) vkDestroyFence(_device, fence, nullptr);
 
-	vkDestroyDescriptorPool(_device, descriptorPool, nullptr); // also frees its sets
 	vkDestroyCommandPool(_device, _commandPool, nullptr);
+	// descriptorPool (and its sets) + uniformBuffers are destroyed by their own destructors after this
 };
+
+void foto::Render::setTexture(u32 binding, Image& texture, Sampler& sampler) {
+	DescriptorWriter writer;
+	writer.writeImage(binding, texture.getView(), sampler.getSampler());
+
+	for (VkDescriptorSet set : descriptorSets) {
+		writer.update(device, set);
+	}
+}
 
 // CPU -> recording command buffer
 // GPU -> submitting/executing command buffer
@@ -310,69 +328,4 @@ std::vector<std::unique_ptr<foto::Buffer>> foto::Render::createUniformBuffers(De
 	}
 
 	return buffers;
-}
-
-VkDescriptorPool foto::Render::createDescriptorPool(Device& device) {
-	// One UBO descriptor per frame in flight
-	VkDescriptorPoolSize poolSize = {
-		.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-		.descriptorCount = MAX_FRAMES_IN_FLIGHT
-	};
-
-	VkDescriptorPoolCreateInfo poolCreateInfo = {
-		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
-		.maxSets = MAX_FRAMES_IN_FLIGHT,
-		.poolSizeCount = 1,
-		.pPoolSizes = &poolSize
-	};
-
-	VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
-
-	if (vkCreateDescriptorPool(device.getDevice(), &poolCreateInfo, nullptr, &descriptorPool) != VK_SUCCESS) {
-		throw std::runtime_error("ERROR: vkRender.cpp -> createDescriptorPool()");
-	}
-
-	return descriptorPool;
-}
-
-std::vector<VkDescriptorSet> foto::Render::createDescriptorSets(Device& device, VkDescriptorPool descriptorPool,
-																VkDescriptorSetLayout setLayout,
-																const std::vector<std::unique_ptr<Buffer>>& uniformBuffers) {
-	// Same layout for every frame, allocate all sets in one call
-	std::vector<VkDescriptorSetLayout> layouts(MAX_FRAMES_IN_FLIGHT, setLayout);
-
-	VkDescriptorSetAllocateInfo allocInfo = {
-		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-		.descriptorPool = descriptorPool,
-		.descriptorSetCount = static_cast<u32>(layouts.size()),
-		.pSetLayouts = layouts.data()
-	};
-
-	std::vector<VkDescriptorSet> descriptorSets(MAX_FRAMES_IN_FLIGHT);
-	if (vkAllocateDescriptorSets(device.getDevice(), &allocInfo, descriptorSets.data()) != VK_SUCCESS) {
-		throw std::runtime_error("ERROR: vkRender.cpp -> createDescriptorSets()");
-	}
-
-	// Point each set's binding 0 at its frame's uniform buffer
-	for (size i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
-		VkDescriptorBufferInfo bufferInfo = {
-			.buffer = uniformBuffers[i]->getBuffer(),
-			.offset = 0,
-			.range = sizeof(Ubo)
-		};
-
-		VkWriteDescriptorSet descriptorWrite = {
-			.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-			.dstSet = descriptorSets[i],
-			.dstBinding = 0,
-			.dstArrayElement = 0,
-			.descriptorCount = 1,
-			.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-			.pBufferInfo = &bufferInfo
-		};
-
-		vkUpdateDescriptorSets(device.getDevice(), 1, &descriptorWrite, 0, nullptr);
-	}
-
-	return descriptorSets;
 }
