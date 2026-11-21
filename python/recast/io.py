@@ -16,9 +16,14 @@ from PIL import ExifTags, Image
 RAW_EXTENSIONS = {".cr2", ".cr3", ".nef", ".arw", ".dng", ".raf", ".orf", ".rw2"}
 
 # EXIF tag ids
+_MAKE = 0x010F
+_MODEL = 0x0110
+_EXIF_IFD = 0x8769
+_FNUMBER = 0x829D
 _FOCAL_LENGTH = 0x920A
 _FOCAL_35MM = 0xA405
-_EXIF_IFD = 0x8769
+_LENS_MAKE = 0xA433
+_LENS_MODEL = 0xA434
 
 
 @dataclass
@@ -28,6 +33,7 @@ class Photo:
     pixels: np.ndarray  # (H, W, 3) float32, linear RGB
     focal_mm: float | None = None
     focal_35mm: float | None = None
+    exif: dict | None = None  # make, model, lens_make, lens_model, f_number (strings/floats, may be missing)
 
     @property
     def height(self) -> int:
@@ -37,12 +43,15 @@ class Photo:
     def width(self) -> int:
         return self.pixels.shape[1]
 
-    def focal_px(self) -> float | None:
-        """Focal length in pixels, if EXIF had a 35mm-equivalent focal length.
+    def focal_px(self, sensor_width_mm: float | None = None) -> float | None:
+        """Focal length in pixels.
 
-        A 35mm frame is 36mm wide (diagonal 43.27mm); we scale by the diagonal so
-        it works for any aspect ratio.
+        With the sensor width: f_px = f_mm / sensor_width_mm * image_width.
+        Otherwise from the 35mm-equivalent focal length, scaled by the diagonal
+        (a 35mm frame's diagonal is 43.27mm) so it works for any aspect ratio.
         """
+        if sensor_width_mm and self.focal_mm:
+            return self.focal_mm / sensor_width_mm * self.width
         if not self.focal_35mm:
             return None
         diag_px = float(np.hypot(self.width, self.height))
@@ -64,18 +73,31 @@ def luminance(img: np.ndarray) -> np.ndarray:
     return img[..., 0] * 0.2126 + img[..., 1] * 0.7152 + img[..., 2] * 0.0722
 
 
-def _read_exif(img: Image.Image) -> tuple[float | None, float | None]:
+def _read_exif(img: Image.Image) -> tuple[float | None, float | None, dict]:
     exif = img.getexif()
     if not exif:
-        return None, None
+        return None, None, {}
     tags = dict(exif)
     try:
         tags.update(exif.get_ifd(_EXIF_IFD))
     except Exception:
         pass
+
+    def text(tag):
+        v = tags.get(tag)
+        return str(v).strip("\x00 ").strip() or None if v is not None else None
+
     focal = tags.get(_FOCAL_LENGTH)
     focal35 = tags.get(_FOCAL_35MM)
-    return (float(focal) if focal else None, float(focal35) if focal35 else None)
+    fnum = tags.get(_FNUMBER)
+    info = {
+        "make": text(_MAKE),
+        "model": text(_MODEL),
+        "lens_make": text(_LENS_MAKE),
+        "lens_model": text(_LENS_MODEL),
+        "f_number": float(fnum) if fnum else None,
+    }
+    return (float(focal) if focal else None, float(focal35) if focal35 else None, info)
 
 
 def load_photo(path: str | Path) -> Photo:
@@ -85,7 +107,7 @@ def load_photo(path: str | Path) -> Photo:
         return _load_raw(path)
 
     with Image.open(path) as img:
-        focal, focal35 = _read_exif(img)
+        focal, focal35, info = _read_exif(img)
         # respect the orientation flag so lines/vanishing points are in the right place
         orient = img.getexif().get(ExifTags.Base.Orientation, 1)
         img = img.convert("RGB")
@@ -97,7 +119,7 @@ def load_photo(path: str | Path) -> Photo:
             img = img.rotate(90, expand=True)
         srgb = np.asarray(img, dtype=np.float32) / 255.0
 
-    return Photo(srgb_to_linear(srgb), focal, focal35)
+    return Photo(srgb_to_linear(srgb), focal, focal35, info)
 
 
 def _load_raw(path: Path) -> Photo:
@@ -112,12 +134,13 @@ def _load_raw(path: Path) -> Photo:
 
     # rawpy doesn't expose EXIF, but Pillow can usually read it from the same file
     focal = focal35 = None
+    info: dict = {}
     try:
         with Image.open(path) as img:
-            focal, focal35 = _read_exif(img)
+            focal, focal35, info = _read_exif(img)
     except Exception:
         pass
-    return Photo(pixels, focal, focal35)
+    return Photo(pixels, focal, focal35, info)
 
 
 def save_hdr(path: str | Path, linear_rgb: np.ndarray) -> None:
