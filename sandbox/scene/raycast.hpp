@@ -21,6 +21,9 @@ namespace recast {
 	RayHit raycastProxies(const std::vector<Proxy>& proxies, const enginemath::Vec3& origin, const enginemath::Vec3& direction,
 						  float minNormalY = -2.0f);
 
+	// Nearest hit on a "hull" proxy's triangles (t > 0), normal facing the ray
+	bool rayHull(const Proxy& hull, const enginemath::Vec3& origin, const enginemath::Vec3& direction, float& t, enginemath::Vec3& normal);
+
 	bool rayAabb(const enginemath::Vec3& origin, const enginemath::Vec3& direction,
 				 const enginemath::Vec3& boxMin, const enginemath::Vec3& boxMax, float& t, enginemath::Vec3* normal = nullptr);
 } // namespace recast

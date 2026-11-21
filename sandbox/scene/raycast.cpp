@@ -44,6 +44,35 @@ bool recast::rayAabb(const Vec3& origin, const Vec3& direction, const Vec3& boxM
 	return true;
 }
 
+bool recast::rayHull(const Proxy& hull, const Vec3& origin, const Vec3& direction, float& t, Vec3& normal) {
+	float boxT = 0.0f;
+	if (!rayAabb(origin, direction, toVec3(hull.min), toVec3(hull.max), boxT)) return false;
+	Vec3 anchor = toVec3(hull.point);
+	t = std::numeric_limits<float>::infinity();
+	for (const auto& face : hull.faces) {
+		if (face[0] >= hull.vertices.size() || face[1] >= hull.vertices.size() || face[2] >= hull.vertices.size()) continue;
+		Vec3 a = anchor + toVec3(hull.vertices[face[0]]);
+		Vec3 e1 = anchor + toVec3(hull.vertices[face[1]]) - a, e2 = anchor + toVec3(hull.vertices[face[2]]) - a;
+		Vec3 p = direction.cross(e2);
+		float det = e1.dot(p);
+		if (std::abs(det) < 1e-12f) continue;
+		Vec3 s = origin - a;
+		float u = s.dot(p) / det;
+		if (u < 0.0f || u > 1.0f) continue;
+		Vec3 q = s.cross(e1);
+		float v = direction.dot(q) / det;
+		if (v < 0.0f || u + v > 1.0f) continue;
+		float hit = e2.dot(q) / det;
+		if (hit > 1e-5f && hit < t) {
+			t = hit;
+			normal = e1.cross(e2).normalized();
+		}
+	}
+	if (t == std::numeric_limits<float>::infinity()) return false;
+	if (normal.dot(direction) > 0.0f) normal = -normal;
+	return true;
+}
+
 recast::RayHit recast::raycastProxies(const std::vector<Proxy>& proxies, const Vec3& origin, const Vec3& direction, float minNormalY) {
 	RayHit best;
 
@@ -62,6 +91,9 @@ recast::RayHit recast::raycastProxies(const std::vector<Proxy>& proxies, const V
 		}
 		else if (proxy.type == "box") {
 			if (!rayAabb(origin, direction, toVec3(proxy.min), toVec3(proxy.max), t, &normal) || t <= 0.0f) continue;
+		}
+		else if (proxy.type == "hull") {
+			if (!rayHull(proxy, origin, direction, t, normal)) continue;
 		}
 		else {
 			continue;

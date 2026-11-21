@@ -41,7 +41,8 @@ namespace recast {
 		foto::f32 roughness = 0.9f;
 	};
 
-	// type "plane": point + normal. type "box": min + max (axis-aligned)
+	// type "plane": point + normal. type "box": min + max (axis-aligned). type "hull": a convex shape fitted to a detected
+	// object, vertices relative to point, faces counter-clockwise seen from outside, min + max its world bounding box
 	struct Proxy {
 		std::string type = "plane";
 		foto::u32 id = 0;
@@ -50,6 +51,8 @@ namespace recast {
 		Vec3f min = { 0, 0, 0 };
 		Vec3f max = { 0, 0, 0 };
 		ProxyMaterial material;
+		std::vector<Vec3f> vertices;
+		std::vector<std::array<foto::u32, 3>> faces;
 	};
 
 	// type "point": position + intensity (irradiance = intensity * cos / distance^2).

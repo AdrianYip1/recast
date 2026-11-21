@@ -86,7 +86,9 @@ namespace {
 			}
 			for (const recast::Proxy& proxy : proxies) {
 				Occluder occluder;
-				occluder.box = proxy.type == "box";
+				// a fitted shape blocks as its bounding box here: the fit only needs rough shadows (the path tracer
+				// uses the real shape), and thousands of shadow rays against its triangles are too slow in a debug build
+				occluder.box = proxy.type == "box" || proxy.type == "hull";
 				if (!occluder.box && proxy.type != "plane") continue;
 				occluder.point = Vec3(proxy.point[0], proxy.point[1], proxy.point[2]);
 				occluder.normal = Vec3(proxy.normal[0], proxy.normal[1], proxy.normal[2]).normalized();

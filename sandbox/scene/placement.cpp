@@ -42,7 +42,7 @@ bool recast::resolveCollisions(const std::vector<Proxy>& proxies, ObjectTransfor
 		// inside a table top), so they don't push the object off it
 		const Proxy* support = nullptr;
 		for (const Proxy& proxy : proxies) {
-			if (proxy.type == "box" && std::abs(proxy.max[1] - worldMin.y) < 0.02f && center.x >= proxy.min[0] && center.x <= proxy.max[0] &&
+			if ((proxy.type == "box" || proxy.type == "hull") && std::abs(proxy.max[1] - worldMin.y) < 0.02f && center.x >= proxy.min[0] && center.x <= proxy.max[0] &&
 				center.z >= proxy.min[2] && center.z <= proxy.max[2]) {
 				support = &proxy;
 			}
@@ -66,7 +66,7 @@ bool recast::resolveCollisions(const std::vector<Proxy>& proxies, ObjectTransfor
 					moved = true;
 				}
 			}
-			else if (proxy.type == "box") {
+			else if (proxy.type == "box" || proxy.type == "hull") { // a hull collides as its bounding box
 				if (worldMin.y >= proxy.max[1] - epsilon || worldMax.y <= proxy.min[1] + epsilon) continue;
 				if (overlapsSupport(proxy)) continue;
 

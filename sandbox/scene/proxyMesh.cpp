@@ -53,5 +53,22 @@ recast::MeshData recast::buildProxyMesh(const Proxy& proxy, foto::f32 planeHalfS
 		}
 	}
 
+	else if (proxy.type == "hull") {
+		// flat-shaded triangles, at their place in the world (point + local vertex)
+		Vec3 anchor = toVec3(proxy.point);
+		for (const auto& face : proxy.faces) {
+			if (face[0] >= proxy.vertices.size() || face[1] >= proxy.vertices.size() || face[2] >= proxy.vertices.size()) continue;
+			Vec3 a = anchor + toVec3(proxy.vertices[face[0]]), b = anchor + toVec3(proxy.vertices[face[1]]), c = anchor + toVec3(proxy.vertices[face[2]]);
+			Vec3 normal = (b - a).cross(c - a);
+			if (normal.dot(normal) < 1e-12f) continue;
+			normal = normal.normalized();
+			foto::u32 base = static_cast<foto::u32>(mesh.vertices.size());
+			mesh.vertices.push_back({ a, normal, Vec2(0, 0) });
+			mesh.vertices.push_back({ b, normal, Vec2(1, 0) });
+			mesh.vertices.push_back({ c, normal, Vec2(0, 1) });
+			mesh.indices.insert(mesh.indices.end(), { base, base + 1, base + 2 });
+		}
+	}
+
 	return mesh;
 }

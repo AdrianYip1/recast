@@ -1032,6 +1032,7 @@ std::string Visualizer::proxyName(size_t index) const {
 	auto label = proxyLabels.find(proxy.id);
 	if (label != proxyLabels.end()) return label->second;
 	if (proxy.type == "box") return "box";
+	if (proxy.type == "hull") return "object";
 	if (isWall(proxy)) return "wall";
 	return proxy.normal[1] > 0.0f ? "floor" : "ceiling";
 }
@@ -1098,10 +1099,16 @@ int Visualizer::boxUnderCursor(const Vec3& origin, const Vec3& direction) const 
 	float bestT = 1e30f;
 	for (size_t i = 0; i < scene.proxies.size(); i++) {
 		const recast::Proxy& proxy = scene.proxies[i];
-		if (proxy.type != "box") continue;
 		float t = 0.0f;
-		Vec3 lo(proxy.min[0], proxy.min[1], proxy.min[2]), hi(proxy.max[0], proxy.max[1], proxy.max[2]);
-		if (recast::rayAabb(origin, direction, lo, hi, t) && t < bestT) {
+		Vec3 normal;
+		bool hit = false;
+		if (proxy.type == "box") {
+			hit = recast::rayAabb(origin, direction, Vec3(proxy.min[0], proxy.min[1], proxy.min[2]), Vec3(proxy.max[0], proxy.max[1], proxy.max[2]), t);
+		}
+		else if (proxy.type == "hull") {
+			hit = recast::rayHull(proxy, origin, direction, t, normal);
+		}
+		if (hit && t < bestT) {
 			bestT = t;
 			best = static_cast<int>(i);
 		}
@@ -1141,7 +1148,7 @@ bool Visualizer::updateRoomEditing() {
 	bool haveSelection = selectedProxy >= 0 && selectedProxy < static_cast<int>(scene.proxies.size());
 
 	hoveredHandle = -1;
-	if (haveSelection && !draggingProxy && groupSize(selectedProxy) == 1) {
+	if (haveSelection && !draggingProxy && groupSize(selectedProxy) == 1 && scene.proxies[selectedProxy].type != "hull") {
 		const recast::Proxy& selected = scene.proxies[selectedProxy];
 		Vec3 handle;
 		if (selected.type == "box") {
@@ -1204,6 +1211,7 @@ bool Visualizer::updateRoomEditing() {
 				for (int a : { 0, 2 }) {
 					scene.proxies[i].min[a] = roomAtGrab[i].min[a] + delta[a];
 					scene.proxies[i].max[a] = roomAtGrab[i].max[a] + delta[a];
+					scene.proxies[i].point[a] = roomAtGrab[i].point[a] + delta[a]; // a hull moves by its anchor
 				}
 			}
 		}
@@ -1238,7 +1246,7 @@ void Visualizer::drawRoomOverlay() {
 				list->AddRectFilled(corner0, ImVec2(corner0.x + size.x + 6.0f, corner0.y + size.y + 2.0f), IM_COL32(0, 0, 0, 150), 3.0f);
 				list->AddText(ImVec2(corner0.x + 3.0f, corner0.y + 1.0f), color, name.c_str());
 			}
-			if (static_cast<int>(i) == selectedProxy && groupSize(selectedProxy) == 1) {
+			if (static_cast<int>(i) == selectedProxy && groupSize(selectedProxy) == 1 && proxy.type == "box") {
 				std::array<Vec3, 6> handles = boxHandles(proxy);
 				for (int h = 0; h < 6; h++) {
 					ImVec2 screen;
@@ -1247,6 +1255,26 @@ void Visualizer::drawRoomOverlay() {
 					list->AddCircleFilled(screen, active ? HANDLE_RADIUS + 2.0f : HANDLE_RADIUS, active ? HOVER_COLOR : SELECTED_COLOR);
 					list->AddCircle(screen, active ? HANDLE_RADIUS + 2.0f : HANDLE_RADIUS, IM_COL32(0, 0, 0, 200), 0, 1.5f);
 				}
+			}
+		}
+		else if (proxy.type == "hull") {
+			ImU32 color = selected ? SELECTED_COLOR : hovered ? HOVER_COLOR : EDGE_COLOR;
+			float thickness = selected ? 2.0f : hovered ? 1.6f : 1.0f;
+			Vec3 anchor(proxy.point[0], proxy.point[1], proxy.point[2]);
+			auto vertex = [&](foto::u32 k) { return anchor + Vec3(proxy.vertices[k][0], proxy.vertices[k][1], proxy.vertices[k][2]); };
+			for (const auto& face : proxy.faces) {
+				for (int e = 0; e < 3; e++) {
+					foto::u32 a = face[e], b = face[(e + 1) % 3];
+					if (a < b && a < proxy.vertices.size() && b < proxy.vertices.size()) drawSegment(list, vertex(a), vertex(b), color, thickness);
+				}
+			}
+			ImVec2 at;
+			if (firstOfGroup && projectToScreen(Vec3(0.5f * (proxy.min[0] + proxy.max[0]), proxy.max[1], 0.5f * (proxy.min[2] + proxy.max[2])), at)) {
+				std::string name = proxyName(i);
+				ImVec2 size = ImGui::CalcTextSize(name.c_str());
+				ImVec2 corner0(at.x - size.x * 0.5f - 3.0f, at.y - size.y - 8.0f);
+				list->AddRectFilled(corner0, ImVec2(corner0.x + size.x + 6.0f, corner0.y + size.y + 2.0f), IM_COL32(0, 0, 0, 150), 3.0f);
+				list->AddText(ImVec2(corner0.x + 3.0f, corner0.y + 1.0f), color, name.c_str());
 			}
 		}
 		else if (isWall(proxy)) {
@@ -1275,7 +1303,7 @@ void Visualizer::drawRoomEditor() {
 	if (ImGui::BeginListBox("##room", ImVec2(-FLT_MIN, 6.5f * ImGui::GetTextLineHeightWithSpacing()))) {
 		for (size_t i = 0; i < scene.proxies.size(); i++) {
 			const recast::Proxy& proxy = scene.proxies[i];
-			if (proxy.type != "box" && !isWall(proxy)) continue;
+			if (proxy.type != "box" && proxy.type != "hull" && !isWall(proxy)) continue;
 			bool firstOfGroup = true;
 			for (size_t j = 0; j < i; j++) firstOfGroup &= !sameGroup(static_cast<int>(i), static_cast<int>(j));
 			if (!firstOfGroup) continue;
