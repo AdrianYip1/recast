@@ -6,6 +6,7 @@
 struct Light {
 	vec4 position;
 	vec4 intensity;
+	vec4 direction;
 	mat4 faceViewProj[6];
 };
 

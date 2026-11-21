@@ -529,8 +529,9 @@ void foto::Render::recordShadowPass(VkCommandBuffer commandBuffer, Image& atlas,
 	u32 lightCount = std::min(frameUbo.lightInfo[0], MAX_LIGHTS);
 	for (u32 light = 0; light < lightCount; light++) {
 		if (frameUbo.lights[light].position.w < 0.5f) continue;
+		u32 faceCount = frameUbo.lights[light].intensity.w > 0.5f ? 1 : 6;
 
-		for (u32 face = 0; face < 6; face++) {
+		for (u32 face = 0; face < faceCount; face++) {
 			VkViewport viewport = {
 				.x = static_cast<f32>(face * SHADOW_FACE_RESOLUTION),
 				.y = static_cast<f32>(light * SHADOW_FACE_RESOLUTION),
@@ -715,6 +716,21 @@ void foto::shadowFaceMatrices(const enginemath::Vec3& position, enginemath::Mat4
 	for (int face = 0; face < 6; face++) {
 		out[face] = projection * Mat4::lookAtM(position, position + directions[face], ups[face]);
 	}
+}
+
+enginemath::Mat4 foto::shadowDirectionalMatrix(const enginemath::Vec3& direction, const enginemath::Vec3& center, f32 radius) {
+	using enginemath::Vec3;
+	using enginemath::Mat4;
+	Vec3 travel = direction.normalized();
+	Vec3 up = std::abs(travel.y) > 0.9f ? Vec3(0, 0, 1) : Vec3(0, 1, 0);
+	Mat4 view = Mat4::lookAtM(center - travel * (radius * 2.0f), center, up);
+
+	Mat4 projection = Mat4::zero();
+	projection.m[0][0] = 1.0f / radius;
+	projection.m[1][1] = 1.0f / radius;
+	projection.m[2][2] = -1.0f / (radius * 4.0f);
+	projection.m[3][3] = 1.0f;
+	return projection * view;
 }
 
 std::unique_ptr<foto::Image> foto::Render::createDepthImage(Device& device, VkExtent2D extent) {

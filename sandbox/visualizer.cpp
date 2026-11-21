@@ -243,7 +243,7 @@ void Visualizer::drawPhotoView() {
 }
 
 void Visualizer::applySceneLighting() {
-	std::vector<foto::PointLight> lights;
+	std::vector<foto::Light> lights;
 	for (const recast::SceneLight& light : scene.lights) {
 		if (light.type != "point") continue;
 		lights.push_back({

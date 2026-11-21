@@ -108,10 +108,14 @@ void foto::Application::run() {
 		frameUbo.lightInfo[2] = render->getDynamicShadowAtlas();
 		frameUbo.lightInfo[3] = SHADOW_FACE_RESOLUTION;
 		for (u32 i = 0; i < lightCount; i++) {
-			const PointLight& light = lights[i];
+			const Light& light = lights[i];
+			bool directional = light.type == LightType::Directional;
+			Vec3 direction = light.direction.normalized();
 			frameUbo.lights[i].position = { light.position.x, light.position.y, light.position.z, light.castsShadows ? 1.0f : 0.0f };
-			frameUbo.lights[i].intensity = { light.intensity.x, light.intensity.y, light.intensity.z, 0.0f };
-			shadowFaceMatrices(light.position, frameUbo.lights[i].faceViewProj);
+			frameUbo.lights[i].intensity = { light.intensity.x, light.intensity.y, light.intensity.z, directional ? 1.0f : 0.0f };
+			frameUbo.lights[i].direction = { direction.x, direction.y, direction.z, 0.0f };
+			if (directional) frameUbo.lights[i].faceViewProj[0] = shadowDirectionalMatrix(direction, shadowCenter, shadowRadius);
+			else shadowFaceMatrices(light.position, frameUbo.lights[i].faceViewProj);
 		}
 
 		bool outOfDate = render->drawFrame(drawList, frameUbo, [this](VkCommandBuffer commandBuffer) {
@@ -189,8 +193,13 @@ void foto::Application::draw(Mesh* mesh, const Mat4& transform, u32 materialOver
 						 .shadowCaster = shadowCaster, .tint = tint });
 }
 
-void foto::Application::setLights(std::span<const PointLight> newLights) {
+void foto::Application::setLights(std::span<const Light> newLights) {
 	lights.assign(newLights.begin(), newLights.end());
+}
+
+void foto::Application::setShadowBounds(const Vec3& center, f32 radius) {
+	shadowCenter = center;
+	shadowRadius = radius;
 }
 
 void foto::Application::setAmbient(const Vec3& irradiance) {

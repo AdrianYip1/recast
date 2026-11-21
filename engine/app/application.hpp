@@ -66,8 +66,10 @@ namespace foto {
 		f32 getAspectRatio();
 		void setLightDirection(const enginemath::Vec3& direction);
 
-		// Up to MAX_LIGHTS point lights with shadows; with none, the light direction above is used instead
-		void setLights(std::span<const PointLight> lights);
+		// Up to MAX_LIGHTS point/directional lights with shadows; with none, the light direction above is used instead
+		void setLights(std::span<const Light> lights);
+		// Region directional light shadow maps cover
+		void setShadowBounds(const enginemath::Vec3& center, f32 radius);
 		void setAmbient(const enginemath::Vec3& irradiance);
 		void screenshot(const std::string& filePath);
 
@@ -102,7 +104,9 @@ namespace foto {
 		std::vector<DrawItem> drawList;
 		Camera camera;
 		enginemath::Vec3 lightDirection = enginemath::Vec3(-0.3f, -0.8f, -0.5f).normalized();
-		std::vector<PointLight> lights;
+		std::vector<Light> lights;
+		enginemath::Vec3 shadowCenter;
+		f32 shadowRadius = 5.0f;
 		enginemath::Vec3 ambient = enginemath::Vec3(0.35f, 0.35f, 0.35f);
 		f32 exposureEV = 0.0f;
 		enginemath::Vec3 whiteBalance = enginemath::Vec3(1.0f, 1.0f, 1.0f);

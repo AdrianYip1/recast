@@ -15,10 +15,12 @@ namespace foto {
 	inline constexpr u32 MAX_LIGHTS = 4;
 	inline constexpr u32 SHADOW_FACE_RESOLUTION = 512;
 
-	// Point light with a cube shadow map: 6 faces (+X -X +Y -Y +Z -Z) side by side in a shadow atlas row
+	// One shadow atlas row per light. Point lights: a cube map, 6 faces (+X -X +Y -Y +Z -Z) side by side.
+	// Directional lights: one orthographic map in face 0
 	struct GpuLight {
 		alignas(16) enginemath::Vec4 position;  // xyz, w = 1 if it casts shadows
-		alignas(16) enginemath::Vec4 intensity; // rgb radiant intensity (irradiance = intensity * cos / distance^2)
+		alignas(16) enginemath::Vec4 intensity; // rgb, w = 1 for directional. Point: irradiance = intensity * cos / distance^2, directional: intensity * cos
+		alignas(16) enginemath::Vec4 direction; // xyz = the way a directional light travels
 		alignas(16) enginemath::Mat4 faceViewProj[6] = {
 			enginemath::Mat4::identity(), enginemath::Mat4::identity(), enginemath::Mat4::identity(),
 			enginemath::Mat4::identity(), enginemath::Mat4::identity(), enginemath::Mat4::identity()
@@ -87,12 +89,19 @@ namespace foto {
 		enginemath::Vec3 tint = enginemath::Vec3(1.0f, 1.0f, 1.0f);
 	};
 
-	struct PointLight {
+	enum class LightType : u32 { Point, Directional };
+
+	struct Light {
+		LightType type = LightType::Point;
 		enginemath::Vec3 position;
+		enginemath::Vec3 direction = enginemath::Vec3(0.0f, -1.0f, 0.0f);
 		enginemath::Vec3 intensity;
 		bool castsShadows = true;
 	};
 
-	// View-projections of the 6 cube faces around a light, in the atlas face order
+	// View-projections of the 6 cube faces around a point light, in the atlas face order
 	void shadowFaceMatrices(const enginemath::Vec3& position, enginemath::Mat4 out[6]);
+
+	// Orthographic view-projection for a directional light covering a sphere of `radius` around `center`
+	enginemath::Mat4 shadowDirectionalMatrix(const enginemath::Vec3& direction, const enginemath::Vec3& center, f32 radius);
 } // namespace foto
