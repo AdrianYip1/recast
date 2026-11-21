@@ -8,6 +8,7 @@
 
 #include "scene/sceneFile.hpp"
 #include "lighting/lightFit.hpp"
+#include "lighting/cameraMatch.hpp"
 #include "scene/raycast.hpp"
 
 class Visualizer : public foto::Application {
@@ -38,6 +39,7 @@ private:
 	std::vector<foto::u32> proxyAlbedoMaterials;
 	std::string loadedPhotoPath;
 	recast::LinearImage photoPixels;
+	recast::CameraMatch cameraMatch;
 
 	foto::Mesh* objectMesh = nullptr;
 	std::string loadedObjectPath;

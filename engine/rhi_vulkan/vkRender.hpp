@@ -64,6 +64,7 @@ namespace foto {
 		bool isPathTracing() { return pathTracing; };
 		bool supportsPathTracing() { return pathTracePipeline != nullptr; };
 		u32 getPathTraceSamples() { return traceSamples; };
+		u32 getPathTracePhoto() { return tracePhotoTexture; };
 
 		VkCommandPool getCommandPool() { return _commandPool; };
 	private:

@@ -33,8 +33,8 @@ namespace foto {
 		alignas(16) enginemath::Mat4 proj;
 		alignas(16) enginemath::Vec4 cameraPos; // xyz = world position
 		alignas(16) enginemath::Vec4 lightDir;  // xyz = direction the light travels, used when there are no point lights
-		alignas(16) enginemath::Vec4 exposure;  // x = linear multiplier (2^EV)
-		alignas(16) enginemath::Vec4 whiteBalance; // rgb gains
+		alignas(16) enginemath::Vec4 exposure;  // x = linear multiplier (2^EV), y = camera grain, z = camera blur (px), w = 1 to apply them
+		alignas(16) enginemath::Vec4 whiteBalance; // rgb gains, w = path traced photo's texture slot (camera matching)
 		alignas(16) enginemath::Vec4 ambient;   // rgb irradiance from everything that isn't a point light
 		alignas(16) enginemath::Vec4 viewport;  // 3D view rect in framebuffer pixels: x, y, width, height
 		alignas(16) u32 lightInfo[4] = {};      // light count, static shadow atlas texture, dynamic shadow atlas texture, face resolution

@@ -76,7 +76,9 @@ void Visualizer::loadScene() {
 		try {
 			photoMaterial = createMaterial({ .baseColorTexture = loadTextureHDR(photoPath) });
 			photoPixels = recast::loadLinearImage(photoPath);
+			cameraMatch = recast::estimateCameraMatch(photoPixels);
 			loadedPhotoPath = photoPath;
+			std::cout << "[recast] photo grain " << cameraMatch.grain << ", blur " << cameraMatch.blur << " px" << std::endl;
 		}
 		catch (const std::exception& e) {
 			std::cerr << "[recast] " << e.what() << std::endl;
@@ -253,6 +255,8 @@ void Visualizer::onUpdate(foto::f32 deltaTime) {
 	applySceneLighting();
 	updateObjectInteraction();
 	setPathTracing(pathTrace && !showOriginal && !showProxies && !showLights && supportsPathTracing(), photoMaterial);
+	float pixelsPerPhotoPixel = getViewportSize().x / std::max(static_cast<float>(scene.image_size[0]), 1.0f);
+	setCameraMatch(cameraMatch.grain, cameraMatch.blur * pixelsPerPhotoPixel);
 	drawScene();
 }
 

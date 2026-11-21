@@ -15,8 +15,8 @@ layout(set = 0, binding = 0) uniform FrameUbo {
 	mat4 proj;
 	vec4 cameraPos;
 	vec4 lightDir;
-	vec4 exposure;
-	vec4 whiteBalance;
+	vec4 exposure; // x = 2^EV, y = camera grain, z = camera blur in pixels, w = 1 to apply both to the object (alpha)
+	vec4 whiteBalance; // w = photo texture slot while path tracing
 	vec4 ambient;
 	vec4 viewport;
 	uvec4 lightInfo;

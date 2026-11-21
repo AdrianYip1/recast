@@ -75,6 +75,11 @@ namespace foto {
 
 		// Ray traced compositing of the dynamic casters into the photo (photoMaterial's texture), with static casters as
 		// the photo's surfaces. Replaces the raster scene: draws without a shadow caster are skipped while it's on
+		// The photo's camera, applied to the path traced object: grain in sqrt(linear) units, blur sigma in framebuffer pixels
+		void setCameraMatch(f32 grain, f32 blurPixels);
+		// Size of the letterboxed 3D view in framebuffer pixels
+		enginemath::Vec2 getViewportSize();
+
 		bool supportsPathTracing();
 		void setPathTracing(bool enabled, u32 photoMaterial);
 		bool isPathTracing();
@@ -117,6 +122,8 @@ namespace foto {
 		f32 shadowRadius = 5.0f;
 		enginemath::Vec3 ambient = enginemath::Vec3(0.35f, 0.35f, 0.35f);
 		f32 exposureEV = 0.0f;
+		f32 cameraGrain = 0.0f;
+		f32 cameraBlur = 0.0f;
 		enginemath::Vec3 whiteBalance = enginemath::Vec3(1.0f, 1.0f, 1.0f);
 
 		u32 addTexture(std::unique_ptr<Image> image);

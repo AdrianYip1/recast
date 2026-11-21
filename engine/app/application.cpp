@@ -110,8 +110,8 @@ void foto::Application::run() {
 			.proj = camera.getProjection(getAspectRatio()),
 			.cameraPos = { camera.position.x, camera.position.y, camera.position.z, 1.0f },
 			.lightDir = { lightDirection.x, lightDirection.y, lightDirection.z, 0.0f },
-			.exposure = { std::exp2(exposureEV), 0.0f, 0.0f, 0.0f },
-			.whiteBalance = { whiteBalance.x, whiteBalance.y, whiteBalance.z, 1.0f },
+			.exposure = { std::exp2(exposureEV), cameraGrain, cameraBlur, render->isPathTracing() ? 1.0f : 0.0f },
+			.whiteBalance = { whiteBalance.x, whiteBalance.y, whiteBalance.z, static_cast<f32>(render->getPathTracePhoto()) },
 			.ambient = { ambient.x, ambient.y, ambient.z, 0.0f },
 		};
 
@@ -221,6 +221,16 @@ void foto::Application::setShadowBounds(const Vec3& center, f32 radius) {
 
 void foto::Application::setAmbient(const Vec3& irradiance) {
 	ambient = irradiance;
+}
+
+void foto::Application::setCameraMatch(f32 grain, f32 blurPixels) {
+	cameraGrain = grain;
+	cameraBlur = blurPixels;
+}
+
+enginemath::Vec2 foto::Application::getViewportSize() {
+	VkRect2D rect = render->getSceneRect();
+	return enginemath::Vec2(static_cast<f32>(rect.extent.width), static_cast<f32>(rect.extent.height));
 }
 
 bool foto::Application::supportsPathTracing() {

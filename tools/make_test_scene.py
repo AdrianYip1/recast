@@ -10,7 +10,7 @@ Outputs (in the target folder):
   photo_with_object.hdr  ground truth with the object physically present
   ground_truth.json      true light + object placement (for evaluation only, the engine doesn't read it)
 
-usage: python tools/make_test_scene.py data/sample [--light=directional] [--light-size=S]
+usage: python tools/make_test_scene.py data/sample [--light=directional] [--light-size=S] [--blur=PX] [--grain=G]
 """
 import json
 import struct
@@ -38,6 +38,8 @@ SUN_DIRECTION = np.array([-0.55, -0.75, -0.35]) / np.linalg.norm([-0.55, -0.75, 
 SUN_IRRADIANCE = np.array([1.9, 1.8, 1.6])
 LIGHT_TYPE = "point"
 LIGHT_SIZE = 0.0  # point: radius in metres, directional: angular radius in degrees (soft shadows)
+CAMERA_BLUR = 0.0   # gaussian sigma in pixels applied to both photos
+CAMERA_GRAIN = 0.0  # noise sigma in sqrt(linear) units, a different draw for each photo
 AMBIENT = np.array([0.10, 0.11, 0.13])
 
 CAN_RADIUS = 0.12
@@ -328,6 +330,22 @@ def render(rotation, with_can):
     return image
 
 
+def camera(image, seed):
+    """The photo's camera: lens softness, then sensor grain (shot-noise-like, so added in sqrt space)"""
+    if CAMERA_BLUR > 0:
+        radius = int(np.ceil(CAMERA_BLUR * 3))
+        offsets = np.arange(-radius, radius + 1)
+        kernel = np.exp(-offsets ** 2 / (2 * CAMERA_BLUR ** 2))
+        kernel /= kernel.sum()
+        for axis in (0, 1):
+            padded = np.pad(image, [(radius, radius) if a == axis else (0, 0) for a in range(3)], mode="edge")
+            image = sum(w * np.take(padded, np.arange(image.shape[axis]) + radius + o, axis=axis) for o, w in zip(offsets, kernel))
+    if CAMERA_GRAIN > 0:
+        noise = np.random.default_rng(seed).normal(0.0, CAMERA_GRAIN, image.shape)
+        image = np.maximum(np.sqrt(np.maximum(image, 0.0)) + noise, 0.0) ** 2
+    return image
+
+
 def write_can_glb(path):
     texture_u, texture_v = np.meshgrid((np.arange(TEXTURE_SIZE) + 0.5) / TEXTURE_SIZE, (np.arange(TEXTURE_SIZE) + 0.5) / TEXTURE_SIZE)
     png = png_bytes(linear_to_srgb8(can_label(texture_u, texture_v)))
@@ -401,19 +419,23 @@ def write_can_glb(path):
 
 
 def main():
-    global LIGHT_TYPE, LIGHT_SIZE
+    global LIGHT_TYPE, LIGHT_SIZE, CAMERA_BLUR, CAMERA_GRAIN
     arguments = [a for a in sys.argv[1:] if not a.startswith("--")]
     if "--light=directional" in sys.argv[1:]:
         LIGHT_TYPE = "directional"
     for argument in sys.argv[1:]:
         if argument.startswith("--light-size="):
             LIGHT_SIZE = float(argument.split("=", 1)[1])
+        if argument.startswith("--blur="):
+            CAMERA_BLUR = float(argument.split("=", 1)[1])
+        if argument.startswith("--grain="):
+            CAMERA_GRAIN = float(argument.split("=", 1)[1])
     out = Path(arguments[0] if arguments else "data/sample")
     out.mkdir(parents=True, exist_ok=True)
 
     rotation = look_at_rotation(CAMERA_POS, TARGET)
-    write_hdr(out / "photo.hdr", render(rotation, with_can=False))
-    write_hdr(out / "photo_with_object.hdr", render(rotation, with_can=True))
+    write_hdr(out / "photo.hdr", camera(render(rotation, with_can=False), seed=1))
+    write_hdr(out / "photo_with_object.hdr", camera(render(rotation, with_can=True), seed=2))
     write_can_glb(out / "object.glb")
 
     object_transform = {"position": CAN_POS.tolist(), "rotation_y_deg": CAN_ROTATION_Y_DEG, "scale": 1.0}
@@ -440,6 +462,8 @@ def main():
                   if LIGHT_TYPE == "directional" else
                   {"type": "point", "position": LIGHT_POS.tolist(), "intensity": LIGHT_INTENSITY.tolist(), "radius": LIGHT_SIZE}),
         "ambient": AMBIENT.tolist(),
+        "camera_blur": CAMERA_BLUR,
+        "camera_grain": CAMERA_GRAIN,
         "object_transform": object_transform,
         "photo_with_object": "photo_with_object.hdr",
     }
