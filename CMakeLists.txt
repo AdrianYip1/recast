@@ -50,6 +50,18 @@ file(MAKE_DIRECTORY ${CMAKE_BINARY_DIR}/shaders)
 add_library(stb INTERFACE)
 target_include_directories(stb INTERFACE external/stb)
 
+set(IMGUI_DIR ${CMAKE_CURRENT_SOURCE_DIR}/external/imgui)
+add_library(imgui STATIC
+    ${IMGUI_DIR}/imgui.cpp
+    ${IMGUI_DIR}/imgui_demo.cpp
+    ${IMGUI_DIR}/imgui_draw.cpp
+    ${IMGUI_DIR}/imgui_tables.cpp
+    ${IMGUI_DIR}/imgui_widgets.cpp
+    ${IMGUI_DIR}/backends/imgui_impl_glfw.cpp
+    ${IMGUI_DIR}/backends/imgui_impl_vulkan.cpp)
+target_include_directories(imgui PUBLIC ${IMGUI_DIR} ${IMGUI_DIR}/backends)
+target_link_libraries(imgui PUBLIC glfw Vulkan::Vulkan)
+
 add_library(foto_engine STATIC
     engine/platform/window.cpp
     engine/app/application.cpp
@@ -59,19 +71,25 @@ add_library(foto_engine STATIC
     engine/rhi_vulkan/vkPipeline.cpp
     engine/rhi_vulkan/vkBuffer.cpp  "engine/rhi_vulkan/vkDescriptorHelper.cpp"
     engine/rhi_vulkan/vkImage.cpp
-    engine/rhi_vulkan/vkMesh.cpp)
+    engine/rhi_vulkan/vkMesh.cpp
+    engine/scene/camera.cpp
+    engine/assets/gltfLoader.cpp
+    engine/ui/imguiLayer.cpp)
 
 target_include_directories(foto_engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_include_directories(foto_engine PRIVATE external/cgltf)
 
 target_link_libraries(foto_engine
-    PUBLIC enginemath::enginemath
+    PUBLIC enginemath::enginemath imgui
     PRIVATE glfw Vulkan::Vulkan stb)
 
 # Textures: copied next to the shaders so they load with the same relative paths
 add_custom_target(assets
     COMMAND ${CMAKE_COMMAND} -E copy_directory
         ${CMAKE_CURRENT_SOURCE_DIR}/assets/textures ${CMAKE_BINARY_DIR}/textures
-    COMMENT "copying textures")
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        ${CMAKE_CURRENT_SOURCE_DIR}/assets/models ${CMAKE_BINARY_DIR}/models
+    COMMENT "copying assets")
 
 add_executable(foto sandbox/main.cpp 
 "sandbox/visualizer.cpp")

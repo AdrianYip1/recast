@@ -151,15 +151,20 @@ VkPhysicalDevice foto::Device::selectPhysicalDevice(VkInstance instance, VkSurfa
 		if (properties.apiVersion < VK_API_VERSION_1_3) continue;
 
 		// Check for Vulkan Features
-		VkPhysicalDeviceVulkan13Features features13 = { 
-			.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES 
+		VkPhysicalDeviceVulkan12Features features12 = {
+			.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES
 		};
-		VkPhysicalDeviceFeatures2 features2 = { 
-			.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, 
+		VkPhysicalDeviceVulkan13Features features13 = {
+			.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
+			.pNext = &features12
+		};
+		VkPhysicalDeviceFeatures2 features2 = {
+			.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
 			.pNext = &features13
 		};
 		vkGetPhysicalDeviceFeatures2(device, &features2);
 		if (!features13.dynamicRendering || !features13.synchronization2) continue;
+		if (!features12.descriptorBindingPartiallyBound) continue;
 
 		// Check for queues
 		if (!findQueueFamilies(device, surface).has_value()) continue;
@@ -241,8 +246,14 @@ VkDevice foto::Device::selectLogicalDevice(VkPhysicalDevice physicalDevice, cons
 		queueCreateInfos.push_back(queueCreateInfo);
 	}
 
+	VkPhysicalDeviceVulkan12Features features12 = {
+		.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
+		.descriptorBindingPartiallyBound = VK_TRUE
+	};
+
 	VkPhysicalDeviceVulkan13Features features13 = {
 		.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
+		.pNext = &features12,
 		.synchronization2 = VK_TRUE,
 		.dynamicRendering = VK_TRUE
 	};

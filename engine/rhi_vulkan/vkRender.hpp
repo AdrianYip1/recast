@@ -11,7 +11,7 @@
 
 #include "vkBuffer.hpp"
 #include "vkMesh.hpp"
-#include "vkUbo.hpp"
+#include "vkRenderTypes.hpp"
 #include "vkDescriptorHelper.hpp"
 
 namespace foto {
@@ -29,14 +29,18 @@ namespace foto {
 		Render& operator=(const Render& other) = delete;
 
 		// Returns true if the swapchain is out of date / suboptimal and must be recreated
-		bool drawFrame(std::span<Mesh* const> meshes, const Ubo& ubo);
+		bool drawFrame(std::span<const DrawItem> items, const FrameUbo& frameUbo,
+					   const std::function<void(VkCommandBuffer)>& overlay = nullptr);
 
 		// Call after Swapchain::recreate() (image count may change)
 		void onSwapchainRecreated();
 
-		// Points `binding` of every frame's descriptor set (set 0) at the texture.
-		// Only call when no frame is in flight: at init, or after vkDeviceWaitIdle.
-		void setTexture(u32 binding, Image& texture, Sampler& sampler);
+		// Bindless texture slot for the shaders (Material::baseColorTexture). Waits for the GPU to go idle.
+		u32 addTexture(Image& texture, Sampler& sampler);
+
+		u32 addMaterial(const Material& material);
+		void updateMaterial(u32 index, const Material& material);
+		const Material& getMaterial(u32 index) { return materials.at(index); };
 
 		VkCommandPool getCommandPool() { return _commandPool; };
 	private:
@@ -52,6 +56,15 @@ namespace foto {
 		DescriptorPool descriptorPool;
 		std::vector<VkDescriptorSet> descriptorSets; // set 0, one per frame in flight, freed with the pool
 
+		std::vector<Material> materials;
+		std::vector<std::unique_ptr<Buffer>> materialBuffers;
+		u64 materialsVersion = 1;
+		std::array<u64, MAX_FRAMES_IN_FLIGHT> uploadedMaterialsVersion = {};
+
+		u32 textureCount = 0;
+		std::unique_ptr<Image> defaultTexture;
+		std::unique_ptr<Sampler> defaultSampler;
+
 		// Swapchain-sized, shared by the frames in flight (the barrier at the start of each frame orders them)
 		std::unique_ptr<Image> depthImage;
 
@@ -63,10 +76,12 @@ namespace foto {
 
 		void createSyncObjects(VkDevice device, size swapchainImageCount);
 		void createRenderFinishedSems(VkDevice device, size swapchainImageCount);
-		void recordCommandBuffer(VkCommandBuffer commandBuffer, u32 imageIdx, std::span<Mesh* const> meshes);
+		void recordCommandBuffer(VkCommandBuffer commandBuffer, u32 imageIdx, std::span<const DrawItem> items,
+								 const std::function<void(VkCommandBuffer)>& overlay);
 		static VkCommandPool createCommandPool(Device& device);
 		static std::vector<VkCommandBuffer> createCommandBuffers(Device& device, VkCommandPool commandPool);
 		static std::vector<std::unique_ptr<Buffer>> createUniformBuffers(Device& device);
+		static std::vector<std::unique_ptr<Buffer>> createMaterialBuffers(Device& device);
 		static std::unique_ptr<Image> createDepthImage(Device& device, VkExtent2D extent);
 	};
 } // namespace foto

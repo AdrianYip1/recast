@@ -29,13 +29,13 @@ std::unique_ptr<foto::Buffer> foto::Buffer::createDeviceLocal(Device& device, Vk
 	return result;
 }
 
-void foto::Buffer::upload(const void* data, VkDeviceSize dataSize) {
-	if (dataSize > _size) {
+void foto::Buffer::upload(const void* data, VkDeviceSize dataSize, VkDeviceSize offset) {
+	if (offset + dataSize > _size) {
 		throw std::runtime_error("ERROR: vkBuffer.cpp -> upload(): data larger than buffer");
 	}
 
 	void* mapped = nullptr;
-	if (vkMapMemory(_device, memory, 0, dataSize, 0, &mapped) != VK_SUCCESS) {
+	if (vkMapMemory(_device, memory, offset, dataSize, 0, &mapped) != VK_SUCCESS) {
 		throw std::runtime_error("ERROR: vkBuffer.cpp -> upload()");
 	}
 	memcpy(mapped, data, static_cast<size>(dataSize));
