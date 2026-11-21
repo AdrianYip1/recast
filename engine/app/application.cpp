@@ -3,9 +3,11 @@
 
 #include "application.hpp"
 #include "../platform/window.hpp"
+#include "../rhi_vulkan/vkDevice.hpp"
 
 foto::Application::Application(const ApplicationConfig& config) :
-	window(std::make_unique<Window>(config.width, config.height, config.title)) 
+	window(std::make_unique<Window>(config.width, config.height, config.title)),
+	device(std::make_unique<Device>())
 {
 	 
 }

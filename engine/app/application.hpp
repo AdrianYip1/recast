@@ -5,6 +5,7 @@
 
 namespace foto {
 	class Window;
+	class Device;
 
 	struct ApplicationConfig {
 		const char* title = "foto";
@@ -29,5 +30,6 @@ namespace foto {
 		
 	private:
 		std::unique_ptr<Window> window;
+		std::unique_ptr<Device> device;
 	};
 } // namespace foto

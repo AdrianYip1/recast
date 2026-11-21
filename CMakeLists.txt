@@ -22,13 +22,15 @@ target_include_directories(stb INTERFACE external/stb)
 
 add_library(foto_engine STATIC
     engine/platform/window.cpp
-    engine/app/application.cpp "sandbox/visualizer.cpp")
+    engine/app/application.cpp
+    engine/rhi_vulkan/vkDevice.cpp
+    engine/rhi_vulkan/vkSwapchain.cpp)
 
 target_include_directories(foto_engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
 target_link_libraries(foto_engine
     PUBLIC enginemath::enginemath
-    PRIVATE glfw)
+    PRIVATE glfw Vulkan::Vulkan)
 
 add_executable(foto sandbox/main.cpp "sandbox/visualizer.cpp")
 
