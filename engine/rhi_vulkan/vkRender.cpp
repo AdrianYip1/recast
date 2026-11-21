@@ -1,9 +1,22 @@
 #include "vkRender.hpp"
+#include "vkImage.hpp"
 
 foto::Render::Render(Device& device, Swapchain& swapchain, Pipeline& pipeline) :
-	_device(device.getDevice()), _commandPool(createCommandPool(device)), 
-	commandBuffers(createCommandBuffers(device, _commandPool))
+	device(device), swapchain(swapchain), pipeline(pipeline),
+	_device(device.getDevice()), _commandPool(createCommandPool(device)),
+	commandBuffers(createCommandBuffers(device, _commandPool)),
+	uniformBuffers(createUniformBuffers(device)),
+	// Pool sized from the pipeline's set 0 bindings, one set per frame in flight
+	descriptorPool(device, MAX_FRAMES_IN_FLIGHT, pipeline.getDescriptorSetLayoutInfo(0).poolSizes(MAX_FRAMES_IN_FLIGHT)),
+	descriptorSets(descriptorPool.allocate(pipeline.getDescriptorSetLayout(0), MAX_FRAMES_IN_FLIGHT))
 {
+	// Point binding 0 of each frame's set at that frame's uniform buffer
+	for (size i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+		DescriptorWriter()
+			.writeBuffer(0, uniformBuffers[i]->getBuffer(), sizeof(Ubo))
+			.update(device, descriptorSets[i]);
+	}
+
 	createSyncObjects(_device, swapchain.getImages().size());
 };
 
@@ -13,20 +26,41 @@ foto::Render::~Render() {
 	for (VkFence fence : inFlightFence) vkDestroyFence(_device, fence, nullptr);
 
 	vkDestroyCommandPool(_device, _commandPool, nullptr);
+	// descriptorPool (and its sets) + uniformBuffers are destroyed by their own destructors after this
 };
+
+void foto::Render::setTexture(u32 binding, Image& texture, Sampler& sampler) {
+	DescriptorWriter writer;
+	writer.writeImage(binding, texture.getView(), sampler.getSampler());
+
+	for (VkDescriptorSet set : descriptorSets) {
+		writer.update(device, set);
+	}
+}
 
 // CPU -> recording command buffer
 // GPU -> submitting/executing command buffer
-void foto::Render::drawFrame(Device& device, Swapchain& swapchain, Pipeline& pipeline) {
+bool foto::Render::drawFrame(std::span<Mesh* const> meshes, const Ubo& ubo) {
 	vkWaitForFences(device.getDevice(), 1, &inFlightFence[currentFrame], VK_TRUE, UINT64_MAX);
-	vkResetFences(device.getDevice(), 1, &inFlightFence[currentFrame]);
 
 	u32 imageIdx;
-	vkAcquireNextImageKHR(device.getDevice(), swapchain.getSwapchain(), UINT64_MAX, imageAvailableSem[currentFrame], VK_NULL_HANDLE, &imageIdx);
+	VkResult acquireResult = vkAcquireNextImageKHR(device.getDevice(), swapchain.getSwapchain(), UINT64_MAX, imageAvailableSem[currentFrame], VK_NULL_HANDLE, &imageIdx);
+	if (acquireResult == VK_ERROR_OUT_OF_DATE_KHR) {
+		return true;
+	}
+	if (acquireResult != VK_SUCCESS && acquireResult != VK_SUBOPTIMAL_KHR) {
+		throw std::runtime_error("ERROR: vkRender.cpp -> drawFrame() acquire");
+	}
+
+	// Reset only once we know we will submit, otherwise an early return leaves it unsignaled -> deadlock
+	vkResetFences(device.getDevice(), 1, &inFlightFence[currentFrame]);
+
+	// Update uniforms
+	uniformBuffers[currentFrame]->upload(&ubo, sizeof(ubo));
 
 	VkCommandBuffer commandBuffer = commandBuffers[currentFrame];
 	vkResetCommandBuffer(commandBuffer, 0);
-	recordCommandBuffer(swapchain, pipeline, commandBuffer, imageIdx);
+	recordCommandBuffer(commandBuffer, imageIdx, meshes);
 
 	// Submit info
 	VkSemaphore waitSemaphore[] = { imageAvailableSem[currentFrame] };
@@ -68,9 +102,23 @@ void foto::Render::drawFrame(Device& device, Swapchain& swapchain, Pipeline& pip
 	};
 
 	// vkQueuePresentKHR doesn't wait, returns right away
-	vkQueuePresentKHR(device.getPresentQ(), &presentInfo);
+	VkResult presentResult = vkQueuePresentKHR(device.getPresentQ(), &presentInfo);
 
 	currentFrame = (currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
+
+	if (presentResult == VK_ERROR_OUT_OF_DATE_KHR || presentResult == VK_SUBOPTIMAL_KHR) {
+		return true;
+	}
+	if (presentResult != VK_SUCCESS) {
+		throw std::runtime_error("ERROR: vkRender.cpp -> drawFrame() present");
+	}
+	return false;
+}
+
+void foto::Render::onSwapchainRecreated() {
+	for (VkSemaphore sem : renderFinishedSem) vkDestroySemaphore(_device, sem, nullptr);
+	renderFinishedSem.clear();
+	createRenderFinishedSems(_device, swapchain.getImages().size());
 }
 
 void foto::Render::createSyncObjects(VkDevice device, size swapchainImageCount) {
@@ -94,6 +142,14 @@ void foto::Render::createSyncObjects(VkDevice device, size swapchainImageCount) 
 		}
 	}
 
+	createRenderFinishedSems(device, swapchainImageCount);
+}
+
+void foto::Render::createRenderFinishedSems(VkDevice device, size swapchainImageCount) {
+	VkSemaphoreCreateInfo semaphoreCreateInfo = {
+		.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO
+	};
+
 	// Per swapchain image: presentation engine holds it until that image is reacquired
 	renderFinishedSem.resize(swapchainImageCount);
 
@@ -104,7 +160,7 @@ void foto::Render::createSyncObjects(VkDevice device, size swapchainImageCount) 
 	}
 }
 
-void foto::Render::recordCommandBuffer(Swapchain& swapchain,Pipeline& pipeline, VkCommandBuffer commandBuffer, u32 imageIdx) {
+void foto::Render::recordCommandBuffer(VkCommandBuffer commandBuffer, u32 imageIdx, std::span<Mesh* const> meshes) {
 	VkCommandBufferBeginInfo beginInfo = {
 		.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
 	};
@@ -165,6 +221,10 @@ void foto::Render::recordCommandBuffer(Swapchain& swapchain,Pipeline& pipeline, 
 	// Bind pipeline/viewport/scissor
 	vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.getPipeline());
 
+	// Bind descriptor
+	vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.getPipelineLayout(),
+							0, 1, &descriptorSets[currentFrame], 0, nullptr);
+
 	VkViewport viewport = {
 		.x = 0.0f,
 		.y = 0.0f,
@@ -181,11 +241,18 @@ void foto::Render::recordCommandBuffer(Swapchain& swapchain,Pipeline& pipeline, 
 	};
 	vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 
-	vkCmdDraw(commandBuffer, 3, 1, 0, 0);
+	// Meshes: bind once, draw each submesh
+	for (Mesh* mesh : meshes) {
+		mesh->bind(commandBuffer);
+
+		for (const Submesh& submesh : mesh->getSubmeshes()) {
+			vkCmdDrawIndexed(commandBuffer, submesh.indexCount, 1, submesh.firstIndex, 0, 0);
+		}
+	}
 
 	vkCmdEndRendering(commandBuffer);
 
-	// Barrier 2 -> after rendering
+	// Barrier 2 -> after renderingg 
 	VkImageMemoryBarrier2 toPresent = {
 		.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
 		.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
@@ -245,4 +312,17 @@ std::vector<VkCommandBuffer> foto::Render::createCommandBuffers(Device& device, 
 	}
 
 	return commandBuffers;
+}
+
+std::vector<std::unique_ptr<foto::Buffer>> foto::Render::createUniformBuffers(Device& device) {
+	std::vector<std::unique_ptr<Buffer>> buffers;
+	buffers.reserve(MAX_FRAMES_IN_FLIGHT);
+
+	// HOST_VISIBLE: rewritten from the CPU every frame, so no staging buffer
+	for (size i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+		buffers.push_back(std::make_unique<Buffer>(device, sizeof(Ubo), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT));
+	}
+
+	return buffers;
 }

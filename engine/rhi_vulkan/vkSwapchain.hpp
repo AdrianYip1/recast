@@ -20,20 +20,25 @@ namespace foto {
 		VkFormat getFormat() { return _format; };
 		VkExtent2D getExtent() { return _extent; };
 
-		std::vector<VkImage> getImages() { return images; };
-		std::vector<VkImageView> getImageViews() { return imageViews; };
+		std::vector<VkImage>& getImages() { return images; };
+		std::vector<VkImageView>& getImageViews() { return imageViews; };
+
+		// Rebuilds for the current window size. Returns without recreating if the window closes while minimized.
+		void recreate();
 
 	private:
+		GLFWwindow* _window = nullptr;
+		Device& _device;
+
 		SwapchainSupportDetails swapchainSupport;
 		VkFormat _format;
 		VkExtent2D _extent;
 		VkSwapchainKHR swapchain = VK_NULL_HANDLE;
 		std::vector<VkImage> images;
 		std::vector<VkImageView> imageViews;
-		VkDevice device = VK_NULL_HANDLE;
 
 		static VkSwapchainKHR createSwapchain(GLFWwindow* window, Device& device, SwapchainSupportDetails swapchainSupport,
-											  VkFormat& _format, VkExtent2D& _extent);
+											  VkFormat& _format, VkExtent2D& _extent, VkSwapchainKHR oldSwapchain = VK_NULL_HANDLE);
 
 		static std::vector<VkImage> getSwapchainImages(Device& device, VkSwapchainKHR swapchain);
 

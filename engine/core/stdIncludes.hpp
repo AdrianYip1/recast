@@ -15,6 +15,7 @@
 // utility
 #include <optional>
 #include <utility>
+#include <functional>
 
 // types
 #include <cstdint>

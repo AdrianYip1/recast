@@ -9,7 +9,15 @@
 #include "vkSwapchain.hpp"
 #include "vkPipeline.hpp"
 
+#include "vkBuffer.hpp"
+#include "vkMesh.hpp"
+#include "vkUbo.hpp"
+#include "vkDescriptorHelper.hpp"
+
 namespace foto {
+	class Image;
+	class Sampler;
+
 	class Render {
 	public:
 		Render(Device& device, Swapchain& swapchain, Pipeline& pipeline);
@@ -17,11 +25,29 @@ namespace foto {
 		Render(const Render& other) = delete;
 		Render& operator=(const Render& other) = delete;
 
-		void drawFrame(Device& device, Swapchain& swapchain, Pipeline& pipeline);
+		// Returns true if the swapchain is out of date / suboptimal and must be recreated
+		bool drawFrame(std::span<Mesh* const> meshes, const Ubo& ubo);
+
+		// Call after Swapchain::recreate() (image count may change)
+		void onSwapchainRecreated();
+
+		// Points `binding` of every frame's descriptor set (set 0) at the texture.
+		// Only call when no frame is in flight: at init, or after vkDeviceWaitIdle.
+		void setTexture(u32 binding, Image& texture, Sampler& sampler);
+
+		VkCommandPool getCommandPool() { return _commandPool; };
 	private:
+		Device& device;
+		Swapchain& swapchain;
+		Pipeline& pipeline;
+
 		VkDevice _device = VK_NULL_HANDLE;
 		VkCommandPool _commandPool = VK_NULL_HANDLE;
 		std::vector<VkCommandBuffer> commandBuffers;
+
+		std::vector<std::unique_ptr<Buffer>> uniformBuffers;
+		DescriptorPool descriptorPool;
+		std::vector<VkDescriptorSet> descriptorSets; // set 0, one per frame in flight, freed with the pool
 
 		std::vector<VkSemaphore> imageAvailableSem;
 		std::vector<VkSemaphore> renderFinishedSem;
@@ -30,8 +56,10 @@ namespace foto {
 		u32 currentFrame = 0;
 
 		void createSyncObjects(VkDevice device, size swapchainImageCount);
-		void recordCommandBuffer(Swapchain& swapchain, Pipeline& pipeline, VkCommandBuffer commandBuffer, u32 imageIdx);
+		void createRenderFinishedSems(VkDevice device, size swapchainImageCount);
+		void recordCommandBuffer(VkCommandBuffer commandBuffer, u32 imageIdx, std::span<Mesh* const> meshes);
 		static VkCommandPool createCommandPool(Device& device);
 		static std::vector<VkCommandBuffer> createCommandBuffers(Device& device, VkCommandPool commandPool);
+		static std::vector<std::unique_ptr<Buffer>> createUniformBuffers(Device& device);
 	};
 } // namespace foto

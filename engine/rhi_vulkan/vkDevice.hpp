@@ -36,6 +36,19 @@ namespace foto {
 		VkQueue getPresentQ() { return presentQueue; };
 		VkQueue getComputeQ() { return computeQueue; };
 
+		// Index of a memory type allowed by typeFilter that has all the requested properties
+		u32 findMemoryType(u32 typeFilter, VkMemoryPropertyFlags properties);
+
+		// Records commands into a one-time command buffer, submits to the graphics queue and waits.
+		// For uploads/transitions at load time, not per frame.
+		void immediateSubmit(VkCommandPool commandPool, const std::function<void(VkCommandBuffer)>& record);
+
+		// GPU's anisotropy limit, or 1.0 if samplerAnisotropy isn't supported (it's enabled whenever it is)
+		f32 getMaxSamplerAnisotropy();
+
+		// Whether LINE/POINT polygon modes work (fillModeNonSolid is enabled whenever it's supported)
+		bool supportsWireframe();
+
 		static SwapchainSupportDetails querySwapchainSupport(VkPhysicalDevice device, VkSurfaceKHR surface);
 		static std::optional<foto::QueueInfos> findQueueFamilies(VkPhysicalDevice device, VkSurfaceKHR surface);
 

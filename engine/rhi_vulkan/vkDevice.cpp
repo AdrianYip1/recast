@@ -247,9 +247,17 @@ VkDevice foto::Device::selectLogicalDevice(VkPhysicalDevice physicalDevice, cons
 		.dynamicRendering = VK_TRUE
 	};
 
+	// Optional features: turn on whatever the GPU supports
+	VkPhysicalDeviceFeatures supported;
+	vkGetPhysicalDeviceFeatures(physicalDevice, &supported);
+
 	VkPhysicalDeviceFeatures2 features2 = {
 		.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
-		.pNext = &features13
+		.pNext = &features13,
+		.features = {
+			.fillModeNonSolid = supported.fillModeNonSolid, // wireframe
+			.samplerAnisotropy = supported.samplerAnisotropy
+		}
 	};
 
 	VkDeviceCreateInfo createInfo = {
@@ -268,6 +276,78 @@ VkDevice foto::Device::selectLogicalDevice(VkPhysicalDevice physicalDevice, cons
 	}
 
 	return logicalDevice;
+}
+
+foto::u32 foto::Device::findMemoryType(u32 typeFilter, VkMemoryPropertyFlags properties) {
+	// Available types of memory
+	VkPhysicalDeviceMemoryProperties memProperties;
+	vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memProperties);
+
+	for (u32 i = 0; i < memProperties.memoryTypeCount; i++) {
+		if (typeFilter & (1 << i) && (memProperties.memoryTypes[i].propertyFlags & properties) == properties) {
+			return i;
+		}
+	}
+
+	throw std::runtime_error("ERROR: vkDevice.cpp -> findMemoryType()");
+}
+
+void foto::Device::immediateSubmit(VkCommandPool commandPool, const std::function<void(VkCommandBuffer)>& record) {
+	VkCommandBufferAllocateInfo commandBufferAllocInfo = {
+		.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+		.commandPool = commandPool,
+		.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+		.commandBufferCount = 1
+	};
+
+	VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
+	if (vkAllocateCommandBuffers(logicalDevice, &commandBufferAllocInfo, &commandBuffer) != VK_SUCCESS) {
+		throw std::runtime_error("ERROR: vkDevice.cpp -> immediateSubmit() allocate");
+	}
+
+	VkCommandBufferBeginInfo beginInfo = {
+		.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+		.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT
+	};
+
+	if (vkBeginCommandBuffer(commandBuffer, &beginInfo) != VK_SUCCESS) {
+		throw std::runtime_error("ERROR: vkDevice.cpp -> immediateSubmit() begin");
+	}
+
+	record(commandBuffer);
+
+	if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS) {
+		throw std::runtime_error("ERROR: vkDevice.cpp -> immediateSubmit() end");
+	}
+
+	VkSubmitInfo submitInfo = {
+		.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+		.commandBufferCount = 1,
+		.pCommandBuffers = &commandBuffer
+	};
+
+	if (vkQueueSubmit(graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE) != VK_SUCCESS) {
+		throw std::runtime_error("ERROR: vkDevice.cpp -> immediateSubmit() submit");
+	}
+	vkQueueWaitIdle(graphicsQueue);
+
+	vkFreeCommandBuffers(logicalDevice, commandPool, 1, &commandBuffer);
+}
+
+foto::f32 foto::Device::getMaxSamplerAnisotropy() {
+	VkPhysicalDeviceFeatures features;
+	vkGetPhysicalDeviceFeatures(physicalDevice, &features);
+	if (!features.samplerAnisotropy) return 1.0f;
+
+	VkPhysicalDeviceProperties properties;
+	vkGetPhysicalDeviceProperties(physicalDevice, &properties);
+	return properties.limits.maxSamplerAnisotropy;
+}
+
+bool foto::Device::supportsWireframe() {
+	VkPhysicalDeviceFeatures features;
+	vkGetPhysicalDeviceFeatures(physicalDevice, &features);
+	return features.fillModeNonSolid;
 }
 
 foto::SwapchainSupportDetails foto::Device::querySwapchainSupport(VkPhysicalDevice device, VkSurfaceKHR surface) {

@@ -1,24 +1,54 @@
 #include "vkSwapchain.hpp"
 
 foto::Swapchain::Swapchain(GLFWwindow* window, Device& device) :
+	_window(window),
+	_device(device),
 	swapchainSupport(device.querySwapchainSupport(device.getPhysicalDevice(), device.getSurface())),
 	swapchain(createSwapchain(window, device, swapchainSupport, _format, _extent)),
 	images(getSwapchainImages(device, swapchain)),
-	imageViews(getImageViews(device, images, _format)),
-	device(device.getDevice())
+	imageViews(getImageViews(device, images, _format))
 {
 
 }
 
 foto::Swapchain::~Swapchain() {
 	for (size i = 0; i < imageViews.size(); i++) {
-		vkDestroyImageView(device, imageViews[i], nullptr);
+		vkDestroyImageView(_device.getDevice(), imageViews[i], nullptr);
 	}
-	vkDestroySwapchainKHR(device, swapchain, nullptr);
+	vkDestroySwapchainKHR(_device.getDevice(), swapchain, nullptr);
+}
+
+void foto::Swapchain::recreate() {
+	int w = 0, h = 0;
+	glfwGetFramebufferSize(_window, &w, &h);
+	// Minimized: wait until the window has a size again, or give up if it's being closed
+	while (w == 0 || h == 0) {
+		if (glfwWindowShouldClose(_window)) return;
+		glfwWaitEvents();
+		glfwGetFramebufferSize(_window, &w, &h);
+	}
+
+	VkDevice vkDev = _device.getDevice();
+
+	vkDeviceWaitIdle(vkDev);
+
+	for (VkImageView view : imageViews) {
+		vkDestroyImageView(vkDev, view, nullptr);
+	}
+
+	swapchainSupport = _device.querySwapchainSupport(_device.getPhysicalDevice(), _device.getSurface());
+
+	// Hand the old swapchain to the new one so the driver can reuse resources, then destroy it
+	VkSwapchainKHR oldSwapchain = swapchain;
+	swapchain = createSwapchain(_window, _device, swapchainSupport, _format, _extent, oldSwapchain);
+	vkDestroySwapchainKHR(vkDev, oldSwapchain, nullptr);
+
+	images = getSwapchainImages(_device, swapchain);
+	imageViews = getImageViews(_device, images, _format);
 }
 
 VkSwapchainKHR foto::Swapchain::createSwapchain(GLFWwindow* window, Device& device, SwapchainSupportDetails swapchainSupport,
-											    VkFormat& _format, VkExtent2D& _extent) {
+											    VkFormat& _format, VkExtent2D& _extent, VkSwapchainKHR oldSwapchain) {
 	VkSwapchainKHR swapchain = VK_NULL_HANDLE;
 
 	// Queue
@@ -84,6 +114,7 @@ VkSwapchainKHR foto::Swapchain::createSwapchain(GLFWwindow* window, Device& devi
 		.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
 		.presentMode = presentMode,
 		.clipped = VK_TRUE,
+		.oldSwapchain = oldSwapchain,
 	};
 
 	if (vkCreateSwapchainKHR(device.getDevice(), &createInfo, nullptr, &swapchain) != VK_SUCCESS) {
