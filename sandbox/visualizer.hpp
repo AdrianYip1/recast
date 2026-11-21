@@ -60,6 +60,8 @@ private:
 	enginemath::Vec3 shadowCenter;
 	foto::f32 shadowRadius = 5.0f;
 
+	bool exportRequested = false;
+
 	bool showProxies = false;
 	bool showLights = false;
 	bool showOriginal = false;
@@ -75,5 +77,6 @@ private:
 	void updateObjectInteraction();
 	recast::RayHit supportUnderCursor(const enginemath::Vec3& origin, const enginemath::Vec3& direction);
 	void drawScene();
+	void exportRender();
 	enginemath::Mat4 objectTransform() const;
 };

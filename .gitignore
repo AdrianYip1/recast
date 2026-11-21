@@ -16,3 +16,6 @@ cmake-build-*/
 
 # large image data (regenerate the sample with tools/make_test_scene.py)
 *.hdr
+
+# exported renders
+renders/

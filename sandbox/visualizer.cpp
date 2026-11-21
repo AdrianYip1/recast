@@ -9,6 +9,9 @@
 #include "scene/raycast.hpp"
 #include "scene/placement.hpp"
 
+#include <cstdlib>
+#include <ctime>
+
 using enginemath::Vec3;
 using enginemath::Mat4;
 
@@ -258,6 +261,7 @@ void Visualizer::onUpdate(foto::f32 deltaTime) {
 	float pixelsPerPhotoPixel = getViewportSize().x / std::max(static_cast<float>(scene.image_size[0]), 1.0f);
 	setCameraMatch(cameraMatch.grain, cameraMatch.blur * pixelsPerPhotoPixel);
 	drawScene();
+	if (exportRequested) exportRender();
 }
 
 Mat4 Visualizer::objectTransform() const {
@@ -317,6 +321,37 @@ void Visualizer::updateObjectInteraction() {
 	leftMouseWasDown = leftDown;
 }
 
+// Renders the composite at the photo's resolution into renders/ next to scene.json and opens it
+void Visualizer::exportRender() {
+	exportRequested = false;
+	std::time_t now = std::time(nullptr);
+	char stamp[32];
+	std::strftime(stamp, sizeof(stamp), "%Y%m%d_%H%M%S", std::localtime(&now));
+
+	std::filesystem::path folder = scene.directory / "renders";
+	std::filesystem::create_directories(folder);
+	std::string name = std::filesystem::path(scenePath).stem().string() + "_" + stamp;
+	std::string pngPath = (folder / (name + ".png")).string();
+	std::string hdrPath = (folder / (name + ".hdr")).string();
+
+	setCameraMatch(cameraMatch.grain, cameraMatch.blur);
+	auto started = std::chrono::steady_clock::now();
+	bool written = exportImage(pngPath, hdrPath, scene.image_size[0], scene.image_size[1], isPathTracing() ? 512 : 1);
+	int seconds = static_cast<int>(std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count());
+
+	if (!written) {
+		lightingStatus = "export failed: couldn't write " + pngPath;
+		return;
+	}
+	lightingStatus = "exported " + pngPath + " in " + std::to_string(seconds) + " s";
+	std::cout << "[recast] " << lightingStatus << std::endl;
+#ifdef _WIN32
+	std::system(("start \"\" \"" + pngPath + "\"").c_str());
+#else
+	std::system(("xdg-open \"" + pngPath + "\" &").c_str());
+#endif
+}
+
 void Visualizer::drawScene() {
 	if (!loadedPhotoPath.empty()) drawFullscreen(backgroundPipeline, photoMaterial);
 
@@ -361,6 +396,8 @@ void Visualizer::onImGui() {
 	ImGui::EndDisabled();
 	ImGui::SameLine();
 	if (ImGui::Button(unsavedChanges ? "save scene *" : "save scene")) saveScene();
+	ImGui::SameLine();
+	if (ImGui::Button("export image")) exportRequested = true;
 
 	float exposure = getExposure();
 	if (ImGui::SliderFloat("exposure", &exposure, -4.0f, 4.0f, "%.1f EV")) setExposure(exposure);
