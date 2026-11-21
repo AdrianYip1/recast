@@ -63,6 +63,8 @@ private:
 
 	bool exportRequested = false;
 
+	std::vector<recast::SceneLight> detectedLights; // what "reset lights" goes back to
+	recast::Vec3f detectedAmbient = { 0.0f, 0.0f, 0.0f };
 	int selectedLight = -1;
 	bool draggingLight = false;
 	bool lightMouseWasDown = false;

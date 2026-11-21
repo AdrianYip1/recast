@@ -138,6 +138,9 @@ void Visualizer::loadScene() {
 		}
 	}
 
+	detectedLights = scene.lights;
+	detectedAmbient = scene.lighting.ambient;
+	selectedLight = -1;
 	if (recast::fitLightsFromScene(scene).empty()) detectLighting();
 	else lightingStatus = std::to_string(scene.lights.size()) + " light(s) from scene.json";
 
@@ -237,6 +240,9 @@ void Visualizer::finishLightingDetection() {
 		directionalCount += fitted.directional ? 1 : 0;
 	}
 	scene.lighting.ambient = { job.fit.ambient.x, job.fit.ambient.y, job.fit.ambient.z };
+	detectedLights = scene.lights;
+	detectedAmbient = scene.lighting.ambient;
+	selectedLight = -1;
 	unsavedChanges = true;
 
 	int seconds = static_cast<int>(std::chrono::duration<double>(std::chrono::steady_clock::now() - detectStarted).count());
@@ -357,6 +363,15 @@ void Visualizer::addLight() {
 void Visualizer::drawLightEditor() {
 	ImGui::TextDisabled("drag a light to move it");
 	if (scene.lights.size() < foto::MAX_LIGHTS && ImGui::Button("add light")) addLight();
+	if (!detectedLights.empty()) {
+		if (scene.lights.size() < foto::MAX_LIGHTS) ImGui::SameLine();
+		if (ImGui::Button("reset lights")) {
+			scene.lights = detectedLights;
+			scene.lighting.ambient = detectedAmbient;
+			selectedLight = -1;
+			unsavedChanges = true;
+		}
+	}
 
 	if (selectedLight < 0 || selectedLight >= static_cast<int>(scene.lights.size())) return;
 	recast::SceneLight& light = scene.lights[selectedLight];
