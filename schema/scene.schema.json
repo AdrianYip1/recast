@@ -1,0 +1,124 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "recast/scene.schema.json",
+  "title": "recast scene",
+  "description": "Contract between the Python pipeline and the engine. Metres; world +Y up, right-handed; camera rotation is camera-to-world in engine convention (looks down -Z); pixel origin top-left; colours linear RGB. Extra top-level keys are allowed and must be preserved by whoever rewrites the file.",
+  "type": "object",
+  "required": ["version", "photo", "image_size", "camera"],
+  "properties": {
+    "version": { "const": 1 },
+    "photo": { "type": "string", "description": "path relative to scene.json, linear Radiance .hdr" },
+    "image_size": { "$ref": "#/$defs/size" },
+    "camera": {
+      "type": "object",
+      "required": ["fx", "fy", "cx", "cy", "rotation", "position"],
+      "properties": {
+        "fx": { "type": "number", "exclusiveMinimum": 0 },
+        "fy": { "type": "number", "exclusiveMinimum": 0 },
+        "cx": { "type": "number" },
+        "cy": { "type": "number" },
+        "rotation": { "$ref": "#/$defs/mat3" },
+        "position": { "$ref": "#/$defs/vec3" }
+      },
+      "additionalProperties": false
+    },
+    "scale_reference": {
+      "type": "object",
+      "required": ["kind", "metres"],
+      "properties": {
+        "kind": { "enum": ["camera_height", "known_length"] },
+        "metres": { "type": "number", "exclusiveMinimum": 0 }
+      }
+    },
+    "object": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "required": ["path", "transform"],
+          "properties": {
+            "path": { "type": "string" },
+            "transform": {
+              "type": "object",
+              "required": ["position", "rotation_y_deg", "scale"],
+              "properties": {
+                "position": { "$ref": "#/$defs/vec3" },
+                "rotation_y_deg": { "type": "number" },
+                "scale": { "type": "number", "exclusiveMinimum": 0 }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "proxies": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": ["type", "id", "point", "normal", "material"],
+            "properties": {
+              "type": { "const": "plane" },
+              "id": { "$ref": "#/$defs/id" },
+              "point": { "$ref": "#/$defs/vec3" },
+              "normal": { "$ref": "#/$defs/vec3" },
+              "material": { "$ref": "#/$defs/material" }
+            }
+          },
+          {
+            "type": "object",
+            "required": ["type", "id", "min", "max", "material"],
+            "properties": {
+              "type": { "const": "box" },
+              "id": { "$ref": "#/$defs/id" },
+              "min": { "$ref": "#/$defs/vec3" },
+              "max": { "$ref": "#/$defs/vec3" },
+              "material": { "$ref": "#/$defs/material" }
+            }
+          }
+        ]
+      }
+    },
+    "lights": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["type", "corners", "radiance"],
+        "properties": {
+          "type": { "const": "area" },
+          "corners": { "type": "array", "items": { "$ref": "#/$defs/vec3" }, "minItems": 4, "maxItems": 4 },
+          "radiance": { "$ref": "#/$defs/rgb" }
+        }
+      }
+    },
+    "lighting": {
+      "type": "object",
+      "required": ["sh_order", "sh"],
+      "properties": {
+        "sh_order": { "enum": [1, 2] },
+        "sh": {
+          "description": "radiance SH, (order+1)^2 rows of RGB; empty until stage C has run",
+          "type": "array",
+          "items": { "$ref": "#/$defs/rgb" },
+          "anyOf": [{ "maxItems": 0 }, { "minItems": 4, "maxItems": 4 }, { "minItems": 9, "maxItems": 9 }]
+        }
+      }
+    }
+  },
+  "$defs": {
+    "vec3": { "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3 },
+    "rgb": { "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3 },
+    "mat3": { "type": "array", "items": { "$ref": "#/$defs/vec3" }, "minItems": 3, "maxItems": 3 },
+    "size": { "type": "array", "items": { "type": "integer", "minimum": 1 }, "minItems": 2, "maxItems": 2 },
+    "id": { "type": "integer", "minimum": 0 },
+    "material": {
+      "type": "object",
+      "required": ["albedo", "roughness"],
+      "properties": {
+        "albedo": { "$ref": "#/$defs/rgb" },
+        "roughness": { "type": "number", "minimum": 0, "maximum": 1 }
+      }
+    }
+  }
+}

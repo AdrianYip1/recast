@@ -1,0 +1,60 @@
+{
+  "mode": "revolution",
+  "photo": "C:\\Users\\catsr\\AppData\\Local\\Temp\\tmpltfswtlw\\vase.png",
+  "measurement": {
+    "height_m": 0.3
+  },
+  "clicks_px": {
+    "ground_contact": [
+      319.5,
+      286.13052993781355
+    ],
+    "axis_top": [
+      319.5,
+      163.7477595961804
+    ]
+  },
+  "rect": [
+    220,
+    140,
+    200,
+    260
+  ],
+  "camera": {
+    "how": "level camera fallback (pitch -20.0 deg)",
+    "fx": 600.0,
+    "fy": 600.0,
+    "cx": 319.5,
+    "cy": 239.5,
+    "rotation": [
+      [
+        -1.0,
+        0.0,
+        0.0
+      ],
+      [
+        0.0,
+        0.9396926207859084,
+        0.3420201433256687
+      ],
+      [
+        0.0,
+        0.3420201433256687,
+        -0.9396926207859084
+      ]
+    ],
+    "position": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "image_size": [
+      640,
+      480
+    ]
+  },
+  "scale_units_to_m": 0.5999999999999998,
+  "reprojection_iou": 0.9680705808213423,
+  "vertices": 3074,
+  "faces": 6144
+}

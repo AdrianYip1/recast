@@ -12,11 +12,19 @@ dependencies = [
     "opencv-python>=4.8",
     "pillow>=10.0",
     "trimesh>=4.0",
+    "scikit-image>=0.22",
+    "scipy>=1.11",
+    "shapely>=2.0",
+    "mapbox-earcut>=1.0",
 ]
 
 [project.optional-dependencies]
 raw = ["rawpy>=0.19"]
-dev = ["pytest>=8.0"]
+lens = ["lensfunpy>=1.15"]
+dev = ["pytest>=8.0", "jsonschema>=4.0"]
+
+[project.scripts]
+recast = "recast.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["recast*"]

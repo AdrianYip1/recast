@@ -1,7 +1,8 @@
 # recast / python
 
-Takes the photos and builds everything the C++ engine needs: camera, room
-geometry, lighting, and the inserted object as a glTF mesh.
+Takes the photos and builds everything the engine needs. The connection to C++
+is a folder of files, not bindings: Python writes them, the engine loads them
+(and reloads when they change).
 
 ## Setup
 
@@ -9,43 +10,110 @@ geometry, lighting, and the inserted object as a glTF mesh.
 cd python
 py -3.13 -m venv .venv
 .venv\Scripts\activate
-pip install -e ".[dev]"
+pip install -e ".[dev,lens]"
 pytest
 ```
 
-Optional: `pip install -e ".[raw]"` to load camera RAW files (better than JPEG,
-since the colours are already linear).
+Extras: `lens` = lensfun database for undistortion, `raw` = camera RAW files
+(better than JPEG, the colours are already linear).
+
+## Scene folder (the contract)
+
+```
+data/<scene_name>/
+  scene.json        camera, paths, scale, proxies, lights, SH   (Python writes, engine adds proxies/lights)
+  photo.hdr         undistorted, linear float RGB scene photo   (Python)
+  object.glb        extracted object, metres, +Y up, pivot at base (Python)
+  object_mask.png   cutout alpha, for debugging                 (Python)
+  gbuffer/          normals.hdr, ids.png, depth.hdr             (engine, for the lighting fit)
+  render.png        final composite                             (engine)
+```
+
+Engine: `foto.exe data/<scene_name>/scene.json`
+
+`scene.json` is described by [`schema/scene.schema.json`](../schema/scene.schema.json)
+(both sides can validate against it). Rules: metres; world +Y up, right-handed;
+camera `rotation` is camera-to-world in engine convention (looks down -Z);
+pixel origin top-left; colours linear RGB. Python only rewrites the sections it
+owns, keeps any keys it doesn't know, and writes atomically (temp file + rename),
+so hot reload never sees half a file.
+
+`data/example/` is a complete fake room (made by `python examples/make_example.py`)
+for testing the loader before real photos exist.
+
+### gbuffer encoding (proposal, Radiance .hdr can't hold negative numbers)
+
+| file | contents |
+|---|---|
+| `normals.hdr` | world-space normal stored as `n * 0.5 + 0.5`, black = no proxy |
+| `ids.png` | 16-bit greyscale, `proxy id + 1`, 0 = no proxy |
+| `depth.hdr` | distance along the camera ray in metres (same in R, G, B), 0 = no proxy |
+
+Until the engine exports it, `light --python-gbuffer` renders the same thing from the proxies.
 
 ## Pipeline
 
-| Step | Module | What it does |
-|---|---|---|
-| 1 | `recast.io` | load photo, read focal length from EXIF, sRGB <-> linear |
-| 2 | `recast.lens` | undo radial lens distortion |
-| 3 | `recast.vanishing` | detect line segments, find vanishing points |
-| 4 | `recast.camera` | solve focal length + rotation from vanishing points |
-| 5 | `recast.scene` | planes, boxes, materials, lights -> `scene.json` |
-| 6 | `recast.lighting` | fit soft lighting (9 spherical harmonics) from shading |
-| 7 | `recast.object3d` | cut out object, inflate to mesh, remove its lighting, export `.glb` |
-
-No ML models or AI APIs anywhere, just geometry and least squares.
-
-## Output for the engine
-
-```
-output/
-  scene.json       camera, planes, boxes, lights, object transform
-  background.hdr   scene photo, undistorted, LINEAR colour (stbi_loadf can read it)
-  object.glb       object mesh + albedo texture
+```powershell
+python -m recast scene  room.jpg --name living_room --camera-height 1.45   # A
+python -m recast object mug.jpg  --name living_room --mode revolution --height 0.12        # B
+#   ... engine: click proxies + lights, export gbuffer/ ...
+python -m recast light  --name living_room                                  # C
+#   ... engine: render.png ...
+python -m recast eval   --name living_room --truth with_real_mug.jpg        # D
 ```
 
-Conventions (same as glTF):
+**A. Scene photo -> photo.hdr + camera** (`io`, `lens`, `vanishing`, `camera`)
+1. Decode to linear (RAW via rawpy, or inverse sRGB for JPEG).
+2. Undistort with lensfun (camera + lens from EXIF), or `--k1/--k2`.
+3. Focal length: solved from vanishing points, or `--trust-exif` / `--focal-mm --sensor-width-mm`.
+4. Rotation from 3 vanishing points (LSD segments + RANSAC; `--lines` to trace them by hand).
+5. Scale from `--camera-height`; floor is y = 0.
+6. OpenCV camera -> engine convention (`R_engine = R_cv * diag(1, -1, -1)`), written to scene.json.
 
-- right-handed, **+Y up**, units in **meters**
-- floor is the plane `y = 0`
-- camera looks down its local **-Z**, local +Y is up
-- `camera.rotation` is the camera-to-world 3x3 matrix, row-major
-- colours in `scene.json` are linear RGB
+**B. Object photo -> object.glb** (`recast.object`), no ML. One photo, a few
+clicks, one real measurement:
 
-`examples/` has a small fake room (`scene.json`, `background.hdr`, `object.glb`)
-to test the engine's loader with. Regenerate it with `python examples/make_example.py`.
+```powershell
+python -m recast.object mug.jpg --mode revolution --height 0.12 --out ..\data\room1
+```
+
+1. Load + calibrate like the scene photo (vanishing points of the floor/table;
+   `--lines` to trace them, or a level camera with `--pitch-deg` as fallback).
+   World scale is arbitrary until the measurement fixes it.
+2. Segment: GrabCut from a dragged box, with brush fixes (`--chroma green|blue` for backdrop shots).
+3. Click (OpenCV window; or pass `--base`, `--top`, `--corners`; `--no-ui` uses defaults):
+   ground contact, then per mode: revolution = top of the axis, box = floor corners + a top corner.
+4. Geometry, one module per mode in `recast/object/modes/`:
+
+   | mode | for | how |
+   |---|---|---|
+   | `card` | anything, fastest | upright quad at the base facing the camera, alpha cutout, double-sided |
+   | `revolution` | bottles, vases, mugs | silhouette half-width x depth / focal per height, smoothed, lathed |
+   | `box` | boxes, books, furniture | floor corners hit y = 0, edges snapped to the VP axes |
+   | `extrude` | signs, flat cut-outs | outline polygon given 10%-of-width thickness |
+   | `inflate` | rounded blobs | older rounded silhouette (`recast.object3d`) |
+
+5. Texture: projective UVs (each vertex samples the photo where it projects);
+   back-facing vertices mirror through the axis plane (back = mirrored front);
+   cropped to the mask; `--delight` divides out blurred luminance.
+6. Export: pivot at the base centre, +Y up, scaled to `--height` (or `--width`),
+   `object.glb` + `object_meta.json` (mode, clicks, camera, measurement, scores).
+7. Check: the mesh is reprojected onto the photo; `object_check.png` shows mask
+   (green) vs mesh (red) and the IoU is printed. `--compare truth.glb` adds
+   height error and Chamfer distance against a known mesh (e.g. a GLB the engine
+   screenshotted from a known camera; `tests/test_object_modes.py` does the same with a Python render).
+
+Engine side for cutout modes: `card`/`extrude` glbs use `alphaMode: MASK`
+(cutoff 0.5) and cards are `doubleSided`, so the engine needs an alpha-cutoff
+discard in the fragment shader and a no-culling path for double-sided materials.
+
+**C. Lighting fit** (`lighting`): loads photo.hdr + gbuffer, masks pixels that
+are off the proxies, clipped, highlights on glossy proxies (roughness < 0.5), or
+in the shadow of a clicked light; then one least-squares solve for the SH
+coefficients (order 1 = 4 by default, `--order 2` = 9) **and** each clicked area
+light's radiance (exact polygon-light irradiance). Writes `lighting` and the
+lights' `radiance` back into scene.json.
+
+**D. Evaluation** (`evaluate`): PSNR/SSIM of render.png vs. a ground-truth
+photo (real object placed, same tripod position), over the whole image and the
+object region (object + shadow, found where the render differs from the empty room).
