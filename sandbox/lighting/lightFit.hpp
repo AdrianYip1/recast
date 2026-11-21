@@ -63,7 +63,12 @@ namespace recast {
 	// Each light's size is then picked to match how soft the photo's shadow edges are
 	// The lights found in the photo (windows, lamps: `lights` on input, kept fixed) plus ambient, and one more light
 	// (directional sun, or a point lamp) when it explains the photo at least 2% better. Under a second
-	LightingFit fitMainLight(const SceneFile& scene, const std::vector<LightingSample>& samples, std::vector<FitLight>& lights);
+	LightingFit fitMainLight(const SceneFile& scene, const std::vector<LightingSample>& samples, std::vector<FitLight>& lights,
+							 const std::vector<enginemath::Vec3>& suns = {});
+
+	// Directions (the way the light travels) of the sun where the photo shows it: a small clipped-bright region above
+	// the horizon, seen through a window or open sky
+	std::vector<enginemath::Vec3> sunDirections(const SceneFile& scene, const LinearImage& photo);
 
 	// The lights detect found in the photo: every window (area light), and lamps whose strength isn't fitted yet (zero intensity)
 	std::vector<FitLight> emittersToFit(const SceneFile& scene);

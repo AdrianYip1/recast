@@ -493,59 +493,75 @@ recast::LightingFit recast::fitLightIntensities(const SceneFile& scene, const st
 	return fit;
 }
 
-std::vector<Vec3> recast::detectBrightSpots(const SceneFile& scene, const LinearImage& photo, int maxSpots) {
-	constexpr int cell = 4;
-	int gridWidth = photo.width / cell, gridHeight = photo.height / cell;
-	std::vector<float> luminance(static_cast<size_t>(gridWidth) * gridHeight, 0.0f);
-	float brightest = 0.0f;
+namespace {
+	struct Blob {
+		double energy = 0.0, x = 0.0, y = 0.0; // x, y: centroid in photo pixels (energy weighted, until divided)
+		int cells = 0;
+		float peak = 0.0f;
+	};
 
-	for (int gy = 0; gy < gridHeight; gy++) {
-		for (int gx = 0; gx < gridWidth; gx++) {
-			float sum = 0.0f;
-			for (int y = 0; y < cell; y++) {
-				for (int x = 0; x < cell; x++) {
-					Vec3 c = photo.at(gx * cell + x, gy * cell + y);
-					sum += 0.2126f * c.x + 0.7152f * c.y + 0.0722f * c.z;
+	// Connected regions of the brightest pixels (luminance >= relative * the brightest), brightest first
+	std::vector<Blob> brightBlobs(const recast::LinearImage& photo, float relative, int& cellCount) {
+		constexpr int cell = 4;
+		int gridWidth = photo.width / cell, gridHeight = photo.height / cell;
+		cellCount = gridWidth * gridHeight;
+		std::vector<float> luminance(static_cast<size_t>(gridWidth) * gridHeight, 0.0f);
+		float brightest = 0.0f;
+		for (int gy = 0; gy < gridHeight; gy++) {
+			for (int gx = 0; gx < gridWidth; gx++) {
+				float sum = 0.0f;
+				for (int y = 0; y < cell; y++) {
+					for (int x = 0; x < cell; x++) {
+						Vec3 c = photo.at(gx * cell + x, gy * cell + y);
+						sum += 0.2126f * c.x + 0.7152f * c.y + 0.0722f * c.z;
+					}
+				}
+				luminance[gy * gridWidth + gx] = sum / (cell * cell);
+				brightest = std::max(brightest, luminance[gy * gridWidth + gx]);
+			}
+		}
+
+		float threshold = brightest * relative;
+		std::vector<int> label(luminance.size(), -1);
+		std::vector<Blob> blobs;
+		for (int start = 0; start < static_cast<int>(luminance.size()); start++) {
+			if (label[start] >= 0 || luminance[start] < threshold) continue;
+			Blob blob;
+			std::vector<int> stack = { start };
+			label[start] = static_cast<int>(blobs.size());
+			while (!stack.empty()) {
+				int index = stack.back();
+				stack.pop_back();
+				int gx = index % gridWidth, gy = index / gridWidth;
+				blob.energy += luminance[index];
+				blob.x += (gx + 0.5) * cell * luminance[index];
+				blob.y += (gy + 0.5) * cell * luminance[index];
+				blob.cells++;
+				blob.peak = std::max(blob.peak, luminance[index]);
+				const int offsets[4][2] = { { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 } };
+				for (const auto& offset : offsets) {
+					int nx = gx + offset[0], ny = gy + offset[1];
+					if (nx < 0 || ny < 0 || nx >= gridWidth || ny >= gridHeight) continue;
+					int neighbour = ny * gridWidth + nx;
+					if (label[neighbour] >= 0 || luminance[neighbour] < threshold) continue;
+					label[neighbour] = label[start];
+					stack.push_back(neighbour);
 				}
 			}
-			luminance[gy * gridWidth + gx] = sum / (cell * cell);
-			brightest = std::max(brightest, luminance[gy * gridWidth + gx]);
-		}
-	}
-
-	float threshold = brightest * 0.9f;
-	std::vector<int> label(luminance.size(), -1);
-	struct Blob { double energy = 0.0, x = 0.0, y = 0.0; int cells = 0; };
-	std::vector<Blob> blobs;
-
-	for (int start = 0; start < static_cast<int>(luminance.size()); start++) {
-		if (label[start] >= 0 || luminance[start] < threshold) continue;
-		Blob blob;
-		std::vector<int> stack = { start };
-		label[start] = static_cast<int>(blobs.size());
-		while (!stack.empty()) {
-			int index = stack.back();
-			stack.pop_back();
-			int gx = index % gridWidth, gy = index / gridWidth;
-			blob.energy += luminance[index];
-			blob.x += (gx + 0.5) * cell * luminance[index];
-			blob.y += (gy + 0.5) * cell * luminance[index];
-			blob.cells++;
-			const int offsets[4][2] = { { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 } };
-			for (const auto& offset : offsets) {
-				int nx = gx + offset[0], ny = gy + offset[1];
-				if (nx < 0 || ny < 0 || nx >= gridWidth || ny >= gridHeight) continue;
-				int neighbour = ny * gridWidth + nx;
-				if (label[neighbour] >= 0 || luminance[neighbour] < threshold) continue;
-				label[neighbour] = label[start];
-				stack.push_back(neighbour);
+			if (blob.cells >= 3) {
+				blob.x /= blob.energy;
+				blob.y /= blob.energy;
+				blobs.push_back(blob);
 			}
 		}
-		if (blob.cells >= 3) blobs.push_back(blob);
+		std::sort(blobs.begin(), blobs.end(), [](const Blob& a, const Blob& b) { return a.energy > b.energy; });
+		return blobs;
 	}
+}
 
-	std::sort(blobs.begin(), blobs.end(), [](const Blob& a, const Blob& b) { return a.energy > b.energy; });
-
+std::vector<Vec3> recast::detectBrightSpots(const SceneFile& scene, const LinearImage& photo, int maxSpots) {
+	int cellCount = 0;
+	std::vector<Blob> blobs = brightBlobs(photo, 0.9f, cellCount);
 	const SceneCamera& camera = scene.camera;
 	float scaleX = static_cast<float>(photo.width) / static_cast<float>(scene.image_size[0]);
 	float scaleY = static_cast<float>(photo.height) / static_cast<float>(scene.image_size[1]);
@@ -554,14 +570,36 @@ std::vector<Vec3> recast::detectBrightSpots(const SceneFile& scene, const Linear
 	std::vector<Vec3> seeds;
 	for (const Blob& blob : blobs) {
 		if (static_cast<int>(seeds.size()) >= maxSpots) break;
-		float u = static_cast<float>(blob.x / blob.energy) / scaleX;
-		float v = static_cast<float>(blob.y / blob.energy) / scaleY;
-		Vec3 direction = cameraRay(camera, u, v);
+		Vec3 direction = cameraRay(camera, static_cast<float>(blob.x) / scaleX, static_cast<float>(blob.y) / scaleY);
 		RayHit hit = raycastProxies(scene.proxies, origin, direction);
 		// a window or lamp with no wall behind it in the proxies still gives a seed, a few metres out along its ray
 		seeds.push_back(hit.valid() ? hit.point + hit.normal * 0.3f : origin + direction * 3.0f);
 	}
 	return seeds;
+}
+
+// The sun, where the photo shows it: a small, clipped-bright region above the horizon whose ray reaches no furniture
+// (it's seen through a window or in open sky). Returns the way its light travels, one per candidate
+std::vector<Vec3> recast::sunDirections(const SceneFile& scene, const LinearImage& photo) {
+	int cellCount = 0;
+	std::vector<Blob> blobs = brightBlobs(photo, 0.97f, cellCount);
+	const SceneCamera& camera = scene.camera;
+	float scaleX = static_cast<float>(photo.width) / static_cast<float>(scene.image_size[0]);
+	float scaleY = static_cast<float>(photo.height) / static_cast<float>(scene.image_size[1]);
+	Vec3 origin(camera.position[0], camera.position[1], camera.position[2]);
+
+	std::vector<Vec3> suns;
+	for (const Blob& blob : blobs) {
+		if (suns.size() >= 2) break;
+		if (blob.cells > 0.015 * cellCount) continue; // a large bright area is sky or a window, not the sun's disc
+		Vec3 direction = cameraRay(camera, static_cast<float>(blob.x) / scaleX, static_cast<float>(blob.y) / scaleY);
+		if (direction.y < -0.05f) continue;           // the sun is at or above the horizon (a low sun is near it)
+		RayHit hit = raycastProxies(scene.proxies, origin, direction);
+		// glare on furniture or the floor isn't the sun
+		if (hit.valid() && (scene.proxies[hit.proxyIndex].type == "box" || hit.normal.y > 0.7f)) continue;
+		suns.push_back(-direction);
+	}
+	return suns;
 }
 
 namespace recast {
@@ -701,7 +739,7 @@ std::vector<recast::FitLight> recast::fitLightsFromScene(const SceneFile& scene)
 // where the full multi-light search takes 15 s (2 min in a debug build); most of what no light explains is colour
 // variation within the furniture
 recast::LightingFit recast::fitMainLight(const SceneFile& scene, const std::vector<LightingSample>& samples,
-										 std::vector<FitLight>& lights) {
+										 std::vector<FitLight>& lights, const std::vector<Vec3>& suns) {
 	fixedTermCache.clear();
 	struct ClearAfter { ~ClearAfter() { fixedTermCache.clear(); } } clearAfter;
 	std::vector<FitLight> found = lights;
@@ -725,7 +763,42 @@ recast::LightingFit recast::fitMainLight(const SceneFile& scene, const std::vect
 
 	double baseline = residualFor(scene, subset, found);
 	double bestResidual = baseline * 0.98;
+	// The sun, where the photo shows it, is stronger evidence than the shading fit (the boxes can't explain the real
+	// shadows of legs and frames), so when there is one that explains at least 2% of the shading it's the main light and
+	// the searches are skipped. It keeps the
+	// photo's side of the sky; its height is refined but held at least 12 degrees up, since a sun at the horizon lights
+	// nothing and the camera's pitch is the likely error. Windows or lamps that come out negative next to it are dropped
+	bool sunFromPhoto = false;
+	for (const Vec3& sun : suns) {
+		constexpr double lowest = -12.0 * PI / 180.0; // elevation of the way the light travels: negative = downwards
+		auto holdUp = [&](FitLight& light) {
+			double azimuth, elevation;
+			anglesFromDirection(light.direction, azimuth, elevation);
+			light.direction = directionFromAngles(azimuth, std::clamp(elevation, -PI / 2.0 + 0.01, lowest));
+		};
+		std::vector<FitLight> candidate = found;
+		candidate.push_back({ .directional = true, .direction = sun.normalized() });
+		holdUp(candidate.back());
+		refine(scene, subset, candidate, 0.25f);
+		holdUp(candidate.back());
+		LightingFit check = fitLightIntensities(scene, subset, candidate);
+		std::vector<FitLight> kept;
+		for (size_t l = 0; l + 1 < candidate.size(); l++) {
+			if (std::min({ check.intensities[l].x, check.intensities[l].y, check.intensities[l].z }) > 0.0f) kept.push_back(candidate[l]);
+		}
+		const Vec3& sunStrength = check.intensities.back();
+		if (std::max({ sunStrength.x, sunStrength.y, sunStrength.z }) <= 0.0f) continue;
+		kept.push_back(candidate.back());
+		double residual = residualFor(scene, subset, kept);
+		if (residual > baseline * 0.98) continue; // a bright patch of sky that lights nothing we can see: not the sun
+		lights = kept;
+		bestResidual = residual;
+		sunFromPhoto = true;
+		break;
+	}
+
 	for (bool directional : { true, false }) {
+		if (sunFromPhoto) break;
 		double residual = 0.0;
 		std::vector<FitLight> candidate = found;
 		candidate.push_back(gridSearch(scene, subset, found, directional, residual));

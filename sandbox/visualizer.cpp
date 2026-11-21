@@ -303,7 +303,7 @@ void Visualizer::detectLighting() {
 		try {
 			std::vector<recast::LightingSample> samples = recast::collectLightingSamples(sceneCopy, photo, stride);
 			job.lights = emitters;
-			job.fit = recast::fitMainLight(sceneCopy, samples, job.lights);
+			job.fit = recast::fitMainLight(sceneCopy, samples, job.lights, recast::sunDirections(sceneCopy, photo));
 		}
 		catch (const std::exception& e) {
 			job.error = e.what();
