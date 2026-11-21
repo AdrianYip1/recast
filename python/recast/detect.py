@@ -36,7 +36,7 @@ FLOOR = {"floor", "rug", "earth"}
 WALL = {"wall", "window", "door", "curtain", "painting", "mirror", "blind", "screen door", "poster",
         "bulletin board", "radiator", "sconce", "clock", "flag"}
 CEILING = {"ceiling"}
-IGNORE = {"sky", "light", "chandelier", "fan", "person", "animal"}  # hanging or moving things
+IGNORE = {"sky", "light", "chandelier", "fan", "animal"}  # hanging or moving things (people get a shape like furniture)
 # seen through windows: not part of the room
 OUTDOOR = {"tree", "grass", "plant life", "palm", "street lamp", "streetlight", "car", "bus", "truck", "van",
            "bicycle", "minibike", "building", "skyscraper", "house", "tower", "hovel", "road", "sidewalk", "path",
