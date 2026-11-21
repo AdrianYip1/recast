@@ -1,6 +1,7 @@
 #include "vkRender.hpp"
 
 foto::Render::Render(Device& device, Swapchain& swapchain, Pipeline& pipeline) :
+	device(device), swapchain(swapchain), pipeline(pipeline),
 	_device(device.getDevice()), _commandPool(createCommandPool(device)), 
 	commandBuffers(createCommandBuffers(device, _commandPool))
 {
@@ -17,7 +18,7 @@ foto::Render::~Render() {
 
 // CPU -> recording command buffer
 // GPU -> submitting/executing command buffer
-bool foto::Render::drawFrame(Device& device, Swapchain& swapchain, Pipeline& pipeline, const std::vector<std::unique_ptr<Buffer>>& vertexBuffers) {
+bool foto::Render::drawFrame(const std::vector<std::unique_ptr<Buffer>>& vertexBuffers, Buffer& indexBuffer) {
 	vkWaitForFences(device.getDevice(), 1, &inFlightFence[currentFrame], VK_TRUE, UINT64_MAX);
 
 	u32 imageIdx;
@@ -34,7 +35,7 @@ bool foto::Render::drawFrame(Device& device, Swapchain& swapchain, Pipeline& pip
 
 	VkCommandBuffer commandBuffer = commandBuffers[currentFrame];
 	vkResetCommandBuffer(commandBuffer, 0);
-	recordCommandBuffer(device, swapchain, pipeline, vertexBuffers, commandBuffer, imageIdx);
+	recordCommandBuffer(commandBuffer, imageIdx, vertexBuffers, indexBuffer);
 
 	// Submit info
 	VkSemaphore waitSemaphore[] = { imageAvailableSem[currentFrame] };
@@ -89,7 +90,7 @@ bool foto::Render::drawFrame(Device& device, Swapchain& swapchain, Pipeline& pip
 	return false;
 }
 
-void foto::Render::onSwapchainRecreated(Swapchain& swapchain) {
+void foto::Render::onSwapchainRecreated() {
 	for (VkSemaphore sem : renderFinishedSem) vkDestroySemaphore(_device, sem, nullptr);
 	renderFinishedSem.clear();
 	createRenderFinishedSems(_device, swapchain.getImages().size());
@@ -134,9 +135,8 @@ void foto::Render::createRenderFinishedSems(VkDevice device, size swapchainImage
 	}
 }
 
-void foto::Render::recordCommandBuffer(Device& device, Swapchain& swapchain,Pipeline& pipeline, 
-									   const std::vector<std::unique_ptr<Buffer>>& vertexBuffers, 
-									   VkCommandBuffer commandBuffer, u32 imageIdx) {
+void foto::Render::recordCommandBuffer(VkCommandBuffer commandBuffer, u32 imageIdx,
+									   const std::vector<std::unique_ptr<Buffer>>& vertexBuffers, Buffer& indexBuffer) {
 	VkCommandBufferBeginInfo beginInfo = {
 		.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
 	};
@@ -219,14 +219,14 @@ void foto::Render::recordCommandBuffer(Device& device, Swapchain& swapchain,Pipe
 		VkDeviceSize offsets[] = { 0 };
 
 		vkCmdBindVertexBuffers(commandBuffer, 0, 1, buffers, offsets);
+		vkCmdBindIndexBuffer(commandBuffer, indexBuffer.getBuffer(), 0, VK_INDEX_TYPE_UINT16);
 
-		u32 vertexCount = static_cast<u32>(vertexBuffer->getSize() / sizeof(Vertex));
-		vkCmdDraw(commandBuffer, vertexCount, 1, 0, 0);
+		vkCmdDrawIndexed(commandBuffer, static_cast<u32>(indexBuffer.getSize() / sizeof(u16)), 1, 0, 0, 0);
 	}
 
 	vkCmdEndRendering(commandBuffer);
 
-	// Barrier 2 -> after rendering
+	// Barrier 2 -> after renderingg 
 	VkImageMemoryBarrier2 toPresent = {
 		.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
 		.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,

@@ -13,6 +13,22 @@ foto::Buffer::~Buffer() {
 	vkFreeMemory(_device, memory, nullptr);
 };
 
+std::unique_ptr<foto::Buffer> foto::Buffer::createDeviceLocal(Device& device, VkCommandPool commandPool,
+															  const void* data, VkDeviceSize size, VkBufferUsageFlags usage) {
+	// CPU writable staging buffer
+	Buffer staging(device, size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+				   VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+	staging.upload(data, size);
+
+	// GPU only buffer, copied into from staging
+	auto result = std::make_unique<Buffer>(device, size, usage | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+										   VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+	result->copyFrom(device, commandPool, staging);
+
+	// staging dtor here
+	return result;
+}
+
 void foto::Buffer::upload(const void* data, VkDeviceSize dataSize) {
 	if (dataSize > _size) {
 		throw std::runtime_error("ERROR: vkBuffer.cpp -> upload(): data larger than buffer");
@@ -76,4 +92,55 @@ foto::u32 foto::Buffer::findMemoryType(VkPhysicalDevice physDevice, u32 typeFilt
 	}
 
 	throw std::runtime_error("ERROR: vkBuffer.cpp -> findMemoryType()");
+}
+
+void foto::Buffer::copyFrom(Device& device, VkCommandPool commandPool, Buffer& src) {
+	if (src.getSize() > _size) {
+		throw std::runtime_error("ERROR: vkBuffer.cpp -> copyFrom(): src larger than buffer");
+	}
+
+	VkCommandBufferAllocateInfo commandBufferAllocInfo = {
+		.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+		.commandPool = commandPool,
+		.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+		.commandBufferCount = 1
+	};
+
+	VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
+	if (vkAllocateCommandBuffers(_device, &commandBufferAllocInfo, &commandBuffer) != VK_SUCCESS) {
+		throw std::runtime_error("ERROR: vkBuffer.cpp -> copyFrom() allocate");
+	}
+
+	VkCommandBufferBeginInfo beginInfo = {
+		.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+		.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT
+	};
+
+	if (vkBeginCommandBuffer(commandBuffer, &beginInfo) != VK_SUCCESS) {
+		throw std::runtime_error("ERROR: vkBuffer.cpp -> copyFrom() begin");
+	}
+
+	VkBufferCopy copyRegion = {
+		.size = src.getSize(),
+	};
+
+	vkCmdCopyBuffer(commandBuffer, src.getBuffer(), buffer, 1, &copyRegion);
+
+	if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS) {
+		throw std::runtime_error("ERROR: vkBuffer.cpp -> copyFrom() end");
+	}
+
+	VkSubmitInfo submitInfo = {
+		.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+		.commandBufferCount = 1,
+		.pCommandBuffers = &commandBuffer
+	};
+
+	VkQueue queue = device.getGraphicsQ();
+	if (vkQueueSubmit(queue, 1, &submitInfo, VK_NULL_HANDLE) != VK_SUCCESS) {
+		throw std::runtime_error("ERROR: vkBuffer.cpp -> copyFrom() submit");
+	}
+	vkQueueWaitIdle(queue);
+
+	vkFreeCommandBuffers(_device, commandPool, 1, &commandBuffer);
 }

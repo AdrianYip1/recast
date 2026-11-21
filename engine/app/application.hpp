@@ -39,5 +39,6 @@ namespace foto {
 		std::unique_ptr<Pipeline> pipeline;
 		std::unique_ptr<Render> render;
 		std::vector<std::unique_ptr<Buffer>> vertexBuffers;
+		std::unique_ptr<Buffer> indexBuffer;
 	};
 } // namespace foto

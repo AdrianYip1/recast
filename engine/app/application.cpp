@@ -11,9 +11,14 @@
 #include "../rhi_vulkan/vkVertex.hpp"
 
 static const std::vector<foto::Vertex> vertices = {
-	{{0.0f, -0.5f}, {1.0f, 0.0f, 0.0f}},
-	{{0.5f, 0.5f}, {0.0f, 1.0f, 0.0f}},
-	{{-0.5f, 0.5f}, {1.0f, 0.0f, 1.0f}}
+	{{-0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}},
+	{{0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}},
+	{{0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}},
+	{{-0.5f, 0.5f}, {1.0f, 1.0f, 1.0f}}
+};
+
+static const std::vector<foto::u16> indices = {
+	0, 1, 2, 2, 3, 0
 };
 
 foto::Application::Application(const ApplicationConfig& config) :
@@ -27,12 +32,14 @@ foto::Application::Application(const ApplicationConfig& config) :
 			})),
 	render(std::make_unique<Render>(*device, *swapchain, *pipeline))
 {
-	// handle vertex buffers
-	VkDeviceSize bytes = sizeof(Vertex) * vertices.size();
-	auto vertexBuffer = std::make_unique<Buffer>(*device, bytes, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-	vertexBuffer->upload(vertices.data(), bytes);
-	vertexBuffers.push_back(std::move(vertexBuffer));
+	// handle buffers
+	VkDeviceSize vertexBytes = sizeof(Vertex) * vertices.size();
+	vertexBuffers.push_back(Buffer::createDeviceLocal(*device, render->getCommandPool(),
+		vertices.data(), vertexBytes, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT));
+
+	VkDeviceSize indexBytes = sizeof(u16) * indices.size();
+	indexBuffer = Buffer::createDeviceLocal(*device, render->getCommandPool(),
+		indices.data(), indexBytes, VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
 }
 
 foto::Application::~Application() {
@@ -45,11 +52,11 @@ void foto::Application::run() {
 		window->pollEvents();
 		onUpdate(0.0f);
 
-		bool outOfDate = render->drawFrame(*device, *swapchain, *pipeline, vertexBuffers);
+		bool outOfDate = render->drawFrame(vertexBuffers, *indexBuffer);
 		if (outOfDate || window->getFramebufferResized()) {
 			window->setFramebufferResized(false);
 			swapchain->recreate();
-			render->onSwapchainRecreated(*swapchain);
+			render->onSwapchainRecreated();
 		}
 	}
 	vkDeviceWaitIdle(device->getDevice());

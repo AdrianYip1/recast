@@ -20,11 +20,17 @@ namespace foto {
 		Render& operator=(const Render& other) = delete;
 
 		// Returns true if the swapchain is out of date / suboptimal and must be recreated
-		bool drawFrame(Device& device, Swapchain& swapchain, Pipeline& pipeline, const std::vector<std::unique_ptr<Buffer>>& vertexBuffers);
+		bool drawFrame(const std::vector<std::unique_ptr<Buffer>>& vertexBuffers, Buffer& indexBuffer);
 
 		// Call after Swapchain::recreate() (image count may change)
-		void onSwapchainRecreated(Swapchain& swapchain);
+		void onSwapchainRecreated();
+
+		VkCommandPool getCommandPool() { return _commandPool; };
 	private:
+		Device& device;
+		Swapchain& swapchain;
+		Pipeline& pipeline;
+
 		VkDevice _device = VK_NULL_HANDLE;
 		VkCommandPool _commandPool = VK_NULL_HANDLE;
 		std::vector<VkCommandBuffer> commandBuffers;
@@ -37,7 +43,8 @@ namespace foto {
 
 		void createSyncObjects(VkDevice device, size swapchainImageCount);
 		void createRenderFinishedSems(VkDevice device, size swapchainImageCount);
-		void recordCommandBuffer(Device& device, Swapchain& swapchain, Pipeline& pipeline, const std::vector<std::unique_ptr<Buffer>>& vertexBuffers, VkCommandBuffer commandBuffer, u32 imageIdx);
+		void recordCommandBuffer(VkCommandBuffer commandBuffer, u32 imageIdx,
+								 const std::vector<std::unique_ptr<Buffer>>& vertexBuffers, Buffer& indexBuffer);
 		static VkCommandPool createCommandPool(Device& device);
 		static std::vector<VkCommandBuffer> createCommandBuffers(Device& device, VkCommandPool commandPool);
 	};

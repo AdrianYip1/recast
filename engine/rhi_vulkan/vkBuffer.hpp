@@ -14,8 +14,14 @@ namespace foto {
 		Buffer(const Buffer& other) = delete;
 		Buffer& operator=(const Buffer& other) = delete;
 
+		// GPU (DEVICE_LOCAL) buffer filled with data via staging buffer. 
+		static std::unique_ptr<Buffer> createDeviceLocal(Device& device, VkCommandPool commandPool,
+														 const void* data, VkDeviceSize size, VkBufferUsageFlags usage);
+
 		// Copies raw bytes into the buffer (memory must be HOST_VISIBLE)
 		void upload(const void* data, VkDeviceSize dataSize);
+
+		void copyFrom(Device& device, VkCommandPool commandPool, Buffer& src);
 
 		VkBuffer getBuffer() { return buffer; };
 		VkDeviceSize getSize() { return _size; };
