@@ -24,12 +24,16 @@ file(GLOB SHADER_SOURCES
     ${SHADER_DIR}/*.frag
     ${SHADER_DIR}/*.comp)
 
+# Shared code for #include "file.glsl": every shader recompiles when one of these changes
+file(GLOB SHADER_INCLUDES ${SHADER_DIR}/*.glsl)
+
 set(SPV_FILES "")
 foreach(SHADER ${SHADER_SOURCES})
     add_custom_command(
         OUTPUT ${SHADER}.spv
-        COMMAND ${Vulkan_GLSLC_EXECUTABLE} ${SHADER} -o ${SHADER}.spv
-        DEPENDS ${SHADER}
+        # vulkan1.3: SPIR-V 1.6, needed later for ray queries. -I: lets shaders #include from engine/shaders
+        COMMAND ${Vulkan_GLSLC_EXECUTABLE} --target-env=vulkan1.3 -I ${SHADER_DIR} ${SHADER} -o ${SHADER}.spv
+        DEPENDS ${SHADER} ${SHADER_INCLUDES}
         COMMENT "compiling ${SHADER}")
     list(APPEND SPV_FILES ${SHADER}.spv)
 endforeach()
