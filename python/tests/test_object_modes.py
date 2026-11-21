@@ -240,3 +240,18 @@ def test_glass_glb_has_transmission(tmp_path):
     assert ext["KHR_materials_transmission"]["transmissionFactor"] == 1.0
     assert ext["KHR_materials_ior"]["ior"] == 1.5
     assert len(trimesh.load(tmp_path / "glass.glb", force="mesh").vertices) > 0
+
+
+def test_neutral_light_takes_out_the_rooms_colour_but_not_too_much():
+    from recast.object.texture import neutral_light
+    from recast.io import luminance
+    rng = np.random.default_rng(0)
+    grey = rng.uniform(0.05, 0.6, (120, 160, 1)) * np.ones(3)
+    warm = grey * np.array([1.2, 1.0, 0.75])                       # under tungsten-ish light
+    gains = neutral_light(warm)
+    np.testing.assert_allclose(gains * np.array([1.2, 1.0, 0.75]) / (gains * np.array([1.2, 1.0, 0.75])).mean(),
+                               1.0, atol=0.03)                     # grey again
+    assert luminance(gains) == pytest.approx(1.0)                  # brightness kept
+    green = grey * np.array([0.3, 1.0, 0.3])                       # a room that really is green: only partly undone
+    corrected = neutral_light(green) * np.array([0.3, 1.0, 0.3])
+    assert corrected[0] < 0.6 * corrected[1]                       # still clearly green

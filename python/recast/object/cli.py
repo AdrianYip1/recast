@@ -28,7 +28,7 @@ from .export import export_glass_glb, export_glb, normalize, write_meta
 from .modes import build_box, build_card, build_extrude, build_revolution
 from .placement import base_point, height_from_click, mask_bottom_center, mask_top_above
 from .segment import chroma_key, grabcut, salient_alpha, soft_alpha
-from .texture import back_side_fill, crop_texture, delight, projective_uv
+from .texture import back_side_fill, crop_texture, delight, neutral_light, projective_uv
 
 DEFAULT_DATA_ROOT = Path(__file__).resolve().parents[3] / "data"
 
@@ -235,7 +235,12 @@ def _run_generated(args, out: Path, img: np.ndarray, mask: np.ndarray, alpha, sh
     if not (height or width):
         sys.exit("give --height or --width in metres")
     a = alpha if alpha is not None else mask.astype(np.float32)
+    gains = np.ones(3)
+    if not args.keep_shading:                     # the light's colour comes off with its shading
+        gains = neutral_light(img, exclude=a > 0.1)
+        img = img * gains
     mesh, tex, info = build_generated(to_srgb8(img), a, remove_lighting=not args.keep_shading)
+    info["white_balance_gains"] = [float(g) for g in gains]
     lo, hi = mesh.bounds
     base = np.array([0.5 * (lo[0] + hi[0]), lo[1], 0.5 * (lo[2] + hi[2])])
     mesh, scale = normalize(mesh, base, height=height, width=width)
