@@ -9,6 +9,8 @@
 #include "vkSwapchain.hpp"
 #include "vkPipeline.hpp"
 
+#include "vkBuffer.hpp"
+
 namespace foto {
 	class Render {
 	public:
@@ -18,7 +20,7 @@ namespace foto {
 		Render& operator=(const Render& other) = delete;
 
 		// Returns true if the swapchain is out of date / suboptimal and must be recreated
-		bool drawFrame(Device& device, Swapchain& swapchain, Pipeline& pipeline);
+		bool drawFrame(Device& device, Swapchain& swapchain, Pipeline& pipeline, const std::vector<std::unique_ptr<Buffer>>& vertexBuffers);
 
 		// Call after Swapchain::recreate() (image count may change)
 		void onSwapchainRecreated(Swapchain& swapchain);
@@ -35,7 +37,7 @@ namespace foto {
 
 		void createSyncObjects(VkDevice device, size swapchainImageCount);
 		void createRenderFinishedSems(VkDevice device, size swapchainImageCount);
-		void recordCommandBuffer(Swapchain& swapchain, Pipeline& pipeline, VkCommandBuffer commandBuffer, u32 imageIdx);
+		void recordCommandBuffer(Device& device, Swapchain& swapchain, Pipeline& pipeline, const std::vector<std::unique_ptr<Buffer>>& vertexBuffers, VkCommandBuffer commandBuffer, u32 imageIdx);
 		static VkCommandPool createCommandPool(Device& device);
 		static std::vector<VkCommandBuffer> createCommandBuffers(Device& device, VkCommandPool commandPool);
 	};

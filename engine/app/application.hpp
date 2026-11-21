@@ -9,6 +9,7 @@ namespace foto {
 	class Swapchain;
 	class Pipeline;
 	class Render;
+	class Buffer;
 
 	struct ApplicationConfig {
 		const char* title = "foto";
@@ -37,5 +38,6 @@ namespace foto {
 		std::unique_ptr<Swapchain> swapchain;
 		std::unique_ptr<Pipeline> pipeline;
 		std::unique_ptr<Render> render;
+		std::vector<std::unique_ptr<Buffer>> vertexBuffers;
 	};
 } // namespace foto

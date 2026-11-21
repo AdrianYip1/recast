@@ -52,7 +52,8 @@ add_library(foto_engine STATIC
     engine/rhi_vulkan/vkDevice.cpp
     engine/rhi_vulkan/vkSwapchain.cpp 
     engine/rhi_vulkan/vkRender.cpp
-    engine/rhi_vulkan/vkPipeline.cpp "engine/rhi_vulkan/vkVertex.cpp")
+    engine/rhi_vulkan/vkPipeline.cpp
+    engine/rhi_vulkan/vkBuffer.cpp)
 
 target_include_directories(foto_engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 

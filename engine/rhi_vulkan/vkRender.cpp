@@ -17,7 +17,7 @@ foto::Render::~Render() {
 
 // CPU -> recording command buffer
 // GPU -> submitting/executing command buffer
-bool foto::Render::drawFrame(Device& device, Swapchain& swapchain, Pipeline& pipeline) {
+bool foto::Render::drawFrame(Device& device, Swapchain& swapchain, Pipeline& pipeline, const std::vector<std::unique_ptr<Buffer>>& vertexBuffers) {
 	vkWaitForFences(device.getDevice(), 1, &inFlightFence[currentFrame], VK_TRUE, UINT64_MAX);
 
 	u32 imageIdx;
@@ -34,7 +34,7 @@ bool foto::Render::drawFrame(Device& device, Swapchain& swapchain, Pipeline& pip
 
 	VkCommandBuffer commandBuffer = commandBuffers[currentFrame];
 	vkResetCommandBuffer(commandBuffer, 0);
-	recordCommandBuffer(swapchain, pipeline, commandBuffer, imageIdx);
+	recordCommandBuffer(device, swapchain, pipeline, vertexBuffers, commandBuffer, imageIdx);
 
 	// Submit info
 	VkSemaphore waitSemaphore[] = { imageAvailableSem[currentFrame] };
@@ -134,7 +134,9 @@ void foto::Render::createRenderFinishedSems(VkDevice device, size swapchainImage
 	}
 }
 
-void foto::Render::recordCommandBuffer(Swapchain& swapchain,Pipeline& pipeline, VkCommandBuffer commandBuffer, u32 imageIdx) {
+void foto::Render::recordCommandBuffer(Device& device, Swapchain& swapchain,Pipeline& pipeline, 
+									   const std::vector<std::unique_ptr<Buffer>>& vertexBuffers, 
+									   VkCommandBuffer commandBuffer, u32 imageIdx) {
 	VkCommandBufferBeginInfo beginInfo = {
 		.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
 	};
@@ -211,7 +213,16 @@ void foto::Render::recordCommandBuffer(Swapchain& swapchain,Pipeline& pipeline, 
 	};
 	vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 
-	vkCmdDraw(commandBuffer, 3, 1, 0, 0);
+	// Vertex buffers: bind + draw each one
+	for (const std::unique_ptr<Buffer>& vertexBuffer : vertexBuffers) {
+		VkBuffer buffers[] = { vertexBuffer->getBuffer() };
+		VkDeviceSize offsets[] = { 0 };
+
+		vkCmdBindVertexBuffers(commandBuffer, 0, 1, buffers, offsets);
+
+		u32 vertexCount = static_cast<u32>(vertexBuffer->getSize() / sizeof(Vertex));
+		vkCmdDraw(commandBuffer, vertexCount, 1, 0, 0);
+	}
 
 	vkCmdEndRendering(commandBuffer);
 
