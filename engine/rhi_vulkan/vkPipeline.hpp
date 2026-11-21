@@ -17,6 +17,6 @@ namespace foto {
 		Pipeline& operator=(const Pipeline& other) = delete;
 
 	private:
-
+		static std::vector<VkShaderModule> createShaderModules(Device& device, const std::vector<std::vector<char>>& code);
 	};
 } // namespace foto
