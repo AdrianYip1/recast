@@ -25,6 +25,8 @@ namespace foto {
 		void copyFrom(Device& device, VkCommandPool commandPool, Buffer& src);
 
 		VkBuffer getBuffer() { return buffer; };
+		// Needs VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT
+		VkDeviceAddress getDeviceAddress();
 		VkDeviceSize getSize() { return _size; };
 
 	private:
@@ -34,6 +36,6 @@ namespace foto {
 		VkDeviceMemory memory = VK_NULL_HANDLE;
 
 		static VkBuffer createBuffer(Device& device, VkDeviceSize size, VkBufferUsageFlags usage);
-		static VkDeviceMemory allocateMemory(Device& device, VkBuffer buffer, VkMemoryPropertyFlags memoryProperties);
+		static VkDeviceMemory allocateMemory(Device& device, VkBuffer buffer, VkBufferUsageFlags usage, VkMemoryPropertyFlags memoryProperties);
 	};
 } // namespace foto

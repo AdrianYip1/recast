@@ -15,10 +15,12 @@ namespace foto {
 	inline constexpr u32 MAX_LIGHTS = 4;
 	inline constexpr u32 SHADOW_FACE_RESOLUTION = 512;
 
-	// Point light with a cube shadow map: 6 faces (+X -X +Y -Y +Z -Z) side by side in a shadow atlas row
+	// One shadow atlas row per light. Point lights: a cube map, 6 faces (+X -X +Y -Y +Z -Z) side by side.
+	// Directional lights: one orthographic map in face 0
 	struct GpuLight {
 		alignas(16) enginemath::Vec4 position;  // xyz, w = 1 if it casts shadows
-		alignas(16) enginemath::Vec4 intensity; // rgb radiant intensity (irradiance = intensity * cos / distance^2)
+		alignas(16) enginemath::Vec4 intensity; // rgb, w = 1 for directional. Point: irradiance = intensity * cos / distance^2, directional: intensity * cos
+		alignas(16) enginemath::Vec4 direction; // xyz = the way a directional light travels, w = Light::size
 		alignas(16) enginemath::Mat4 faceViewProj[6] = {
 			enginemath::Mat4::identity(), enginemath::Mat4::identity(), enginemath::Mat4::identity(),
 			enginemath::Mat4::identity(), enginemath::Mat4::identity(), enginemath::Mat4::identity()
@@ -31,8 +33,8 @@ namespace foto {
 		alignas(16) enginemath::Mat4 proj;
 		alignas(16) enginemath::Vec4 cameraPos; // xyz = world position
 		alignas(16) enginemath::Vec4 lightDir;  // xyz = direction the light travels, used when there are no point lights
-		alignas(16) enginemath::Vec4 exposure;  // x = linear multiplier (2^EV)
-		alignas(16) enginemath::Vec4 whiteBalance; // rgb gains
+		alignas(16) enginemath::Vec4 exposure;  // x = linear multiplier (2^EV), y = camera grain, z = camera blur (px), w = 1 to apply them
+		alignas(16) enginemath::Vec4 whiteBalance; // rgb gains, w = path traced photo's texture slot (camera matching)
 		alignas(16) enginemath::Vec4 ambient;   // rgb irradiance from everything that isn't a point light
 		alignas(16) enginemath::Vec4 viewport;  // 3D view rect in framebuffer pixels: x, y, width, height
 		alignas(16) u32 lightInfo[4] = {};      // light count, static shadow atlas texture, dynamic shadow atlas texture, face resolution
@@ -43,7 +45,10 @@ namespace foto {
 	struct DrawPush {
 		enginemath::Mat4 model;
 		u32 materialIndex;
+		u32 _pad[3] = {};
+		enginemath::Vec4 tint = { 1.0f, 1.0f, 1.0f, 1.0f }; // multiplies the lighting of the lit shader
 	};
+	static_assert(sizeof(DrawPush) == 96);
 
 	inline constexpr VkPushConstantRange DRAW_PUSH_RANGE = {
 		.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
@@ -65,7 +70,7 @@ namespace foto {
 		f32 roughness = 1.0f;
 		f32 metallic = 0.0f;
 		u32 baseColorTexture = DEFAULT_TEXTURE;
-		u32 _pad = 0;
+		f32 specular = 1.0f; // KHR_materials_specular factor: 0 = no gloss at all (a purely diffuse surface)
 	};
 	static_assert(sizeof(Material) == 48);
 
@@ -81,14 +86,52 @@ namespace foto {
 		u32 materialOverride = NO_MATERIAL_OVERRIDE;
 		Pipeline* pipeline = nullptr;
 		ShadowCaster shadowCaster = ShadowCaster::None;
+		enginemath::Vec3 tint = enginemath::Vec3(1.0f, 1.0f, 1.0f);
 	};
 
-	struct PointLight {
+	// Path tracing: static casters are the photo's surfaces, dynamic casters the inserted objects
+	inline constexpr u32 MAX_TRACE_INSTANCES = 256;
+	inline constexpr u32 MAX_TRACE_GEOMETRIES = 1024;
+	inline constexpr u32 MAX_TRACE_SAMPLES = 1024;
+
+	// One per (instance, submesh): set 1, binding 3 ("Geometries" in pathtrace.comp)
+	struct GpuGeometry {
+		VkDeviceAddress vertexAddress;
+		VkDeviceAddress indexAddress;
+		u32 firstIndex;
+		u32 materialIndex;
+		u32 dynamic;
+		u32 _pad = 0;
+	};
+	static_assert(sizeof(GpuGeometry) == 32);
+
+	struct TracePush {
+		u32 sampleIndex;
+		u32 photoTexture;
+		u32 trace; // 0 = only show the accumulated result
+		u32 _pad = 0;
+	};
+
+	inline constexpr VkPushConstantRange TRACE_PUSH_RANGE = {
+		.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+		.offset = 0,
+		.size = sizeof(TracePush)
+	};
+
+	enum class LightType : u32 { Point, Directional };
+
+	struct Light {
+		LightType type = LightType::Point;
 		enginemath::Vec3 position;
+		enginemath::Vec3 direction = enginemath::Vec3(0.0f, -1.0f, 0.0f);
 		enginemath::Vec3 intensity;
+		f32 size = 0.0f; // point: radius in metres, directional: angular radius in radians. Path tracing only (soft shadows)
 		bool castsShadows = true;
 	};
 
-	// View-projections of the 6 cube faces around a light, in the atlas face order
+	// View-projections of the 6 cube faces around a point light, in the atlas face order
 	void shadowFaceMatrices(const enginemath::Vec3& position, enginemath::Mat4 out[6]);
+
+	// Orthographic view-projection for a directional light covering a sphere of `radius` around `center`
+	enginemath::Mat4 shadowDirectionalMatrix(const enginemath::Vec3& direction, const enginemath::Vec3& center, f32 radius);
 } // namespace foto

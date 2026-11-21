@@ -3,7 +3,7 @@
 foto::Buffer::Buffer(Device& device, VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags memoryProperties) :
 	_device(device.getDevice()), _size(size),
 	buffer(createBuffer(device, size, usage)),
-	memory(allocateMemory(device, buffer, memoryProperties))
+	memory(allocateMemory(device, buffer, usage, memoryProperties))
 {
 
 };
@@ -72,12 +72,18 @@ VkBuffer foto::Buffer::createBuffer(Device& device, VkDeviceSize size, VkBufferU
 	return buffer;
 }
 
-VkDeviceMemory foto::Buffer::allocateMemory(Device& device, VkBuffer buffer, VkMemoryPropertyFlags memoryProperties) {
+VkDeviceMemory foto::Buffer::allocateMemory(Device& device, VkBuffer buffer, VkBufferUsageFlags usage, VkMemoryPropertyFlags memoryProperties) {
 	VkMemoryRequirements memReq;
 	vkGetBufferMemoryRequirements(device.getDevice(), buffer, &memReq);
 
+	VkMemoryAllocateFlagsInfo flagsInfo = {
+		.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO,
+		.flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT
+	};
+
 	VkMemoryAllocateInfo allocInfo{
 		.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+		.pNext = (usage & VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT) ? &flagsInfo : nullptr,
 		.allocationSize = memReq.size,
 		.memoryTypeIndex = device.findMemoryType(memReq.memoryTypeBits, memoryProperties)
 	};
@@ -91,6 +97,11 @@ VkDeviceMemory foto::Buffer::allocateMemory(Device& device, VkBuffer buffer, VkM
 	vkBindBufferMemory(device.getDevice(), buffer, memory, 0);
 
 	return memory;
+}
+
+VkDeviceAddress foto::Buffer::getDeviceAddress() {
+	VkBufferDeviceAddressInfo info = { .sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .buffer = buffer };
+	return vkGetBufferDeviceAddress(_device, &info);
 }
 
 void foto::Buffer::copyFrom(Device& device, VkCommandPool commandPool, Buffer& src) {

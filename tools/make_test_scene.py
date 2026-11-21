@@ -10,7 +10,7 @@ Outputs (in the target folder):
   photo_with_object.hdr  ground truth with the object physically present
   ground_truth.json      true light + object placement (for evaluation only, the engine doesn't read it)
 
-usage: python tools/make_test_scene.py data/sample
+usage: python tools/make_test_scene.py data/sample [--light=directional] [--light-size=S] [--blur=PX] [--grain=G]
 """
 import json
 import struct
@@ -34,6 +34,12 @@ BOX_MAX = np.array([0.9, 0.75, -0.6])
 
 LIGHT_POS = np.array([-1.2, 1.6, 0.6])
 LIGHT_INTENSITY = np.array([3.4, 3.2, 2.9])
+SUN_DIRECTION = np.array([-0.55, -0.75, -0.35]) / np.linalg.norm([-0.55, -0.75, -0.35])
+SUN_IRRADIANCE = np.array([1.9, 1.8, 1.6])
+LIGHT_TYPE = "point"
+LIGHT_SIZE = 0.0  # point: radius in metres, directional: angular radius in degrees (soft shadows)
+CAMERA_BLUR = 0.0   # gaussian sigma in pixels applied to both photos
+CAMERA_GRAIN = 0.0  # noise sigma in sqrt(linear) units, a different draw for each photo
 AMBIENT = np.array([0.10, 0.11, 0.13])
 
 CAN_RADIUS = 0.12
@@ -152,65 +158,191 @@ def intersect_can(origins, directions):
     return t, normal, u, v, is_side
 
 
+def light_shape_offsets(count=64):
+    """Evenly spread unit vectors: the whole sphere for a point light, a cap of LIGHT_SIZE degrees around +z for the sun"""
+    if LIGHT_SIZE <= 0:
+        return np.array([[0.0, 0.0, 1.0]]) if LIGHT_TYPE == "directional" else np.zeros((1, 3))
+    k = np.arange(count) + 0.5
+    cap = np.cos(np.radians(LIGHT_SIZE)) if LIGHT_TYPE == "directional" else -1.0
+    z = 1 - (1 - cap) * k / count
+    r = np.sqrt(np.maximum(0, 1 - z * z))
+    phi = np.pi * (3 - np.sqrt(5)) * np.arange(count)
+    return np.stack([r * np.cos(phi), r * np.sin(phi), z], axis=-1)
+
+
+def direct_light(points, normals, with_can):
+    shadow_origins = points + normals * 1e-3
+    if LIGHT_TYPE == "directional":
+        light_dir = np.broadcast_to(-SUN_DIRECTION, points.shape)
+        distance = np.full(points.shape[:-1], np.inf)
+        axis = -SUN_DIRECTION
+        tangent = np.cross(axis, [0.0, 1.0, 0.0])
+        tangent /= np.linalg.norm(tangent)
+        frame = np.stack([tangent, np.cross(axis, tangent), axis])
+    else:
+        to_light = LIGHT_POS - points
+        distance = np.linalg.norm(to_light, axis=-1)
+        light_dir = to_light / np.maximum(distance, 1e-6)[..., None]
+
+    offsets = light_shape_offsets()
+    visible = np.zeros(points.shape[:-1])
+    for offset in offsets:
+        if LIGHT_TYPE == "directional":
+            sample_dir = np.broadcast_to(offset @ frame, points.shape)
+            sample_distance = distance
+        else:
+            to_sample = LIGHT_POS + offset * LIGHT_SIZE - shadow_origins
+            sample_distance = np.linalg.norm(to_sample, axis=-1)
+            sample_dir = to_sample / np.maximum(sample_distance, 1e-6)[..., None]
+        blocked = intersect_box(shadow_origins, sample_dir)[0] < sample_distance
+        if with_can:
+            blocked |= intersect_can(shadow_origins, sample_dir)[0] < sample_distance
+        visible += ~blocked
+    visible /= len(offsets)
+
+    cosine = np.clip(np.sum(normals * light_dir, axis=-1), 0.0, None)
+    if LIGHT_TYPE == "directional":
+        return SUN_IRRADIANCE * (cosine * visible)[..., None]
+    return LIGHT_INTENSITY * (cosine * visible / np.maximum(distance, 1e-3) ** 2)[..., None]
+
+
+def can_albedo_at(cu, cv, is_side):
+    return np.where(is_side[..., None], can_label(cu, cv), can_label(0.5, 0.5))
+
+
+def ambient_near_can(points, normals, steps=16):
+    """Ambient irradiance with the can in the way: AMBIENT arrives evenly from the room, except along rays that hit
+    the can, which bring its diffuse light instead (contact shadow + bounce). Stratified cosine-weighted directions."""
+    helper = np.where(np.abs(normals[:, :1]) > 0.5, [0.0, 1.0, 0.0], [1.0, 0.0, 0.0])
+    tangent = np.cross(normals, helper)
+    tangent /= np.linalg.norm(tangent, axis=-1, keepdims=True)
+    bitangent = np.cross(normals, tangent)
+    origins = points + normals * 1e-3
+
+    total = np.zeros(points.shape)
+    for i in range(steps):
+        for j in range(steps):
+            u = (i + 0.5) / steps
+            phi = 2 * np.pi * (j + 0.5) / steps
+            r = np.sqrt(u)
+            directions = tangent * (r * np.cos(phi)) + bitangent * (r * np.sin(phi)) + normals * np.sqrt(1 - u)
+            t, can_normal, cu, cv, is_side = intersect_can(origins, directions)
+            hit = np.isfinite(t)
+            incoming = np.broadcast_to(AMBIENT, points.shape).copy()
+            if hit.any():
+                p = origins[hit] + directions[hit] * t[hit][:, None]
+                albedo = can_albedo_at(cu[hit], cv[hit], is_side[hit])
+                incoming[hit] = albedo * (AMBIENT + direct_light(p, can_normal[hit], with_can=False))
+            total += incoming
+    return total / (steps * steps)
+
+
+def trace_room(origins, directions):
+    """Closest hit on the floor, walls and box: t (inf on a miss), albedo, normal facing the ray"""
+    best_t = np.full(directions.shape[:-1], np.inf)
+    albedo = np.zeros(directions.shape)
+    normal = np.zeros(directions.shape)
+
+    def consider(t, surface_albedo, surface_normal):
+        nonlocal best_t
+        closer = np.isfinite(t) & (t > 1e-4) & (t < best_t)
+        best_t = np.where(closer, t, best_t)
+        albedo[closer] = surface_albedo[closer] if np.ndim(surface_albedo) == directions.ndim else surface_albedo
+        normal[closer] = surface_normal[closer] if np.ndim(surface_normal) == directions.ndim else surface_normal
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        t = (FLOOR_Y - origins[..., 1]) / directions[..., 1]
+        p = origins + directions * t[..., None]
+        checker = ((np.floor(p[..., 0] / 0.5) + np.floor(p[..., 2] / 0.5)) % 2)[..., None]
+        consider(np.where(t > 0, t, np.inf), np.where(checker > 0, [0.55, 0.52, 0.48], [0.30, 0.28, 0.26]), [0, 1, 0])
+
+        t = (BACK_WALL_Z - origins[..., 2]) / directions[..., 2]
+        p = origins + directions * t[..., None]
+        wall = np.where(grid_lines(p[..., 0], p[..., 1])[..., None], [0.15, 0.15, 0.18], [0.62, 0.66, 0.72])
+        consider(np.where((t > 0) & (p[..., 1] >= FLOOR_Y), t, np.inf), wall, [0, 0, 1])
+
+        t = (LEFT_WALL_X - origins[..., 0]) / directions[..., 0]
+        p = origins + directions * t[..., None]
+        wall = np.where(grid_lines(p[..., 2], p[..., 1])[..., None], [0.18, 0.12, 0.10], [0.72, 0.60, 0.52])
+        consider(np.where((t > 0) & (p[..., 1] >= FLOOR_Y) & (p[..., 2] >= BACK_WALL_Z), t, np.inf), wall, [1, 0, 0])
+
+    t_box, axis = intersect_box(origins, directions)
+    box_normal = np.zeros(directions.shape)
+    for a in range(3):
+        box_normal[..., a] = np.where(axis == a, -np.sign(directions[..., a]), 0.0)
+    consider(t_box, np.array([0.60, 0.18, 0.14]), box_normal)
+    return best_t, albedo, normal
+
+
+def ambient_on_can(points, normals, steps=16):
+    """Ambient light reaching the can: the room's own light (albedo * (ambient + direct)) where a ray hits a room
+    surface, AMBIENT where it escapes. Same stratified cosine-weighted directions as ambient_near_can"""
+    helper = np.where(np.abs(normals[:, :1]) > 0.5, [0.0, 1.0, 0.0], [1.0, 0.0, 0.0])
+    tangent = np.cross(normals, helper)
+    tangent /= np.linalg.norm(tangent, axis=-1, keepdims=True)
+    bitangent = np.cross(normals, tangent)
+    origins = points + normals * 1e-3
+
+    total = np.zeros(points.shape)
+    for i in range(steps):
+        for j in range(steps):
+            u = (i + 0.5) / steps
+            phi = 2 * np.pi * (j + 0.5) / steps
+            r = np.sqrt(u)
+            directions = tangent * (r * np.cos(phi)) + bitangent * (r * np.sin(phi)) + normals * np.sqrt(1 - u)
+            t, albedo, normal = trace_room(origins, directions)
+            hit = np.isfinite(t)
+            incoming = np.broadcast_to(AMBIENT, points.shape).copy()
+            if hit.any():
+                p = origins[hit] + directions[hit] * t[hit][:, None]
+                incoming[hit] = albedo[hit] * (AMBIENT + direct_light(p, normal[hit], with_can=False))
+            total += incoming
+    return total / (steps * steps)
+
+
 def render(rotation, with_can):
     u, v = np.meshgrid(np.arange(WIDTH) + 0.5, np.arange(HEIGHT) + 0.5)
     directions = np.stack([(u - CX) / FX, -(v - CY) / FY, -np.ones_like(u)], axis=-1) @ rotation.T
     directions /= np.linalg.norm(directions, axis=-1, keepdims=True)
     origins = np.broadcast_to(CAMERA_POS, directions.shape)
 
-    best_t = np.full(u.shape, np.inf)
-    albedo = np.zeros(u.shape + (3,))
-    normal = np.zeros(u.shape + (3,))
+    best_t, albedo, normal = trace_room(origins, directions)
 
-    def consider(t, surface_albedo, surface_normal):
-        nonlocal best_t
-        closer = np.isfinite(t) & (t > 1e-4) & (t < best_t)
-        best_t = np.where(closer, t, best_t)
-        albedo[closer] = surface_albedo[closer] if np.ndim(surface_albedo) == 3 else surface_albedo
-        normal[closer] = surface_normal[closer] if np.ndim(surface_normal) == 3 else surface_normal
-
-    with np.errstate(divide="ignore", invalid="ignore"):
-        t = (FLOOR_Y - CAMERA_POS[1]) / directions[..., 1]
-        p = CAMERA_POS + directions * t[..., None]
-        checker = ((np.floor(p[..., 0] / 0.5) + np.floor(p[..., 2] / 0.5)) % 2)[..., None]
-        consider(np.where(t > 0, t, np.inf), np.where(checker > 0, [0.55, 0.52, 0.48], [0.30, 0.28, 0.26]), [0, 1, 0])
-
-        t = (BACK_WALL_Z - CAMERA_POS[2]) / directions[..., 2]
-        p = CAMERA_POS + directions * t[..., None]
-        wall = np.where(grid_lines(p[..., 0], p[..., 1])[..., None], [0.15, 0.15, 0.18], [0.62, 0.66, 0.72])
-        consider(np.where((t > 0) & (p[..., 1] >= FLOOR_Y), t, np.inf), wall, [0, 0, 1])
-
-        t = (LEFT_WALL_X - CAMERA_POS[0]) / directions[..., 0]
-        p = CAMERA_POS + directions * t[..., None]
-        wall = np.where(grid_lines(p[..., 2], p[..., 1])[..., None], [0.18, 0.12, 0.10], [0.72, 0.60, 0.52])
-        consider(np.where((t > 0) & (p[..., 1] >= FLOOR_Y) & (p[..., 2] >= BACK_WALL_Z), t, np.inf), wall, [1, 0, 0])
-
-    t_box, axis = intersect_box(origins, directions)
-    box_normal = np.zeros(u.shape + (3,))
-    for a in range(3):
-        box_normal[..., a] = np.where(axis == a, -np.sign(directions[..., a]), 0.0)
-    consider(t_box, [0.60, 0.18, 0.14], box_normal)
-
+    is_can = np.zeros(u.shape, dtype=bool)
     if with_can:
         t_can, can_normal, cu, cv, is_side = intersect_can(origins, directions)
-        can_albedo = np.where(is_side[..., None], can_label(cu, cv), [0.75, 0.75, 0.78])
-        consider(t_can, can_albedo, can_normal)
+        is_can = np.isfinite(t_can) & (t_can < best_t)
+        best_t = np.where(is_can, t_can, best_t)
+        albedo[is_can] = can_albedo_at(cu, cv, is_side)[is_can]
+        normal[is_can] = can_normal[is_can]
 
     hit = np.isfinite(best_t)
     points = CAMERA_POS + directions * np.where(hit, best_t, 0.0)[..., None]
-    to_light = LIGHT_POS - points
-    distance = np.linalg.norm(to_light, axis=-1)
-    light_dir = to_light / np.maximum(distance, 1e-6)[..., None]
-
-    shadow_origins = points + normal * 1e-3
-    blocked = intersect_box(shadow_origins, light_dir)[0] < distance
+    ambient = np.broadcast_to(AMBIENT, points.shape).copy()
     if with_can:
-        blocked |= intersect_can(shadow_origins, light_dir)[0] < distance
+        offset = points - CAN_POS
+        near = hit & ~is_can & (np.hypot(offset[..., 0], offset[..., 2]) < 0.8) & (offset[..., 1] < CAN_HEIGHT + 0.6)
+        ambient[near] = ambient_near_can(points[near], normal[near])
+        ambient[is_can] = ambient_on_can(points[is_can], normal[is_can])
 
-    cosine = np.clip(np.sum(normal * light_dir, axis=-1), 0.0, None)
-    direct = LIGHT_INTENSITY * (cosine * ~blocked / np.maximum(distance, 1e-3) ** 2)[..., None]
-    image = albedo * (AMBIENT + direct)
+    image = albedo * (ambient + direct_light(points, normal, with_can))
     image[~hit] = [0.02, 0.02, 0.025]
+    return image
+
+
+def camera(image, seed):
+    """The photo's camera: lens softness, then sensor grain (shot-noise-like, so added in sqrt space)"""
+    if CAMERA_BLUR > 0:
+        radius = int(np.ceil(CAMERA_BLUR * 3))
+        offsets = np.arange(-radius, radius + 1)
+        kernel = np.exp(-offsets ** 2 / (2 * CAMERA_BLUR ** 2))
+        kernel /= kernel.sum()
+        for axis in (0, 1):
+            padded = np.pad(image, [(radius, radius) if a == axis else (0, 0) for a in range(3)], mode="edge")
+            image = sum(w * np.take(padded, np.arange(image.shape[axis]) + radius + o, axis=axis) for o, w in zip(offsets, kernel))
+    if CAMERA_GRAIN > 0:
+        noise = np.random.default_rng(seed).normal(0.0, CAMERA_GRAIN, image.shape)
+        image = np.maximum(np.sqrt(np.maximum(image, 0.0)) + noise, 0.0) ** 2
     return image
 
 
@@ -265,7 +397,9 @@ def write_can_glb(path):
         "scene": 0, "scenes": [{"nodes": [0]}],
         "nodes": [{"name": "can", "mesh": 0}],
         "meshes": [{"primitives": [{"attributes": {"POSITION": 0, "NORMAL": 1, "TEXCOORD_0": 2}, "indices": 3, "material": 0}]}],
-        "materials": [{"name": "label", "pbrMetallicRoughness": {"baseColorTexture": {"index": 0}, "metallicFactor": 0.0, "roughnessFactor": 0.6}}],
+        "extensionsUsed": ["KHR_materials_specular"],
+        "materials": [{"name": "label", "pbrMetallicRoughness": {"baseColorTexture": {"index": 0}, "metallicFactor": 0.0, "roughnessFactor": 1.0},
+                       "extensions": {"KHR_materials_specular": {"specularFactor": 0.0}}}],
         "textures": [{"source": 0}], "images": [{"bufferView": 4, "mimeType": "image/png"}],
         "accessors": [
             {"bufferView": 0, "componentType": 5126, "count": len(positions), "type": "VEC3",
@@ -285,12 +419,23 @@ def write_can_glb(path):
 
 
 def main():
-    out = Path(sys.argv[1] if len(sys.argv) > 1 else "data/sample")
+    global LIGHT_TYPE, LIGHT_SIZE, CAMERA_BLUR, CAMERA_GRAIN
+    arguments = [a for a in sys.argv[1:] if not a.startswith("--")]
+    if "--light=directional" in sys.argv[1:]:
+        LIGHT_TYPE = "directional"
+    for argument in sys.argv[1:]:
+        if argument.startswith("--light-size="):
+            LIGHT_SIZE = float(argument.split("=", 1)[1])
+        if argument.startswith("--blur="):
+            CAMERA_BLUR = float(argument.split("=", 1)[1])
+        if argument.startswith("--grain="):
+            CAMERA_GRAIN = float(argument.split("=", 1)[1])
+    out = Path(arguments[0] if arguments else "data/sample")
     out.mkdir(parents=True, exist_ok=True)
 
     rotation = look_at_rotation(CAMERA_POS, TARGET)
-    write_hdr(out / "photo.hdr", render(rotation, with_can=False))
-    write_hdr(out / "photo_with_object.hdr", render(rotation, with_can=True))
+    write_hdr(out / "photo.hdr", camera(render(rotation, with_can=False), seed=1))
+    write_hdr(out / "photo_with_object.hdr", camera(render(rotation, with_can=True), seed=2))
     write_can_glb(out / "object.glb")
 
     object_transform = {"position": CAN_POS.tolist(), "rotation_y_deg": CAN_ROTATION_Y_DEG, "scale": 1.0}
@@ -312,8 +457,13 @@ def main():
     (out / "scene.json").write_text(json.dumps(scene, indent=2) + "\n")
 
     ground_truth = {
-        "light": {"type": "point", "position": LIGHT_POS.tolist(), "intensity": LIGHT_INTENSITY.tolist()},
+        "light": ({"type": "directional", "direction": SUN_DIRECTION.tolist(), "intensity": SUN_IRRADIANCE.tolist(),
+                   "angular_radius_deg": LIGHT_SIZE}
+                  if LIGHT_TYPE == "directional" else
+                  {"type": "point", "position": LIGHT_POS.tolist(), "intensity": LIGHT_INTENSITY.tolist(), "radius": LIGHT_SIZE}),
         "ambient": AMBIENT.tolist(),
+        "camera_blur": CAMERA_BLUR,
+        "camera_grain": CAMERA_GRAIN,
         "object_transform": object_transform,
         "photo_with_object": "photo_with_object.hdr",
     }

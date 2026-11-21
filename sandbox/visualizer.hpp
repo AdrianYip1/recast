@@ -1,9 +1,15 @@
 #pragma once
 
+#include <chrono>
+#include <future>
+
 #include <engine/app/application.hpp>
 #include <engine/core/fileWatcher.hpp>
 
 #include "scene/sceneFile.hpp"
+#include "lighting/lightFit.hpp"
+#include "lighting/cameraMatch.hpp"
+#include "scene/raycast.hpp"
 
 class Visualizer : public foto::Application {
 public:
@@ -12,49 +18,61 @@ public:
 protected:
 	void onInit() override;
 	void onUpdate(foto::f32 deltaTime) override;
-	void onShutdown() override;
 	void onImGui() override;
 
 private:
-	foto::Mesh* cube = nullptr;
-	foto::Mesh* quad = nullptr;
-	foto::Mesh* ground = nullptr;
-	foto::u32 checkerMaterial = 0;
-	foto::u32 groundMaterial = 0;
-	foto::f32 cubeAngle = 0.0f;
-	foto::f32 spinSpeed = 0.8f;
-	bool screenshotKeyWasDown = false;
-
 	std::string scenePath;
 	recast::SceneFile scene;
 	bool sceneLoaded = false;
+	bool unsavedChanges = false;
 	foto::FileWatcher sceneWatcher;
 
 	foto::Pipeline* backgroundPipeline = nullptr;
+	foto::Pipeline* compositePipeline = nullptr;
 	foto::Pipeline* proxyDepthPipeline = nullptr;
-	foto::Pipeline* proxyPipeline = nullptr;
-	std::string loadedPhotoPath;
+	foto::Pipeline* proxyOverlayPipeline = nullptr;
 	foto::u32 photoMaterial = foto::DEFAULT_MATERIAL;
-	foto::u32 proxyMaterial = foto::DEFAULT_MATERIAL;
+	foto::u32 overlayMaterial = foto::DEFAULT_MATERIAL;
+	foto::u32 lightMarkerMaterial = foto::DEFAULT_MATERIAL;
+	foto::Mesh* lightMarker = nullptr;
 	std::vector<foto::Mesh*> proxyMeshes;
-	bool showProxies = true;
-	float proxyOpacity = 0.25f;
-	bool freeCamera = false;
+	std::vector<foto::u32> proxyAlbedoMaterials;
+	std::string loadedPhotoPath;
+	recast::LinearImage photoPixels;
+	recast::CameraMatch cameraMatch;
 
 	foto::Mesh* objectMesh = nullptr;
 	std::string loadedObjectPath;
 	bool draggingObject = false;
 	enginemath::Vec3 dragOffset;
 	bool leftMouseWasDown = false;
-	bool unsavedChanges = false;
+	bool screenshotKeyWasDown = false;
+
+	struct DetectJob {
+		std::vector<recast::FitLight> lights;
+		recast::LightingFit fit;
+		std::string error;
+	};
+	std::future<DetectJob> detectJob;
+	std::chrono::steady_clock::time_point detectStarted;
+	std::string lightingStatus;
+
+	enginemath::Vec3 shadowCenter;
+	foto::f32 shadowRadius = 5.0f;
+
+	bool showProxies = false;
+	bool showLights = false;
+	bool showOriginal = false;
+	bool pathTrace = true;
 
 	void loadScene();
-	void applySceneCamera();
-	void drawPhotoView();
-	void drawDemo();
-	void updateObjectInteraction();
-	bool cursorHitsObject(const enginemath::Vec3& origin, const enginemath::Vec3& direction);
-	enginemath::Mat4 objectTransform() const;
 	void saveScene();
-	void resolveCollisions();
+	void applySceneCamera();
+	void applySceneLighting();
+	void detectLighting();
+	void finishLightingDetection();
+	void updateObjectInteraction();
+	recast::RayHit supportUnderCursor(const enginemath::Vec3& origin, const enginemath::Vec3& direction);
+	void drawScene();
+	enginemath::Mat4 objectTransform() const;
 };

@@ -18,11 +18,27 @@ using enginemath::Vec3;
 using enginemath::Mat4;
 
 static foto::DescriptorLayoutBuilder sceneSetLayout() {
+	constexpr VkShaderStageFlags stages = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT;
 	return foto::DescriptorLayoutBuilder()
-		.addBinding(0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT)
-		.addBinding(1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_FRAGMENT_BIT)
-		.addBinding(2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_FRAGMENT_BIT,
-					foto::MAX_TEXTURES, VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT);
+		.addBinding(0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, stages)
+		.addBinding(1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, stages)
+		.addBinding(2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, stages, foto::MAX_TEXTURES, VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT);
+}
+
+static std::unique_ptr<foto::Pipeline> createPathTracePipeline(foto::Device& device) {
+	if (!device.supportsRayTracing()) return nullptr;
+	return std::make_unique<foto::Pipeline>(device, foto::ComputePipelineConfig{
+		.shaderFilePath = "shaders/pathtrace.comp.spv",
+		.descriptorSetLayouts = {
+			sceneSetLayout(),
+			foto::DescriptorLayoutBuilder()
+				.addBinding(0, VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, VK_SHADER_STAGE_COMPUTE_BIT)
+				.addBinding(1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_SHADER_STAGE_COMPUTE_BIT)
+				.addBinding(2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_SHADER_STAGE_COMPUTE_BIT)
+				.addBinding(3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT),
+		},
+		.pushConstants = { foto::TRACE_PUSH_RANGE },
+	});
 }
 
 foto::Application::Application(const ApplicationConfig& config) :
@@ -58,7 +74,8 @@ foto::Application::Application(const ApplicationConfig& config) :
 				.depthBiasConstant = 1.25f,
 				.depthBiasSlope = 1.75f,
 			})),
-	render(std::make_unique<Render>(*device, *swapchain, *pipeline, *presentPipeline, *shadowPipeline)),
+	pathTracePipeline(createPathTracePipeline(*device)),
+	render(std::make_unique<Render>(*device, *swapchain, *pipeline, *presentPipeline, *shadowPipeline, pathTracePipeline.get())),
 	imgui(std::make_unique<ImGuiLayer>(*window, *device, *swapchain, VK_FORMAT_UNDEFINED)),
 	sampler(std::make_unique<Sampler>(*device))
 {
@@ -93,8 +110,8 @@ void foto::Application::run() {
 			.proj = camera.getProjection(getAspectRatio()),
 			.cameraPos = { camera.position.x, camera.position.y, camera.position.z, 1.0f },
 			.lightDir = { lightDirection.x, lightDirection.y, lightDirection.z, 0.0f },
-			.exposure = { std::exp2(exposureEV), 0.0f, 0.0f, 0.0f },
-			.whiteBalance = { whiteBalance.x, whiteBalance.y, whiteBalance.z, 1.0f },
+			.exposure = { std::exp2(exposureEV), cameraGrain, cameraBlur, render->isPathTracing() ? 1.0f : 0.0f },
+			.whiteBalance = { whiteBalance.x, whiteBalance.y, whiteBalance.z, static_cast<f32>(render->getPathTracePhoto()) },
 			.ambient = { ambient.x, ambient.y, ambient.z, 0.0f },
 		};
 
@@ -108,10 +125,14 @@ void foto::Application::run() {
 		frameUbo.lightInfo[2] = render->getDynamicShadowAtlas();
 		frameUbo.lightInfo[3] = SHADOW_FACE_RESOLUTION;
 		for (u32 i = 0; i < lightCount; i++) {
-			const PointLight& light = lights[i];
+			const Light& light = lights[i];
+			bool directional = light.type == LightType::Directional;
+			Vec3 direction = light.direction.normalized();
 			frameUbo.lights[i].position = { light.position.x, light.position.y, light.position.z, light.castsShadows ? 1.0f : 0.0f };
-			frameUbo.lights[i].intensity = { light.intensity.x, light.intensity.y, light.intensity.z, 0.0f };
-			shadowFaceMatrices(light.position, frameUbo.lights[i].faceViewProj);
+			frameUbo.lights[i].intensity = { light.intensity.x, light.intensity.y, light.intensity.z, directional ? 1.0f : 0.0f };
+			frameUbo.lights[i].direction = { direction.x, direction.y, direction.z, light.size };
+			if (directional) frameUbo.lights[i].faceViewProj[0] = shadowDirectionalMatrix(direction, shadowCenter, shadowRadius);
+			else shadowFaceMatrices(light.position, frameUbo.lights[i].faceViewProj);
 		}
 
 		bool outOfDate = render->drawFrame(drawList, frameUbo, [this](VkCommandBuffer commandBuffer) {
@@ -183,17 +204,49 @@ const foto::Material& foto::Application::getMaterial(u32 index) {
 	return render->getMaterial(index);
 }
 
-void foto::Application::draw(Mesh* mesh, const Mat4& transform, u32 materialOverride, Pipeline* pipeline, ShadowCaster shadowCaster) {
+void foto::Application::draw(Mesh* mesh, const Mat4& transform, u32 materialOverride, Pipeline* pipeline, ShadowCaster shadowCaster,
+							  const Vec3& tint) {
 	drawList.push_back({ .mesh = mesh, .transform = transform, .materialOverride = materialOverride, .pipeline = pipeline,
-						 .shadowCaster = shadowCaster });
+						 .shadowCaster = shadowCaster, .tint = tint });
 }
 
-void foto::Application::setLights(std::span<const PointLight> newLights) {
+void foto::Application::setLights(std::span<const Light> newLights) {
 	lights.assign(newLights.begin(), newLights.end());
+}
+
+void foto::Application::setShadowBounds(const Vec3& center, f32 radius) {
+	shadowCenter = center;
+	shadowRadius = radius;
 }
 
 void foto::Application::setAmbient(const Vec3& irradiance) {
 	ambient = irradiance;
+}
+
+void foto::Application::setCameraMatch(f32 grain, f32 blurPixels) {
+	cameraGrain = grain;
+	cameraBlur = blurPixels;
+}
+
+enginemath::Vec2 foto::Application::getViewportSize() {
+	VkRect2D rect = render->getSceneRect();
+	return enginemath::Vec2(static_cast<f32>(rect.extent.width), static_cast<f32>(rect.extent.height));
+}
+
+bool foto::Application::supportsPathTracing() {
+	return render->supportsPathTracing();
+}
+
+void foto::Application::setPathTracing(bool enabled, u32 photoMaterial) {
+	render->setPathTracing(enabled, render->getMaterial(photoMaterial).baseColorTexture);
+}
+
+bool foto::Application::isPathTracing() {
+	return render->isPathTracing();
+}
+
+foto::u32 foto::Application::getPathTraceSamples() {
+	return render->getPathTraceSamples();
 }
 
 void foto::Application::drawFullscreen(Pipeline* pipeline, u32 material) {

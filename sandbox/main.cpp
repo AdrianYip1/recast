@@ -15,7 +15,6 @@ int main(int argc, char** argv) {
 
 	try {
 		std::string scenePath = argc > 1 ? argv[1] : RECAST_SAMPLE_SCENE;
-		if (scenePath == "--demo") scenePath.clear();
 
 		Visualizer app(config, scenePath);
 		app.run();

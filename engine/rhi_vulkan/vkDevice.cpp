@@ -14,6 +14,12 @@ static const std::vector<const char*> requiredDeviceExtensions = {
 	VK_KHR_SWAPCHAIN_EXTENSION_NAME,
 };
 
+static const std::vector<const char*> rayTracingExtensions = {
+	VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME,
+	VK_KHR_RAY_QUERY_EXTENSION_NAME,
+	VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME,
+};
+
 static VkDebugUtilsMessengerCreateInfoEXT debugMessengerInfo() {
 	return {
 		.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,
@@ -38,11 +44,30 @@ foto::Device::Device(GLFWwindow* window) :
 	surface(createSurface(instance, window)),
 	physicalDevice(selectPhysicalDevice(instance, surface)),
 	queueInfos(findQueueFamilies(physicalDevice, surface).value()),
-	logicalDevice(selectLogicalDevice(physicalDevice, queueInfos))
+	rayTracing(rayTracingSuitable(physicalDevice)),
+	logicalDevice(selectLogicalDevice(physicalDevice, queueInfos, rayTracing))
 {
 	vkGetDeviceQueue(logicalDevice, queueInfos.graphicsQueueIdx.value(), 0, &graphicsQueue);
 	vkGetDeviceQueue(logicalDevice, queueInfos.presentQueueIdx.value(), 0, &presentQueue);
 	vkGetDeviceQueue(logicalDevice, queueInfos.computeQueueIdx.value(), 0, &computeQueue);
+
+	if (rayTracing) {
+		auto load = [this](const char* name) { return vkGetDeviceProcAddr(logicalDevice, name); };
+		rayTracingFunctions = {
+			.createAccelerationStructure = reinterpret_cast<PFN_vkCreateAccelerationStructureKHR>(load("vkCreateAccelerationStructureKHR")),
+			.destroyAccelerationStructure = reinterpret_cast<PFN_vkDestroyAccelerationStructureKHR>(load("vkDestroyAccelerationStructureKHR")),
+			.getBuildSizes = reinterpret_cast<PFN_vkGetAccelerationStructureBuildSizesKHR>(load("vkGetAccelerationStructureBuildSizesKHR")),
+			.cmdBuild = reinterpret_cast<PFN_vkCmdBuildAccelerationStructuresKHR>(load("vkCmdBuildAccelerationStructuresKHR")),
+			.getAddress = reinterpret_cast<PFN_vkGetAccelerationStructureDeviceAddressKHR>(load("vkGetAccelerationStructureDeviceAddressKHR")),
+		};
+
+		VkPhysicalDeviceAccelerationStructurePropertiesKHR accelerationProperties = {
+			.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_PROPERTIES_KHR
+		};
+		VkPhysicalDeviceProperties2 properties = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &accelerationProperties };
+		vkGetPhysicalDeviceProperties2(physicalDevice, &properties);
+		scratchAlignment = std::max<VkDeviceSize>(accelerationProperties.minAccelerationStructureScratchOffsetAlignment, 1);
+	}
 }
 
 foto::Device::~Device() {
@@ -170,7 +195,7 @@ VkPhysicalDevice foto::Device::selectPhysicalDevice(VkInstance instance, VkSurfa
 		if (!findQueueFamilies(device, surface).has_value()) continue;
 
 		// Check for extensions
-		if (!extensionsSuitable(device)) continue;
+		if (!extensionsSuitable(device, requiredDeviceExtensions)) continue;
 
 		// Swapchain adequacy
 		SwapchainSupportDetails swapchainSupport = querySwapchainSupport(device, surface);
@@ -209,14 +234,14 @@ std::optional<foto::QueueInfos> foto::Device::findQueueFamilies(VkPhysicalDevice
 	};
 }
 
-bool foto::Device::extensionsSuitable(VkPhysicalDevice device) {
+bool foto::Device::extensionsSuitable(VkPhysicalDevice device, std::span<const char* const> required) {
 	u32 deviceExtensionCount = 0;
 	vkEnumerateDeviceExtensionProperties(device, nullptr, &deviceExtensionCount, nullptr);
 
 	std::vector<VkExtensionProperties> extensions(deviceExtensionCount);
 	vkEnumerateDeviceExtensionProperties(device, nullptr, &deviceExtensionCount, extensions.data());
 	
-	return std::all_of(requiredDeviceExtensions.begin(), requiredDeviceExtensions.end(),
+	return std::all_of(required.begin(), required.end(),
 		[&](const char* required) {
 			return std::any_of(extensions.begin(), extensions.end(),
 				[&](const VkExtensionProperties& e) {
@@ -225,7 +250,22 @@ bool foto::Device::extensionsSuitable(VkPhysicalDevice device) {
 		});
 }
 
-VkDevice foto::Device::selectLogicalDevice(VkPhysicalDevice physicalDevice, const QueueInfos& queueInfo) {
+bool foto::Device::rayTracingSuitable(VkPhysicalDevice device) {
+	if (!extensionsSuitable(device, rayTracingExtensions)) return false;
+
+	VkPhysicalDeviceRayQueryFeaturesKHR rayQuery = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR };
+	VkPhysicalDeviceAccelerationStructureFeaturesKHR acceleration = {
+		.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR, .pNext = &rayQuery
+	};
+	VkPhysicalDeviceVulkan12Features features12 = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES, .pNext = &acceleration };
+	VkPhysicalDeviceFeatures2 features2 = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &features12 };
+	vkGetPhysicalDeviceFeatures2(device, &features2);
+
+	return acceleration.accelerationStructure && rayQuery.rayQuery && features12.bufferDeviceAddress &&
+		   features12.shaderSampledImageArrayNonUniformIndexing;
+}
+
+VkDevice foto::Device::selectLogicalDevice(VkPhysicalDevice physicalDevice, const QueueInfos& queueInfo, bool rayTracing) {
 	VkDevice logicalDevice = VK_NULL_HANDLE;
 	f32 priority = 1.0f;
 
@@ -246,10 +286,26 @@ VkDevice foto::Device::selectLogicalDevice(VkPhysicalDevice physicalDevice, cons
 		queueCreateInfos.push_back(queueCreateInfo);
 	}
 
+	VkPhysicalDeviceRayQueryFeaturesKHR rayQueryFeatures = {
+		.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR,
+		.rayQuery = VK_TRUE
+	};
+	VkPhysicalDeviceAccelerationStructureFeaturesKHR accelerationFeatures = {
+		.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR,
+		.pNext = &rayQueryFeatures,
+		.accelerationStructure = VK_TRUE
+	};
+
 	VkPhysicalDeviceVulkan12Features features12 = {
 		.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
-		.descriptorBindingPartiallyBound = VK_TRUE
+		.pNext = rayTracing ? &accelerationFeatures : nullptr,
+		.shaderSampledImageArrayNonUniformIndexing = rayTracing ? VK_TRUE : VK_FALSE,
+		.descriptorBindingPartiallyBound = VK_TRUE,
+		.bufferDeviceAddress = rayTracing ? VK_TRUE : VK_FALSE
 	};
+
+	std::vector<const char*> extensions = requiredDeviceExtensions;
+	if (rayTracing) extensions.insert(extensions.end(), rayTracingExtensions.begin(), rayTracingExtensions.end());
 
 	VkPhysicalDeviceVulkan13Features features13 = {
 		.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
@@ -276,8 +332,8 @@ VkDevice foto::Device::selectLogicalDevice(VkPhysicalDevice physicalDevice, cons
 		.pNext = &features2,
 		.queueCreateInfoCount = static_cast<u32>(queueCreateInfos.size()),
 		.pQueueCreateInfos = queueCreateInfos.data(),
-		.enabledExtensionCount = static_cast<u32>(requiredDeviceExtensions.size()),
-		.ppEnabledExtensionNames = requiredDeviceExtensions.data(),
+		.enabledExtensionCount = static_cast<u32>(extensions.size()),
+		.ppEnabledExtensionNames = extensions.data(),
 		.pEnabledFeatures = nullptr
 
 	};

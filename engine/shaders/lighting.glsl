@@ -1,6 +1,6 @@
 // Point lights with cube shadow maps. Needs common.glsl first.
 
-const float SHADOW_NORMAL_OFFSET = 0.01;
+const float SHADOW_NORMAL_OFFSET = 0.02;
 const float SHADOW_BIAS = 0.0005;
 
 uint shadowFace(vec3 lightToPoint) {
@@ -15,20 +15,24 @@ float shadowVisibility(uint atlas, uint lightIndex, vec3 worldPos, vec3 normal) 
 	if (light.position.w < 0.5) return 1.0;
 
 	vec3 offsetPos = worldPos + normal * SHADOW_NORMAL_OFFSET;
-	uint face = shadowFace(offsetPos - light.position.xyz);
+	uint face = light.intensity.w > 0.5 ? 0u : shadowFace(offsetPos - light.position.xyz);
 	vec4 clip = light.faceViewProj[face] * vec4(offsetPos, 1.0);
 	vec3 ndc = clip.xyz / clip.w;
 
 	float faceResolution = float(frame.lightInfo.w);
 	vec2 atlasSize = vec2(6.0, float(MAX_LIGHTS)) * faceResolution;
-	vec2 faceUV = clamp(ndc.xy * 0.5 + 0.5, vec2(1.5 / faceResolution), vec2(1.0 - 1.5 / faceResolution));
-	vec2 atlasUV = (vec2(float(face), float(lightIndex)) + faceUV) * faceResolution / atlasSize;
+	vec2 faceUV = clamp(ndc.xy * 0.5 + 0.5, vec2(3.0 / faceResolution), vec2(1.0 - 3.0 / faceResolution));
+	vec2 texel = (vec2(float(face), float(lightIndex)) + faceUV) * faceResolution - 0.5;
+	vec2 f = fract(texel);
+	vec2 base = floor(texel) + 0.5;
 
 	float visible = 0.0;
-	for (int y = -1; y <= 1; y++) {
-		for (int x = -1; x <= 1; x++) {
-			float depth = texture(textures[atlas], atlasUV + vec2(x, y) / atlasSize).r;
-			visible += (ndc.z - SHADOW_BIAS <= depth) ? 1.0 : 0.0;
+	for (int y = -1; y <= 2; y++) {
+		float wy = y == -1 ? 1.0 - f.y : (y == 2 ? f.y : 1.0);
+		for (int x = -1; x <= 2; x++) {
+			float wx = x == -1 ? 1.0 - f.x : (x == 2 ? f.x : 1.0);
+			float depth = texture(textures[atlas], (base + vec2(x, y)) / atlasSize).r;
+			visible += (ndc.z - SHADOW_BIAS <= depth) ? wx * wy : 0.0;
 		}
 	}
 	return visible / 9.0;
@@ -45,9 +49,10 @@ vec3 irradiance(vec3 worldPos, vec3 normal, bool includeDynamic) {
 	vec3 result = frame.ambient.rgb;
 	for (uint i = 0u; i < lightCount; i++) {
 		Light light = frame.lights[i];
-		vec3 toLight = light.position.xyz - worldPos;
-		float distanceSquared = max(dot(toLight, toLight), 1e-4);
-		float cosine = max(dot(normal, toLight * inversesqrt(distanceSquared)), 0.0);
+		bool directional = light.intensity.w > 0.5;
+		vec3 toLight = directional ? -light.direction.xyz : light.position.xyz - worldPos;
+		float distanceSquared = directional ? 1.0 : max(dot(toLight, toLight), 1e-4);
+		float cosine = max(dot(normal, toLight * inversesqrt(dot(toLight, toLight))), 0.0);
 		if (cosine <= 0.0) continue;
 
 		float visibility = shadowVisibility(frame.lightInfo.y, i, worldPos, normal);

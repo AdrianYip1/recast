@@ -11,6 +11,17 @@ foto::Pipeline::Pipeline(Device& device, const GraphicsPipelineConfig& graphicsP
 	shaderCode.clear();
 };
 
+foto::Pipeline::Pipeline(Device& device, const ComputePipelineConfig& computePipelineConfig) :
+	_device(device.getDevice()),
+	shaderCode({ readFile(computePipelineConfig.shaderFilePath) }),
+	setLayoutInfos(computePipelineConfig.descriptorSetLayouts),
+	setLayouts(createDescriptorSetLayouts(device, setLayoutInfos)),
+	pipelineLayout(createPipelineLayout(device, setLayouts, computePipelineConfig.pushConstants)),
+	pipeline(createComputePipeline(device, pipelineLayout, shaderCode[0]))
+{
+	shaderCode.clear();
+}
+
 foto::Pipeline::~Pipeline() {
 	vkDestroyPipeline(_device, pipeline, nullptr);
 	vkDestroyPipelineLayout(_device, pipelineLayout, nullptr);
@@ -83,6 +94,29 @@ VkPipelineLayout foto::Pipeline::createPipelineLayout(Device& device, const std:
 	}
 
 	return pipelineLayout;
+}
+
+VkPipeline foto::Pipeline::createComputePipeline(Device& device, VkPipelineLayout layout, const std::vector<char>& shaderCode) {
+	VkShaderModule shaderModule = createShaderModules(device, { shaderCode })[0];
+
+	VkComputePipelineCreateInfo createInfo = {
+		.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+		.stage = {
+			.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+			.stage = VK_SHADER_STAGE_COMPUTE_BIT,
+			.module = shaderModule,
+			.pName = "main"
+		},
+		.layout = layout,
+	};
+
+	VkPipeline computePipeline = VK_NULL_HANDLE;
+	VkResult result = vkCreateComputePipelines(device.getDevice(), VK_NULL_HANDLE, 1, &createInfo, nullptr, &computePipeline);
+	vkDestroyShaderModule(device.getDevice(), shaderModule, nullptr);
+	if (result != VK_SUCCESS) {
+		throw std::runtime_error("ERROR: vkPipeline.cpp -> createComputePipeline()");
+	}
+	return computePipeline;
 }
 
 VkPipeline foto::Pipeline::createGraphicsPipeline(Device& device, const GraphicsPipelineConfig& config, VkPipelineLayout layout,

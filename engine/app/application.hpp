@@ -51,7 +51,7 @@ namespace foto {
 
 		// Queues a draw for the current frame; call from onUpdate
 		void draw(Mesh* mesh, const enginemath::Mat4& transform, u32 materialOverride = NO_MATERIAL_OVERRIDE, Pipeline* pipeline = nullptr,
-				  ShadowCaster shadowCaster = ShadowCaster::None);
+				  ShadowCaster shadowCaster = ShadowCaster::None, const enginemath::Vec3& tint = enginemath::Vec3(1.0f, 1.0f, 1.0f));
 		void drawFullscreen(Pipeline* pipeline, u32 material);
 
 		// Scene pipeline with the engine's formats, descriptor layout and push constants filled in
@@ -66,10 +66,24 @@ namespace foto {
 		f32 getAspectRatio();
 		void setLightDirection(const enginemath::Vec3& direction);
 
-		// Up to MAX_LIGHTS point lights with shadows; with none, the light direction above is used instead
-		void setLights(std::span<const PointLight> lights);
+		// Up to MAX_LIGHTS point/directional lights with shadows; with none, the light direction above is used instead
+		void setLights(std::span<const Light> lights);
+		// Region directional light shadow maps cover
+		void setShadowBounds(const enginemath::Vec3& center, f32 radius);
 		void setAmbient(const enginemath::Vec3& irradiance);
 		void screenshot(const std::string& filePath);
+
+		// Ray traced compositing of the dynamic casters into the photo (photoMaterial's texture), with static casters as
+		// the photo's surfaces. Replaces the raster scene: draws without a shadow caster are skipped while it's on
+		// The photo's camera, applied to the path traced object: grain in sqrt(linear) units, blur sigma in framebuffer pixels
+		void setCameraMatch(f32 grain, f32 blurPixels);
+		// Size of the letterboxed 3D view in framebuffer pixels
+		enginemath::Vec2 getViewportSize();
+
+		bool supportsPathTracing();
+		void setPathTracing(bool enabled, u32 photoMaterial);
+		bool isPathTracing();
+		u32 getPathTraceSamples();
 
 		void setExposure(f32 ev);
 		f32 getExposure() { return exposureEV; };
@@ -90,6 +104,7 @@ namespace foto {
 		std::unique_ptr<Pipeline> pipeline;
 		std::unique_ptr<Pipeline> presentPipeline;
 		std::unique_ptr<Pipeline> shadowPipeline;
+		std::unique_ptr<Pipeline> pathTracePipeline;
 		std::unique_ptr<Render> render;
 		std::unique_ptr<ImGuiLayer> imgui;
 
@@ -102,9 +117,13 @@ namespace foto {
 		std::vector<DrawItem> drawList;
 		Camera camera;
 		enginemath::Vec3 lightDirection = enginemath::Vec3(-0.3f, -0.8f, -0.5f).normalized();
-		std::vector<PointLight> lights;
+		std::vector<Light> lights;
+		enginemath::Vec3 shadowCenter;
+		f32 shadowRadius = 5.0f;
 		enginemath::Vec3 ambient = enginemath::Vec3(0.35f, 0.35f, 0.35f);
 		f32 exposureEV = 0.0f;
+		f32 cameraGrain = 0.0f;
+		f32 cameraBlur = 0.0f;
 		enginemath::Vec3 whiteBalance = enginemath::Vec3(1.0f, 1.0f, 1.0f);
 
 		u32 addTexture(std::unique_ptr<Image> image);

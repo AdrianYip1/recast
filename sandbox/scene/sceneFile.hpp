@@ -52,13 +52,22 @@ namespace recast {
 		ProxyMaterial material;
 	};
 
-	struct AreaLight {
-		std::string type = "area";
+	// type "point": position + intensity (irradiance = intensity * cos / distance^2).
+	// type "directional": direction (the way the light travels) + intensity (irradiance = intensity * cos).
+	// type "area": corners + radiance (not rendered yet)
+	struct SceneLight {
+		std::string type = "point";
+		Vec3f position = { 0, 0, 0 };
+		Vec3f direction = { 0, -1, 0 };
+		Vec3f intensity = { 0, 0, 0 };
+		float radius = 0.05f;             // point: size of the bulb in metres, softens shadows
+		float angular_radius_deg = 0.27f; // directional: the sun's apparent radius
 		std::array<Vec3f, 4> corners = {};
 		Vec3f radiance = { 0, 0, 0 };
 	};
 
 	struct Lighting {
+		Vec3f ambient = { 0.2f, 0.2f, 0.2f };
 		foto::u32 sh_order = 0;
 		std::vector<Vec3f> sh;
 	};
@@ -71,7 +80,7 @@ namespace recast {
 		ScaleReference scale_reference;
 		SceneObject object;
 		std::vector<Proxy> proxies;
-		std::vector<AreaLight> lights;
+		std::vector<SceneLight> lights;
 		Lighting lighting;
 
 		std::filesystem::path directory;

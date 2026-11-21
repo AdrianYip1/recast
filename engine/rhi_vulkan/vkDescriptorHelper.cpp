@@ -143,6 +143,26 @@ foto::DescriptorWriter& foto::DescriptorWriter::writeImage(u32 binding, VkImageV
 	return *this;
 }
 
+foto::DescriptorWriter& foto::DescriptorWriter::writeAccelerationStructure(u32 binding, VkAccelerationStructureKHR structure) {
+	VkAccelerationStructureKHR& stored = structures.emplace_back(structure);
+	VkWriteDescriptorSetAccelerationStructureKHR& info = structureInfos.emplace_back(VkWriteDescriptorSetAccelerationStructureKHR{
+		.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR,
+		.accelerationStructureCount = 1,
+		.pAccelerationStructures = &stored
+	});
+
+	writes.push_back({
+		.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+		.pNext = &info,
+		.dstSet = VK_NULL_HANDLE, // filled in by update()
+		.dstBinding = binding,
+		.dstArrayElement = 0,
+		.descriptorCount = 1,
+		.descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,
+	});
+	return *this;
+}
+
 void foto::DescriptorWriter::update(Device& device, VkDescriptorSet set) {
 	for (VkWriteDescriptorSet& write : writes) {
 		write.dstSet = set;
@@ -154,5 +174,7 @@ void foto::DescriptorWriter::update(Device& device, VkDescriptorSet set) {
 void foto::DescriptorWriter::clear() {
 	bufferInfos.clear();
 	imageInfos.clear();
+	structures.clear();
+	structureInfos.clear();
 	writes.clear();
 }

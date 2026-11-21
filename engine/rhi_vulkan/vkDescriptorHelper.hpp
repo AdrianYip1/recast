@@ -62,6 +62,8 @@ namespace foto {
 									 VkDescriptorType type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 									 u32 arrayElement = 0);
 
+		DescriptorWriter& writeAccelerationStructure(u32 binding, VkAccelerationStructureKHR structure);
+
 		void update(Device& device, VkDescriptorSet set);
 		void clear();
 
@@ -69,6 +71,8 @@ namespace foto {
 		// deque: push_back never moves existing elements, so the writes' pointers stay valid
 		std::deque<VkDescriptorBufferInfo> bufferInfos;
 		std::deque<VkDescriptorImageInfo> imageInfos;
+		std::deque<VkAccelerationStructureKHR> structures;
+		std::deque<VkWriteDescriptorSetAccelerationStructureKHR> structureInfos;
 		std::vector<VkWriteDescriptorSet> writes;
 	};
 } // namespace foto

@@ -43,10 +43,16 @@ namespace foto {
 		bool colorWrite = true;
 	};
 
+	struct ComputePipelineConfig {
+		std::string shaderFilePath;
+		std::vector<DescriptorLayoutBuilder> descriptorSetLayouts;
+		std::vector<VkPushConstantRange> pushConstants;
+	};
+
 	class Pipeline {
 	public:
 		Pipeline(Device& device, const GraphicsPipelineConfig& graphicsPipelineConfig);
-		// have overloads for other pipelines
+		Pipeline(Device& device, const ComputePipelineConfig& computePipelineConfig);
 		~Pipeline();
 		Pipeline(const Pipeline& other) = delete;
 		Pipeline& operator=(const Pipeline& other) = delete;
@@ -71,6 +77,7 @@ namespace foto {
 		static std::vector<VkDescriptorSetLayout> createDescriptorSetLayouts(Device& device, const std::vector<DescriptorLayoutBuilder>& infos);
 		static VkPipelineLayout createPipelineLayout(Device& device, const std::vector<VkDescriptorSetLayout>& setLayouts,
 													 const std::vector<VkPushConstantRange>& pushConstants);
+		static VkPipeline createComputePipeline(Device& device, VkPipelineLayout layout, const std::vector<char>& shaderCode);
 		static VkPipeline createGraphicsPipeline(Device& device, const GraphicsPipelineConfig& config, VkPipelineLayout layout,
 												const std::vector<std::vector<char>>& shaderCode);
 	};
