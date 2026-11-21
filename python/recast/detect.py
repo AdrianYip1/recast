@@ -479,7 +479,9 @@ def build_proxies(cam: Camera, segments: list[Segment], disparity: np.ndarray, f
                         lo[a], hi[a] = n_lo[a] + (lo[a] - e_lo[a]) * k, n_lo[a] + (hi[a] - e_lo[a]) * k
                     lo[1] = 0.0
         if boxes:
-            found.append({"segment": s, "boxes": boxes, "on_floor": on_floor,
+            # cut off by the bottom of the photo: it carries on below the frame, down to the floor
+            cut_off = bool(s.mask[-3:].any())
+            found.append({"segment": s, "boxes": boxes, "on_floor": on_floor or cut_off,
                           "albedo": _albedo(photo_linear, s.mask, floor_ref)})
 
     # what does each rest on? lowest first, so supports are settled before what's on them
