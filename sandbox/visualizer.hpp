@@ -8,6 +8,7 @@
 
 #include "scene/sceneFile.hpp"
 #include "lighting/lightFit.hpp"
+#include "scene/raycast.hpp"
 
 class Visualizer : public foto::Application {
 public:
@@ -69,6 +70,7 @@ private:
 	void detectLighting();
 	void finishLightingDetection();
 	void updateObjectInteraction();
+	recast::RayHit supportUnderCursor(const enginemath::Vec3& origin, const enginemath::Vec3& direction);
 	void drawScene();
 	enginemath::Mat4 objectTransform() const;
 };

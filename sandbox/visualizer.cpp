@@ -260,6 +260,15 @@ Mat4 Visualizer::objectTransform() const {
 	return recast::objectMatrix(scene.object.transform);
 }
 
+// Where the object goes for this mouse ray: the first surface it points at, or the floor in front of it when that's a
+// wall or the side of a box, so the object never ends up hidden behind something
+recast::RayHit Visualizer::supportUnderCursor(const Vec3& origin, const Vec3& direction) {
+	constexpr float supportNormalY = 0.7f;
+	recast::RayHit hit = recast::raycastProxies(scene.proxies, origin, direction);
+	if (!hit.valid() || hit.normal.y >= supportNormalY) return hit;
+	return recast::raycastProxies(scene.proxies, hit.point + hit.normal * 0.02f, Vec3(0.0f, -1.0f, 0.0f), supportNormalY);
+}
+
 void Visualizer::updateObjectInteraction() {
 	if (!objectMesh) return;
 
@@ -268,13 +277,12 @@ void Visualizer::updateObjectInteraction() {
 	Vec3 origin, direction;
 	bool haveRay = getCursorRay(origin, direction);
 	recast::ObjectTransform& transform = scene.object.transform;
-	constexpr float supportNormalY = 0.7f;
 
 	if (leftDown && !leftMouseWasDown && haveRay) {
 		Vec3 worldMin, worldMax;
 		recast::objectWorldBounds(transform, objectMesh->getBoundsMin(), objectMesh->getBoundsMax(), worldMin, worldMax);
 		float t = 0.0f;
-		recast::RayHit hit = recast::raycastProxies(scene.proxies, origin, direction, supportNormalY);
+		recast::RayHit hit = supportUnderCursor(origin, direction);
 		if (recast::rayAabb(origin, direction, worldMin, worldMax, t) && hit.valid()) {
 			draggingObject = true;
 			dragOffset = Vec3(transform.position[0] - hit.point.x, 0.0f, transform.position[2] - hit.point.z);
@@ -284,7 +292,7 @@ void Visualizer::updateObjectInteraction() {
 
 	bool moved = false;
 	if (draggingObject && haveRay) {
-		recast::RayHit hit = recast::raycastProxies(scene.proxies, origin, direction, supportNormalY);
+		recast::RayHit hit = supportUnderCursor(origin, direction);
 		if (hit.valid()) {
 			transform.position = { hit.point.x + dragOffset.x, hit.point.y, hit.point.z + dragOffset.z };
 			moved = true;
