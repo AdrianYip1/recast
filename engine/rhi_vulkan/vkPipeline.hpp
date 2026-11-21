@@ -37,6 +37,8 @@ namespace foto {
 
 		// Standard alpha blending (src * a + dst * (1 - a))
 		bool alphaBlend = false;
+		// false: depth-only (e.g. a depth prepass)
+		bool colorWrite = true;
 	};
 
 	class Pipeline {
