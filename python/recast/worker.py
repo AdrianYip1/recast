@@ -66,6 +66,8 @@ def _warm_up() -> None:
             segment.salient_alpha(np.zeros((64, 64, 3), np.float32))
             from . import detect
             detect.run_models(np.zeros((64, 64, 3), np.uint8))
+            import skimage.measure, trimesh                  # shape carving: a second's import on the first scene
+            trimesh.creation.box().simplify_quadric_decimation(face_count=6)
             print("worker: models loaded", flush=True)
         except Exception as e:                       # a missing extra only matters when that step runs
             print(f"worker: warm-up skipped ({e})", flush=True)

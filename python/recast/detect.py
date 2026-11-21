@@ -926,9 +926,17 @@ def draw_check(rgb8: np.ndarray, cam: Camera, det: Detection) -> np.ndarray:
     for p in det.proxies:
         if isinstance(p, HullProxy):
             world = np.asarray(p.vertices, float) + np.asarray(p.point, float)
-            edges = {tuple(sorted((f[e], f[(e + 1) % 3]))) for f in p.faces for e in range(3)}
-            for i, j in edges:
-                _draw_segment(right, cam, world[i], world[j], (255, 0, 255), 1, n=8)
+            # all edges in one go: projected once, drawn as one polyline call (edge by edge took seconds)
+            faces = np.asarray(p.faces, int).reshape(-1, 3)
+            edges = np.unique(np.sort(np.concatenate([faces[:, [0, 1]], faces[:, [1, 2]], faces[:, [2, 0]]]), axis=1), axis=0)
+            if len(edges) == 0:
+                continue
+            in_front = (world - cam.position) @ cam.R[2] > 0.05
+            edges = edges[in_front[edges].all(axis=1)]
+            uv = cam.project(world)
+            lines = uv[edges]
+            lines = lines[(np.abs(lines) < 1e5).all(axis=(1, 2))]
+            cv2.polylines(right, list(np.round(lines).astype(np.int32)), False, (255, 0, 255), 1, cv2.LINE_AA)
             continue
         if not isinstance(p, BoxProxy):
             continue
