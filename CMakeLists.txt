@@ -96,7 +96,8 @@ add_executable(foto sandbox/main.cpp
     sandbox/scene/sceneFile.cpp
     sandbox/scene/proxyMesh.cpp
     sandbox/scene/raycast.cpp
-    sandbox/scene/placement.cpp)
+    sandbox/scene/placement.cpp
+    sandbox/lighting/lightFit.cpp)
 target_include_directories(foto PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/sandbox ${CMAKE_CURRENT_SOURCE_DIR}/external)
 target_compile_definitions(foto PRIVATE RECAST_SAMPLE_SCENE="${CMAKE_CURRENT_SOURCE_DIR}/data/sample/scene.json")
 
