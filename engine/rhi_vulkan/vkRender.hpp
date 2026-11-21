@@ -17,19 +17,21 @@ namespace foto {
 		Render(const Render& other) = delete;
 		Render& operator=(const Render& other) = delete;
 
-		void drawFrame();
+		void drawFrame(Device& device, Swapchain& swapchain, Pipeline& pipeline);
 	private:
 		VkDevice _device = VK_NULL_HANDLE;
 		VkCommandPool _commandPool = VK_NULL_HANDLE;
-		VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
+		std::vector<VkCommandBuffer> commandBuffers;
 
-		VkSemaphore imageAvailableSem = VK_NULL_HANDLE;
-		VkSemaphore renderFinishedSem = VK_NULL_HANDLE;
-		VkFence inFlightFence = VK_NULL_HANDLE;
+		std::vector<VkSemaphore> imageAvailableSem;
+		std::vector<VkSemaphore> renderFinishedSem;
+		std::vector<VkFence> inFlightFence;
 
-		void createSyncObjects(VkDevice _device);
+		u32 currentFrame = 0;
+
+		void createSyncObjects(VkDevice device, size swapchainImageCount);
 		void recordCommandBuffer(Swapchain& swapchain, Pipeline& pipeline, VkCommandBuffer commandBuffer, u32 imageIdx);
 		static VkCommandPool createCommandPool(Device& device);
-		static VkCommandBuffer createCommandBuffer(Device& device, VkCommandPool commandPool);
+		static std::vector<VkCommandBuffer> createCommandBuffers(Device& device, VkCommandPool commandPool);
 	};
 } // namespace foto
