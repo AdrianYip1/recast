@@ -123,7 +123,7 @@ void Visualizer::loadScene() {
 	applySceneCamera();
 
 	if (!photoPixels.rgb.empty()) {
-		std::vector<recast::LightingSample> coarse = recast::collectLightingSamples(scene, photoPixels, 16);
+		std::vector<recast::LightingSample> coarse = recast::collectLightingSamples(scene, photoPixels, lightingStride(16));
 		if (!coarse.empty()) {
 			Vec3 boundsMin(1e30f), boundsMax(-1e30f);
 			for (const recast::LightingSample& sample : coarse) {
@@ -204,10 +204,11 @@ void Visualizer::detectLighting() {
 	detectGaveUp = false;
 	recast::SceneFile sceneCopy = scene;
 	recast::LinearImage photo = photoPixels;
-	detectJob = std::async(std::launch::async, [sceneCopy, photo]() {
+	int stride = lightingStride(8);
+	detectJob = std::async(std::launch::async, [sceneCopy, photo, stride]() {
 		DetectJob job;
 		try {
-			std::vector<recast::LightingSample> samples = recast::collectLightingSamples(sceneCopy, photo, 8);
+			std::vector<recast::LightingSample> samples = recast::collectLightingSamples(sceneCopy, photo, stride);
 			job.fit = recast::autoFitLighting(sceneCopy, photo, samples, job.lights);
 		}
 		catch (const std::exception& e) {
@@ -215,6 +216,12 @@ void Visualizer::detectLighting() {
 		}
 		return job;
 	});
+}
+
+// Samples a 2000 px photo at `base`, and bigger photos just as many times, so detection time doesn't grow with resolution
+int Visualizer::lightingStride(int base) const {
+	int longSide = std::max(photoPixels.width, photoPixels.height);
+	return std::max(base, base * longSide / 2000);
 }
 
 void Visualizer::askForManualLights(const std::string& reason) {
@@ -236,7 +243,7 @@ void Visualizer::finishLightingDetection() {
 	}
 
 	DetectJob job = detectJob.get();
-	if (detectGaveUp) return; // too late: the lights are being placed by hand now
+	if (detectGaveUp && !scene.lights.empty()) return; // too late: lights were placed by hand meanwhile
 	if (!job.error.empty()) {
 		lightingStatus = "lighting detection failed: " + job.error;
 		return;

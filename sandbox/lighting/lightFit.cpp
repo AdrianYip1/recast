@@ -507,8 +507,10 @@ std::vector<Vec3> recast::detectBrightSpots(const SceneFile& scene, const Linear
 		if (static_cast<int>(seeds.size()) >= maxSpots) break;
 		float u = static_cast<float>(blob.x / blob.energy) / scaleX;
 		float v = static_cast<float>(blob.y / blob.energy) / scaleY;
-		RayHit hit = raycastProxies(scene.proxies, origin, cameraRay(camera, u, v));
-		if (hit.valid()) seeds.push_back(hit.point + hit.normal * 0.3f);
+		Vec3 direction = cameraRay(camera, u, v);
+		RayHit hit = raycastProxies(scene.proxies, origin, direction);
+		// a window or lamp with no wall behind it in the proxies still gives a seed, a few metres out along its ray
+		seeds.push_back(hit.valid() ? hit.point + hit.normal * 0.3f : origin + direction * 3.0f);
 	}
 	return seeds;
 }

@@ -63,6 +63,7 @@ private:
 	bool detectGaveUp = false;
 	bool openLightEditor = false;
 	void askForManualLights(const std::string& reason);
+	int lightingStride(int base) const;
 
 	enginemath::Vec3 shadowCenter;
 	foto::f32 shadowRadius = 5.0f;
