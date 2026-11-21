@@ -96,8 +96,10 @@ python -m recast eval   --name living_room --truth with_real_mug.jpg        # D
 **A. Scene photo (.jpg) -> photo.jpg + camera** (`io`, `lens`, `vanishing`, `camera`)
 1. Decode to linear (RAW via rawpy, or inverse sRGB for JPEG).
 2. Undistort with lensfun (camera + lens from EXIF), or `--k1/--k2`.
-3. Focal length: solved from vanishing points, or `--trust-exif` / `--focal-mm --sensor-width-mm`.
-4. Rotation from 3 vanishing points (LSD segments + RANSAC; `--lines` to trace them by hand).
+3. Focal length: EXIF when the photo has it (`--solve-focal` to solve anyway), otherwise solved from two
+   vanishing points that aren't near infinity, otherwise a typical phone lens (0.9 x the long side).
+   The principal point is always the image centre. Photos sent through chat apps usually lose their EXIF.
+4. Rotation from the vertical and the strongest horizontal vanishing point (LSD segments + RANSAC; `--lines` to trace them by hand).
 5. Scale from `--camera-height`; floor is y = 0.
 6. OpenCV camera -> engine convention (`R_engine = R_cv * diag(1, -1, -1)`), written to scene.json.
 

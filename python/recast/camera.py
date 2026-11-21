@@ -141,50 +141,67 @@ def solve_camera(width: int, height: int, vp_x: np.ndarray, vp_z: np.ndarray,
 
     vp_x, vp_z: homogeneous vanishing points of two horizontal, perpendicular
                 directions (e.g. along the two walls). These become world X and Z.
-    vp_y:       optional vertical vanishing point. If all three are finite, the
-                principal point is solved too; otherwise it's the image centre.
-                The focal length needs any two of the three to be finite.
+    vp_y:       optional vertical vanishing point.
     focal_px:   skip solving the focal length (e.g. it came from EXIF).
     camera_height: distance from the floor in meters. This sets the scale of the
                 whole scene, since a single photo can't tell big rooms from small.
+
+    The principal point is always the image centre: solving it from three vanishing
+    points blows up as soon as one of them is far away (photos taken square to a wall).
+    Rotation comes from the vertical and the strongest horizontal direction when the
+    vertical is known, since a third, weaker direction is often a stray set of lines.
     """
     vp_x = np.asarray(vp_x, dtype=np.float64)
     vp_z = np.asarray(vp_z, dtype=np.float64)
-    principal = np.array([(width - 1) / 2.0, (height - 1) / 2.0])
-
-    finite = [abs(v[2]) > 1e-9 for v in (vp_x, vp_z)]
     if vp_y is not None:
         vp_y = np.asarray(vp_y, dtype=np.float64)
-        if all(finite) and abs(vp_y[2]) > 1e-9 and focal_px is None:
-            principal = principal_from_3_vps(vp_x[:2] / vp_x[2], vp_y[:2] / vp_y[2], vp_z[:2] / vp_z[2])
+    principal = np.array([(width - 1) / 2.0, (height - 1) / 2.0])
+    size = max(width, height)
 
     if focal_px is None:
         # any two perpendicular directions with finite vanishing points will do; a photo
-        # looking straight down a room has vp_x at infinity but finite vp_z and vp_y
+        # looking straight down a room has vp_x at infinity but finite vp_z and vp_y.
+        # Points this far out are as good as at infinity: the focal length they give swings wildly with tiny errors
+        far = 10.0 * size
         candidates = [vp_x, vp_z] + ([vp_y] if vp_y is not None else [])
-        usable = [v[:2] / v[2] for v in candidates if abs(v[2]) > 1e-9]
+        usable = [v[:2] / v[2] for v in candidates
+                  if abs(v[2]) > 1e-9 and np.linalg.norm(v[:2] / v[2] - principal) < far]
         if len(usable) < 2:
             raise ValueError("need two finite vanishing points (or a known focal length)")
-        focal_px = focal_from_vps(usable[0], usable[1], principal)
+        focal_px = None
+        for i in range(len(usable)):
+            for j in range(i + 1, len(usable)):
+                try:
+                    f = focal_from_vps(usable[i], usable[j], principal)
+                except ValueError:
+                    continue
+                if 0.3 * size <= f <= 2.5 * size:  # phone ultra-wide to about a 3x lens
+                    focal_px = f
+                    break
+            if focal_px is not None:
+                break
+        if focal_px is None:
+            raise ValueError("the vanishing points don't give a believable focal length")
 
     K = np.array([[focal_px, 0, principal[0]], [0, focal_px, principal[1]], [0, 0, 1.0]])
     K_inv = np.linalg.inv(K)
 
     dx = _direction(vp_x, K_inv)
-    dz = _direction(vp_z, K_inv)
     if vp_y is not None:
         dy = _direction(vp_y, K_inv)
+        dy = dy - dx * np.dot(dx, dy)
+        dy /= np.linalg.norm(dy)
     else:
-        dy = np.cross(dz, dx)
+        dy = np.cross(_direction(vp_z, K_inv), dx)
+        dy /= np.linalg.norm(dy)
 
     # world +Y is up, which is -y in the OpenCV camera frame for an upright photo
     if dy[1] > 0:
         dy = -dy
-    # pick X/Z signs so X points right-ish and the frame is right-handed
+    # X points right-ish, Z completes a right-handed frame
     if dx[0] < 0:
         dx = -dx
-    if np.dot(np.cross(dx, dy), dz) < 0:
-        dz = -dz
+    dz = np.cross(dx, dy)
 
     # columns are world axes expressed in camera coords
     R = _orthonormalize(np.column_stack([dx, dy, dz]))

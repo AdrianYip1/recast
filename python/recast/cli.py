@@ -84,7 +84,11 @@ def cmd_scene(args) -> None:
         vp_z = vp_from_segments(np.asarray(lines["z"]))
         vp_y = vp_from_segments(np.asarray(lines["y"])) if lines.get("y") else None
     else:
-        segs = detect_segments(img)
+        # straight edges from a 1600 px copy: plenty for vanishing points, and much faster than the full photo
+        shrink = min(1.0, 1600 / max(img.shape[:2]))
+        small = img if shrink == 1.0 else cv2.resize(img.astype(np.float32), (round(img.shape[1] * shrink), round(img.shape[0] * shrink)),
+                                                    interpolation=cv2.INTER_AREA)
+        segs = detect_segments(small) / shrink
         found = find_vanishing_points(segs, count=3)
         print(f"{len(segs)} line segments, {len(found)} vanishing points")
         try:
@@ -95,13 +99,13 @@ def cmd_scene(args) -> None:
                      '  {"x": [[x1,y1,x2,y2], ...], "z": [...], "y": [...]}   (x, z horizontal; y vertical, optional)')
 
     try:
-        cam = solve_camera(w, h, vp_x, vp_z, vp_y, focal_px=focal_px if args.trust_exif else None,
+        cam = solve_camera(w, h, vp_x, vp_z, vp_y, focal_px=None if args.solve_focal else focal_px,
                            camera_height=args.camera_height)
     except ValueError as e:
-        if not focal_px:
-            sys.exit(f"camera solve failed ({e}); pass --focal-px, or trace more edges with --lines")
-        print(f"could not solve focal length ({e}), using EXIF")
-        cam = solve_camera(w, h, vp_x, vp_z, vp_y, focal_px=focal_px, camera_height=args.camera_height)
+        # no EXIF and no usable vanishing points (e.g. a photo taken square to a wall): a typical phone lens
+        fallback = focal_px or 0.9 * max(w, h)
+        print(f"could not solve the focal length ({e}), using {'EXIF' if focal_px else 'a typical phone lens'}")
+        cam = solve_camera(w, h, vp_x, vp_z, vp_y, focal_px=fallback, camera_height=args.camera_height)
     print(f"camera: f = {cam.focal_px:.1f} px ({np.degrees(cam.fov_y):.1f} deg vertical fov), "
           f"height {args.camera_height} m")
 
@@ -306,7 +310,8 @@ def main(argv=None) -> None:
     a.add_argument("--focal-px", type=float)
     a.add_argument("--focal-mm", type=float)
     a.add_argument("--sensor-width-mm", type=float)
-    a.add_argument("--trust-exif", action="store_true", help="use the EXIF focal length instead of solving it")
+    a.add_argument("--trust-exif", action="store_true", help="(default now) use the EXIF focal length when the photo has one")
+    a.add_argument("--solve-focal", action="store_true", help="solve the focal length from vanishing points even with EXIF")
     a.add_argument("--k1", type=float, default=0.0)
     a.add_argument("--k2", type=float, default=0.0)
     a.add_argument("--no-lensfun", action="store_true")
