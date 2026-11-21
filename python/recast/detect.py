@@ -672,7 +672,26 @@ def scale_from_known_heights(det: Detection) -> tuple[float, list[str]]:
             used.append(f"{o['label']} {top:.2f} m (usually {known:.2f})")
     if not ratios:
         return 1.0, used
-    return float(np.clip(np.median(ratios), 0.6, 1.6)), used
+    # labels are often wrong (a bench called a table) and a hand-held camera is ~1.5 m up anyway: correct by 25% at most
+    return float(np.clip(np.median(ratios), 0.8, 1.25)), used
+
+
+# Furniture that's open underneath (a top on legs): only its top is a box, so light, shadows and objects pass under it
+OPEN_BELOW = {"table", "desk", "bench", "coffee table", "stool", "side table", "console table"}
+SLAB = 0.06              # m: thickness of the top that stands in for open furniture
+
+
+def open_below_slabs(det: Detection) -> Detection:
+    """Tables, desks, benches and stools as their top only. A solid box to the floor would block the light and the
+    inserted object's shadow under them, where the photo shows open floor between the legs."""
+    from dataclasses import replace
+    open_ids = {pid for o in det.objects if o["label"] in OPEN_BELOW and len(o["proxy_ids"]) == 1 for pid in o["proxy_ids"]}
+    proxies = []
+    for p in det.proxies:
+        if isinstance(p, BoxProxy) and p.id in open_ids and p.max[1] - p.min[1] > SLAB:
+            p = replace(p, min=(p.min[0], p.max[1] - SLAB, p.min[2]))
+        proxies.append(p)
+    return replace(det, proxies=proxies)
 
 
 def scaled(det: Detection, k: float) -> Detection:

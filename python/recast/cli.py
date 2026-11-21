@@ -195,6 +195,8 @@ def cmd_detect(args) -> None:
         if data.get("object", {}) and data["object"].get("transform"):
             data["object"]["transform"]["position"] = [float(v) * k for v in data["object"]["transform"]["position"]]
 
+    det = detect.open_below_slabs(det)
+
     mdir = out / "masks"
     mdir.mkdir(exist_ok=True)
     for f in mdir.glob("*.png"):
@@ -207,8 +209,10 @@ def cmd_detect(args) -> None:
         lo = np.min([b.min for b in boxes], axis=0)
         hi = np.max([b.max for b in boxes], axis=0)
         size = hi - lo
-        rests = "floor" if lo[1] < 1e-6 else f"{lo[1]:.2f} m up"
-        print(f"  {o['label']:<14} {size[0]:.2f} x {size[1]:.2f} x {size[2]:.2f} m, on the {rests}"
+        rests = "on the floor" if lo[1] < 1e-6 else f"on the {lo[1]:.2f} m up"
+        if o["label"] in detect.OPEN_BELOW and len(boxes) == 1:
+            rests = f"top at {hi[1]:.2f} m (open below)"
+        print(f"  {o['label']:<14} {size[0]:.2f} x {size[1]:.2f} x {size[2]:.2f} m, {rests}"
               f"{'  (2 boxes: seat + back)' if len(boxes) > 1 else ''}")
         objects.append({"label": o["label"], "score": o["score"], "proxy_ids": o["proxy_ids"],
                         "mask": f"masks/{name}"})
