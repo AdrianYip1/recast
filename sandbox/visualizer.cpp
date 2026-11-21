@@ -379,12 +379,37 @@ Mat4 Visualizer::objectTransform() const {
 }
 
 // Where the object goes for this mouse ray: the first surface it points at, or the floor in front of it when that's a
-// wall or the side of a box, so the object never ends up hidden behind something
+// wall or the side of a box, so the object never ends up hidden behind something. A box only counts where the photo's
+// cutout says it shows that piece of furniture: elsewhere the box is looser than the real thing, and the ray looks past it
 recast::RayHit Visualizer::supportUnderCursor(const Vec3& origin, const Vec3& direction) {
 	constexpr float supportNormalY = 0.7f;
-	recast::RayHit hit = recast::raycastProxies(scene.proxies, origin, direction);
+	std::vector<recast::Proxy> shown = scene.proxies;
+	recast::RayHit hit;
+	for (int pass = 0; pass < 8; pass++) {
+		hit = recast::raycastProxies(shown, origin, direction);
+		if (!hit.valid()) break;
+		const recast::Proxy& proxy = shown[hit.proxyIndex];
+		auto mask = proxyMaskIds.find(proxy.id);
+		if (proxy.type != "box" || mask == proxyMaskIds.end() || photoOwnerAt(hit.point) == mask->second) break;
+		shown.erase(shown.begin() + hit.proxyIndex);
+	}
 	if (!hit.valid() || hit.normal.y >= supportNormalY) return hit;
-	return recast::raycastProxies(scene.proxies, hit.point + hit.normal * 0.02f, Vec3(0.0f, -1.0f, 0.0f), supportNormalY);
+	return recast::raycastProxies(shown, hit.point + hit.normal * 0.02f, Vec3(0.0f, -1.0f, 0.0f), supportNormalY);
+}
+
+// Which detected object's cutout the photo shows where `point` appears (0 = none, or no cutouts)
+foto::u32 Visualizer::photoOwnerAt(const Vec3& point) const {
+	if (ownerPixels.empty()) return 0;
+	const recast::SceneCamera& c = scene.camera;
+	Vec3 d = point - Vec3(c.position[0], c.position[1], c.position[2]);
+	Vec3 local;
+	for (int j = 0; j < 3; j++) local[j] = c.rotation[0][j] * d.x + c.rotation[1][j] * d.y + c.rotation[2][j] * d.z;
+	if (local.z > -1e-3f) return 0;
+	float u = (c.cx + c.fx * local.x / -local.z) / std::max(1.0f, static_cast<float>(scene.image_size[0]));
+	float v = (c.cy - c.fy * local.y / -local.z) / std::max(1.0f, static_cast<float>(scene.image_size[1]));
+	if (u < 0.0f || v < 0.0f || u >= 1.0f || v >= 1.0f) return 0;
+	int x = std::min(static_cast<int>(u * ownerWidth), ownerWidth - 1), y = std::min(static_cast<int>(v * ownerHeight), ownerHeight - 1);
+	return ownerPixels[(static_cast<size_t>(y) * ownerWidth + x) * 4];
 }
 
 // Light markers sit at point lights, and 2 m back along a directional light from the middle of the room
@@ -853,12 +878,13 @@ void Visualizer::loadProxyLabels() {
 	proxyLabels.clear();
 	proxyMaskIds.clear();
 	ownerTexture = 0;
+	ownerPixels.clear();
+	ownerWidth = ownerHeight = 0;
 	std::ifstream file(scene.directory / "detect.json");
 	if (!file) return;
 	try {
 		nlohmann::json detect = nlohmann::json::parse(file);
-		std::vector<unsigned char> owners;
-		int ownerWidth = 0, ownerHeight = 0;
+		std::vector<unsigned char>& owners = ownerPixels;
 		foto::u32 next = 1;
 		for (const auto& object : detect.value("objects", nlohmann::json::array())) {
 			std::string label = object.value("label", "object");

@@ -121,6 +121,9 @@ private:
 	std::map<foto::u32, std::string> proxyLabels;
 	std::map<foto::u32, foto::u32> proxyMaskIds; // proxy id -> its object's cutout number in the owner image
 	foto::u32 ownerTexture = 0;
+	std::vector<unsigned char> ownerPixels; // the owner image on the CPU too, for picking (RGBA, R = cutout number)
+	int ownerWidth = 0, ownerHeight = 0;
+	foto::u32 photoOwnerAt(const enginemath::Vec3& point) const;
 	void loadProxyLabels();
 	std::string proxyName(size_t index) const;
 	bool projectToScreen(const enginemath::Vec3& point, ImVec2& out);
