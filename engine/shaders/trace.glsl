@@ -115,10 +115,31 @@ Hit traceClosest(vec3 origin, vec3 direction, uint mask) {
 	return hit;
 }
 
+// Windows (area lights) are openings in their wall: a room surface hit inside one doesn't block light from outside
+bool inWindow(vec3 position) {
+	for (uint i = 0u; i < frame.lightInfo.x; i++) {
+		Light light = frame.lights[i];
+		if (!isArea(light)) continue;
+		vec3 offset = position - light.position.xyz;
+		if (abs(dot(offset, areaNormal(light))) > 0.15) continue; // the window light sits 5 cm in front of its wall
+		float halfWidth = length(light.direction.xyz);
+		if (abs(dot(offset, light.direction.xyz / halfWidth)) <= halfWidth && abs(offset.y) <= light.direction.w) return true;
+	}
+	return false;
+}
+
 bool occluded(vec3 origin, vec3 direction, float maxDistance, uint mask) {
 	rayQueryEXT query;
-	rayQueryInitializeEXT(query, scene, gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT, mask, origin, 1e-4, direction, maxDistance);
-	while (rayQueryProceedEXT(query)) {}
+	rayQueryInitializeEXT(query, scene, gl_RayFlagsNoOpaqueEXT, mask, origin, 1e-4, direction, maxDistance);
+	while (rayQueryProceedEXT(query)) {
+		if (rayQueryGetIntersectionTypeEXT(query, false) != gl_RayQueryCandidateIntersectionTriangleEXT) continue;
+		Geometry geometry = geometries[rayQueryGetIntersectionInstanceCustomIndexEXT(query, false) + rayQueryGetIntersectionGeometryIndexEXT(query, false)];
+		vec3 position = origin + direction * rayQueryGetIntersectionTEXT(query, false);
+		if (geometry.dynamic != 0u || !inWindow(position)) {
+			rayQueryConfirmIntersectionEXT(query);
+			rayQueryTerminateEXT(query);
+		}
+	}
 	return rayQueryGetIntersectionTypeEXT(query, true) != gl_RayQueryCommittedIntersectionNoneEXT;
 }
 

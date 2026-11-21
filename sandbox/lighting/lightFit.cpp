@@ -63,7 +63,27 @@ namespace {
 	struct Occluders {
 		std::vector<Occluder> list;
 
-		explicit Occluders(const std::vector<recast::Proxy>& proxies) {
+		// windows: openings in their wall (centre, unit along the wall, half width, half height, facing)
+		struct Window { Vec3 centre, along; float halfWidth = 0.0f, halfHeight = 0.0f; Vec3 normal; };
+		std::vector<Window> windows;
+
+		explicit Occluders(const std::vector<recast::Proxy>& proxies, const std::vector<recast::SceneLight>* lights = nullptr) {
+			if (lights) {
+				for (const recast::SceneLight& light : *lights) {
+					if (light.type != "area") continue;
+					Vec3 c[4];
+					for (int k = 0; k < 4; k++) c[k] = Vec3(light.corners[k][0], light.corners[k][1], light.corners[k][2]);
+					Window window;
+					window.centre = (c[0] + c[1] + c[2] + c[3]) * 0.25f;
+					Vec3 across = (c[1] - c[0]) * 0.5f;
+					window.halfWidth = std::sqrt(across.dot(across));
+					if (window.halfWidth < 1e-4f) continue;
+					window.along = across / window.halfWidth;
+					window.halfHeight = 0.5f * (c[3].y - c[0].y);
+					window.normal = window.along.cross(Vec3(0.0f, 1.0f, 0.0f)).normalized();
+					windows.push_back(window);
+				}
+			}
 			for (const recast::Proxy& proxy : proxies) {
 				Occluder occluder;
 				occluder.box = proxy.type == "box";
@@ -74,6 +94,15 @@ namespace {
 				occluder.max = Vec3(proxy.max[0], proxy.max[1], proxy.max[2]);
 				list.push_back(occluder);
 			}
+		}
+
+		bool inWindow(const Vec3& position) const {
+			for (const Window& w : windows) {
+				Vec3 offset = position - w.centre;
+				if (std::abs(offset.dot(w.normal)) > 0.15f) continue;
+				if (std::abs(offset.dot(w.along)) <= w.halfWidth && std::abs(offset.y) <= w.halfHeight) return true;
+			}
+			return false;
 		}
 
 		// Any hit with 0 < t < maxT
@@ -101,7 +130,7 @@ namespace {
 					float denominator = o.normal.dot(direction);
 					if (std::abs(denominator) < 1e-6f) continue;
 					float t = (o.point - origin).dot(o.normal) / denominator;
-					if (t > 1e-5f && t < maxT) return true;
+					if (t > 1e-5f && t < maxT && !inWindow(origin + direction * t)) return true;
 				}
 			}
 			return false;
@@ -208,7 +237,7 @@ namespace {
 
 	std::vector<ProxySolution> solvePerProxy(const recast::SceneFile& scene, const std::vector<recast::LightingSample>& samples,
 											 const std::vector<recast::FitLight>& lights, double& residual) {
-		Occluders occluders(scene.proxies);
+		Occluders occluders(scene.proxies, &scene.lights);
 		int unknowns = 1 + static_cast<int>(lights.size());
 		size_t proxyCount = scene.proxies.size();
 
@@ -607,7 +636,7 @@ namespace recast {
 static void fitLightSizes(const SceneFile& scene, const std::vector<LightingSample>& samples, std::vector<FitLight>& lights) {
 	// Light sizes only change samples near shadow edges, so search on those plus a thin spread of the rest
 	// (which keeps every surface's least squares solve stable)
-	Occluders occluders(scene.proxies);
+	Occluders occluders(scene.proxies, &scene.lights);
 	std::vector<LightingSample> sizeSamples;
 	for (size_t s = 0; s < samples.size(); s++) {
 		bool edge = false;
@@ -817,7 +846,7 @@ recast::LightingFit recast::fitMainLight(const SceneFile& scene, const std::vect
 	// When the per-surface solves can't separate ambient from the light (colour changes within a piece of furniture
 	// look like shading), the ambient collapses to zero and every shadow would be black. Then measure it where no
 	// light reaches (shadows, surfaces facing away), and with a single light refit its strength against that ambient
-	Occluders occluders(scene.proxies);
+	Occluders occluders(scene.proxies, &scene.lights);
 	std::vector<double> terms(subset.size(), 0.0);
 	for (size_t i = 0; i < subset.size(); i++) {
 		for (const FitLight& light : lights) terms[i] += lightTerm(occluders, subset[i], light);
