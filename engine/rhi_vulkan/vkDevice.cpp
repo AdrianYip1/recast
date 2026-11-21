@@ -32,7 +32,8 @@ static VkDebugUtilsMessengerCreateInfoEXT debugMessengerInfo() {
 foto::Device::Device() :
 	instance(createInstance()),
 	debugMessenger(createDebugMessenger(instance)),
-	physicalDevice(selectPhysicalDevice(instance))
+	physicalDevice(selectPhysicalDevice(instance)),
+	logicalDevice(selectLogicalDevice(physicalDevice))
 {
 
 }
@@ -189,11 +190,21 @@ bool foto::Device::extensionsSuitable(VkPhysicalDevice device) {
 		});
 }
 
-VkDevice foto::Device::selectLogicalDevice() {
-	VkDeviceCreateInfo createInfo = {
-	.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
+VkDevice foto::Device::selectLogicalDevice(VkPhysicalDevice physicalDevice) {
+	VkDevice logicalDevice = VK_NULL_HANDLE;
 
+	VkDeviceCreateInfo createInfo = {
+		.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
+		.enabledLayerCount = 0,
+		.ppEnabledLayerNames = nullptr,
+		.enabledExtensionCount = 0,
+		.ppEnabledExtensionNames = nullptr,
+		.pEnabledFeatures = nullptr
 	};
 
-	return VK_NULL_HANDLE;
+	if (vkCreateDevice(physicalDevice, &createInfo, nullptr, &logicalDevice) != VK_SUCCESS) {
+		throw std::runtime_error("ERROR: vkDevice.cpp -> selectLogicalDevice()");
+	}
+
+	return logicalDevice;
 }
