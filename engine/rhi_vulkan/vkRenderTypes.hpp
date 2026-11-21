@@ -17,6 +17,8 @@ namespace foto {
 		alignas(16) enginemath::Mat4 proj;
 		alignas(16) enginemath::Vec4 cameraPos; // xyz = world position
 		alignas(16) enginemath::Vec4 lightDir;  // xyz = direction the light travels (normalized)
+		alignas(16) enginemath::Vec4 exposure;  // x = linear multiplier (2^EV)
+		alignas(16) enginemath::Vec4 whiteBalance; // rgb gains
 	};
 
 	// Per-draw push constants ("Push" in the shaders)

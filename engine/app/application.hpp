@@ -56,6 +56,11 @@ namespace foto {
 		void setLightDirection(const enginemath::Vec3& direction);
 		void screenshot(const std::string& filePath);
 
+		void setExposure(f32 ev);
+		f32 getExposure() { return exposureEV; };
+		void setWhiteBalance(const enginemath::Vec3& gains);
+		const enginemath::Vec3& getWhiteBalance() { return whiteBalance; };
+
 		// Hold right mouse to look, WASD to move, E/Q up/down, shift to go faster
 		void flyCamera(f32 deltaTime, f32 speed = 3.0f, f32 sensitivity = 0.003f);
 
@@ -64,6 +69,7 @@ namespace foto {
 		std::unique_ptr<Device> device;
 		std::unique_ptr<Swapchain> swapchain;
 		std::unique_ptr<Pipeline> pipeline;
+		std::unique_ptr<Pipeline> presentPipeline;
 		std::unique_ptr<Render> render;
 		std::unique_ptr<ImGuiLayer> imgui;
 
@@ -74,6 +80,8 @@ namespace foto {
 		std::vector<DrawItem> drawList;
 		Camera camera;
 		enginemath::Vec3 lightDirection = enginemath::Vec3(-0.3f, -0.8f, -0.5f).normalized();
+		f32 exposureEV = 0.0f;
+		enginemath::Vec3 whiteBalance = enginemath::Vec3(1.0f, 1.0f, 1.0f);
 
 		u32 addTexture(std::unique_ptr<Image> image);
 	};

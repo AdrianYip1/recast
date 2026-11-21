@@ -87,6 +87,11 @@ void Visualizer::onImGui() {
 		updateMaterial(groundMaterial, groundTint);
 	}
 
+	float exposure = getExposure();
+	if (ImGui::SliderFloat("exposure (EV)", &exposure, -4.0f, 4.0f)) setExposure(exposure);
+	Vec3 balance = getWhiteBalance();
+	if (ImGui::ColorEdit3("white balance", &balance.x)) setWhiteBalance(balance);
+
 	if (ImGui::Button("screenshot (F12)")) screenshot("screenshot.png");
 	ImGui::TextDisabled("hold right mouse + WASD / QE to fly");
 	ImGui::End();
