@@ -4,8 +4,10 @@
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include <stb_image_write.h>
 
-foto::Render::Render(Device& device, Swapchain& swapchain, Pipeline& pipeline, Pipeline& presentPipeline, Pipeline& shadowPipeline) :
+foto::Render::Render(Device& device, Swapchain& swapchain, Pipeline& pipeline, Pipeline& presentPipeline, Pipeline& shadowPipeline,
+					 Pipeline* pathTracePipeline) :
 	device(device), swapchain(swapchain), pipeline(pipeline), presentPipeline(presentPipeline), shadowPipeline(shadowPipeline),
+	pathTracePipeline(pathTracePipeline),
 	_device(device.getDevice()), _commandPool(createCommandPool(device)),
 	commandBuffers(createCommandBuffers(device, _commandPool)),
 	uniformBuffers(createUniformBuffers(device)),
@@ -44,6 +46,18 @@ foto::Render::Render(Device& device, Swapchain& swapchain, Pipeline& pipeline, P
 	dynamicShadowAtlas = createShadowAtlas(device);
 	staticShadowSlot = addTexture(*staticShadowAtlas, *hdrSampler);
 	dynamicShadowSlot = addTexture(*dynamicShadowAtlas, *hdrSampler);
+
+	if (pathTracePipeline) {
+		traceDescriptorPool = std::make_unique<DescriptorPool>(device, MAX_FRAMES_IN_FLIGHT,
+															   pathTracePipeline->getDescriptorSetLayoutInfo(1).poolSizes(MAX_FRAMES_IN_FLIGHT));
+		traceSets = traceDescriptorPool->allocate(pathTracePipeline->getDescriptorSetLayout(1), MAX_FRAMES_IN_FLIGHT);
+		for (size i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+			topLevels.push_back(std::make_unique<TopLevelAccelerationStructure>(device, MAX_TRACE_INSTANCES));
+			geometryBuffers.push_back(std::make_unique<Buffer>(device, sizeof(GpuGeometry) * MAX_TRACE_GEOMETRIES, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+															   VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT));
+		}
+		createTraceImages();
+	}
 
 	createSyncObjects(_device, swapchain.getImages().size());
 };
@@ -188,6 +202,156 @@ void foto::Render::onSwapchainRecreated() {
 	depthImage = createDepthImage(device, swapchain.getExtent());
 	hdrImage = createHdrImage(device, swapchain.getExtent());
 	writeTextureSlot(hdrTextureSlot, *hdrImage, *hdrSampler);
+	if (pathTracePipeline) createTraceImages();
+}
+
+void foto::Render::setPathTracing(bool enabled, u32 photoTexture) {
+	pathTracing = enabled && pathTracePipeline;
+	tracePhotoTexture = photoTexture;
+}
+
+void foto::Render::createTraceImages() {
+	accumulationImage = std::make_unique<Image>(device, swapchain.getExtent(), VK_FORMAT_R32G32B32A32_SFLOAT, VK_IMAGE_USAGE_STORAGE_BIT);
+	device.immediateSubmit(_commandPool, [&](VkCommandBuffer commandBuffer) {
+		Image::transitionLayout(commandBuffer, accumulationImage->getImage(), VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
+	});
+
+	for (size i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+		DescriptorWriter()
+			.writeAccelerationStructure(0, topLevels[i]->getHandle())
+			.writeImage(1, accumulationImage->getView(), VK_NULL_HANDLE, VK_IMAGE_LAYOUT_GENERAL, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
+			.writeImage(2, hdrImage->getView(), VK_NULL_HANDLE, VK_IMAGE_LAYOUT_GENERAL, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
+			.writeBuffer(3, geometryBuffers[i]->getBuffer(), sizeof(GpuGeometry) * MAX_TRACE_GEOMETRIES, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER)
+			.update(device, traceSets[i]);
+	}
+	traceKey.clear();
+}
+
+void foto::Render::updateTraceSamples(std::span<const DrawItem> items, const FrameUbo& frameUbo) {
+	FrameUbo keyUbo = frameUbo;
+	keyUbo.exposure = {};
+	keyUbo.whiteBalance = {};
+
+	std::vector<u8> key(sizeof(FrameUbo) + sizeof(u32) * 2);
+	std::memcpy(key.data(), &keyUbo, sizeof(FrameUbo));
+	std::memcpy(key.data() + sizeof(FrameUbo), &tracePhotoTexture, sizeof(u32));
+	u32 version = static_cast<u32>(materialsVersion);
+	std::memcpy(key.data() + sizeof(FrameUbo) + sizeof(u32), &version, sizeof(u32));
+	for (const DrawItem& item : items) {
+		if (!item.mesh || item.shadowCaster == ShadowCaster::None) continue;
+		auto append = [&key](const void* data, size bytes) {
+			const u8* begin = static_cast<const u8*>(data);
+			key.insert(key.end(), begin, begin + bytes);
+		};
+		append(&item.mesh, sizeof(item.mesh));
+		append(&item.transform, sizeof(item.transform));
+		append(&item.materialOverride, sizeof(item.materialOverride));
+		append(&item.shadowCaster, sizeof(item.shadowCaster));
+	}
+
+	if (key != traceKey) {
+		traceKey = std::move(key);
+		traceSamples = 0;
+	}
+}
+
+void foto::Render::recordPathTrace(VkCommandBuffer commandBuffer, std::span<const DrawItem> items, const FrameUbo& frameUbo, VkExtent2D extent) {
+	updateTraceSamples(items, frameUbo);
+
+	std::vector<VkAccelerationStructureInstanceKHR> instances;
+	std::vector<GpuGeometry> geometries;
+	for (const DrawItem& item : items) {
+		if (!item.mesh || item.shadowCaster == ShadowCaster::None || !item.mesh->getBottomLevel()) continue;
+		std::vector<Submesh>& submeshes = item.mesh->getSubmeshes();
+		if (instances.size() >= MAX_TRACE_INSTANCES || geometries.size() + submeshes.size() > MAX_TRACE_GEOMETRIES) break;
+
+		bool dynamic = item.shadowCaster == ShadowCaster::Dynamic;
+		VkAccelerationStructureInstanceKHR instance = {
+			.instanceCustomIndex = static_cast<u32>(geometries.size()),
+			.mask = dynamic ? 0x02u : 0x01u,
+			.instanceShaderBindingTableRecordOffset = 0,
+			.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR,
+			.accelerationStructureReference = item.mesh->getBottomLevel()->getAddress(),
+		};
+		for (int row = 0; row < 3; row++) {
+			for (int col = 0; col < 4; col++) instance.transform.matrix[row][col] = item.transform.m[col][row];
+		}
+		instances.push_back(instance);
+
+		for (const Submesh& submesh : submeshes) {
+			geometries.push_back({
+				.vertexAddress = item.mesh->getVertexBuffer().getDeviceAddress(),
+				.indexAddress = item.mesh->getIndexBuffer().getDeviceAddress(),
+				.firstIndex = submesh.firstIndex,
+				.materialIndex = item.materialOverride != NO_MATERIAL_OVERRIDE ? item.materialOverride : submesh.materialIndex,
+				.dynamic = dynamic ? 1u : 0u,
+			});
+		}
+	}
+	if (!geometries.empty()) geometryBuffers[currentFrame]->upload(geometries.data(), sizeof(GpuGeometry) * geometries.size());
+	topLevels[currentFrame]->build(commandBuffer, instances);
+
+	VkMemoryBarrier2 memoryBarriers[] = {
+		{
+			.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+			.srcStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+			.srcAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,
+			.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+			.dstAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR,
+		},
+		{
+			.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+			.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+			.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+			.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+			.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+		},
+	};
+	VkImageMemoryBarrier2 hdrToStorage = {
+		.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+		.srcStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+		.srcAccessMask = VK_ACCESS_2_NONE,
+		.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+		.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+		.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+		.newLayout = VK_IMAGE_LAYOUT_GENERAL,
+		.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+		.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+		.image = hdrImage->getImage(),
+		.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
+	};
+	VkDependencyInfo beforeTrace = {
+		.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+		.memoryBarrierCount = 2,
+		.pMemoryBarriers = memoryBarriers,
+		.imageMemoryBarrierCount = 1,
+		.pImageMemoryBarriers = &hdrToStorage,
+	};
+	vkCmdPipelineBarrier2(commandBuffer, &beforeTrace);
+
+	VkDescriptorSet sets[] = { descriptorSets[currentFrame], traceSets[currentFrame] };
+	vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pathTracePipeline->getPipeline());
+	vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pathTracePipeline->getPipelineLayout(), 0, 2, sets, 0, nullptr);
+	TracePush push = { .sampleIndex = traceSamples, .photoTexture = tracePhotoTexture, .trace = traceSamples < MAX_TRACE_SAMPLES ? 1u : 0u };
+	vkCmdPushConstants(commandBuffer, pathTracePipeline->getPipelineLayout(), TRACE_PUSH_RANGE.stageFlags, 0, sizeof(TracePush), &push);
+	vkCmdDispatch(commandBuffer, (extent.width + 7) / 8, (extent.height + 7) / 8, 1);
+	if (traceSamples < MAX_TRACE_SAMPLES) traceSamples++;
+
+	VkImageMemoryBarrier2 hdrToSampled = {
+		.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+		.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+		.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+		.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+		.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+		.oldLayout = VK_IMAGE_LAYOUT_GENERAL,
+		.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+		.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+		.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+		.image = hdrImage->getImage(),
+		.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
+	};
+	VkDependencyInfo afterTrace = { .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &hdrToSampled };
+	vkCmdPipelineBarrier2(commandBuffer, &afterTrace);
 }
 
 void foto::Render::createSyncObjects(VkDevice device, size swapchainImageCount) {
@@ -242,6 +406,99 @@ void foto::Render::recordCommandBuffer(VkCommandBuffer commandBuffer, u32 imageI
 	VkExtent2D extent = swapchain.getExtent();
 	VkImage swapchainImage = swapchain.getImages()[imageIdx];
 
+	if (pathTracing) recordPathTrace(commandBuffer, items, frameUbo, extent);
+	else recordRasterScene(commandBuffer, items, frameUbo, extent);
+
+	VkImageMemoryBarrier2 swapchainToAttachment = {
+		.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+		.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+		.srcAccessMask = 0,
+		.dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+		.dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+		.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+		.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+		.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+		.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+		.image = swapchainImage,
+		.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
+	};
+	VkDependencyInfo swapchainDependency = { .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &swapchainToAttachment };
+	vkCmdPipelineBarrier2(commandBuffer, &swapchainDependency);
+
+	VkRenderingAttachmentInfo swapchainAttachment = {
+		.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+		.imageView = swapchain.getImageViews()[imageIdx],
+		.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+		.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+		.storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+	};
+
+	VkRenderingInfo presentRendering = {
+		.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+		.renderArea = { .offset = {0, 0}, .extent = extent },
+		.layerCount = 1,
+		.colorAttachmentCount = 1,
+		.pColorAttachments = &swapchainAttachment,
+	};
+	vkCmdBeginRendering(commandBuffer, &presentRendering);
+	setFullViewport(commandBuffer, extent);
+
+	vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, presentPipeline.getPipeline());
+	vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, presentPipeline.getPipelineLayout(),
+							0, 1, &descriptorSets[currentFrame], 0, nullptr);
+	DrawPush tonemapPush = { .model = enginemath::Mat4::identity(), .materialIndex = tonemapMaterial };
+	vkCmdPushConstants(commandBuffer, presentPipeline.getPipelineLayout(), DRAW_PUSH_RANGE.stageFlags, 0, sizeof(DrawPush), &tonemapPush);
+	vkCmdDraw(commandBuffer, 3, 1, 0, 0);
+
+	if (overlay) overlay(commandBuffer);
+
+	vkCmdEndRendering(commandBuffer);
+
+	VkImageLayout finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+	if (capture) {
+		Image::transitionLayout(commandBuffer, swapchainImage,
+								VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+
+		VkBufferImageCopy copyRegion = {
+			.bufferOffset = 0,
+			.bufferRowLength = 0,
+			.bufferImageHeight = 0,
+			.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+			.imageOffset = {0, 0, 0},
+			.imageExtent = {extent.width, extent.height, 1}
+		};
+		vkCmdCopyImageToBuffer(commandBuffer, swapchainImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+							   screenshotBuffer->getBuffer(), 1, &copyRegion);
+		finalLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+	}
+
+	VkImageMemoryBarrier2 toPresent = {
+		.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+		.srcStageMask = capture ? VK_PIPELINE_STAGE_2_COPY_BIT : VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+		.srcAccessMask = capture ? VK_ACCESS_2_NONE : VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+		.dstStageMask = VK_PIPELINE_STAGE_2_NONE,
+		.oldLayout = finalLayout,
+		.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+		.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+		.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+		.image = swapchainImage,
+		.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
+	};
+
+	VkDependencyInfo toPresentDep = {
+		.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+		.imageMemoryBarrierCount = 1,
+		.pImageMemoryBarriers = &toPresent,
+	};
+	vkCmdPipelineBarrier2(commandBuffer, &toPresentDep);
+
+	if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS) {
+		throw std::runtime_error("ERROR: vkRender.cpp -> recordCommandBuffer()");
+	}
+}
+
+void foto::Render::recordRasterScene(VkCommandBuffer commandBuffer, std::span<const DrawItem> items, const FrameUbo& frameUbo, VkExtent2D extent) {
 	recordShadowPass(commandBuffer, *staticShadowAtlas, ShadowCaster::Static, items, frameUbo);
 	recordShadowPass(commandBuffer, *dynamicShadowAtlas, ShadowCaster::Dynamic, items, frameUbo);
 
@@ -272,24 +529,11 @@ void foto::Render::recordCommandBuffer(VkCommandBuffer commandBuffer, u32 imageI
 			.image = depthImage->getImage(),
 			.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1},
 		},
-		{
-			.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-			.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-			.srcAccessMask = 0,
-			.dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-			.dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-			.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-			.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-			.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-			.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-			.image = swapchainImage,
-			.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
-		},
 	};
 
 	VkDependencyInfo beginDependency = {
 		.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-		.imageMemoryBarrierCount = 3,
+		.imageMemoryBarrierCount = 2,
 		.pImageMemoryBarriers = beginBarriers,
 	};
 	vkCmdPipelineBarrier2(commandBuffer, &beginDependency);
@@ -387,78 +631,6 @@ void foto::Render::recordCommandBuffer(VkCommandBuffer commandBuffer, u32 imageI
 		.pImageMemoryBarriers = &hdrToSampled,
 	};
 	vkCmdPipelineBarrier2(commandBuffer, &hdrDependency);
-
-	VkRenderingAttachmentInfo swapchainAttachment = {
-		.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-		.imageView = swapchain.getImageViews()[imageIdx],
-		.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-		.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-		.storeOp = VK_ATTACHMENT_STORE_OP_STORE,
-	};
-
-	VkRenderingInfo presentRendering = {
-		.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
-		.renderArea = { .offset = {0, 0}, .extent = extent },
-		.layerCount = 1,
-		.colorAttachmentCount = 1,
-		.pColorAttachments = &swapchainAttachment,
-	};
-	vkCmdBeginRendering(commandBuffer, &presentRendering);
-	setFullViewport(commandBuffer, extent);
-
-	vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, presentPipeline.getPipeline());
-	vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, presentPipeline.getPipelineLayout(),
-							0, 1, &descriptorSets[currentFrame], 0, nullptr);
-	DrawPush tonemapPush = { .model = enginemath::Mat4::identity(), .materialIndex = tonemapMaterial };
-	vkCmdPushConstants(commandBuffer, presentPipeline.getPipelineLayout(), DRAW_PUSH_RANGE.stageFlags, 0, sizeof(DrawPush), &tonemapPush);
-	vkCmdDraw(commandBuffer, 3, 1, 0, 0);
-
-	if (overlay) overlay(commandBuffer);
-
-	vkCmdEndRendering(commandBuffer);
-
-	VkImageLayout finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-
-	if (capture) {
-		Image::transitionLayout(commandBuffer, swapchainImage,
-								VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
-
-		VkBufferImageCopy copyRegion = {
-			.bufferOffset = 0,
-			.bufferRowLength = 0,
-			.bufferImageHeight = 0,
-			.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-			.imageOffset = {0, 0, 0},
-			.imageExtent = {extent.width, extent.height, 1}
-		};
-		vkCmdCopyImageToBuffer(commandBuffer, swapchainImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-							   screenshotBuffer->getBuffer(), 1, &copyRegion);
-		finalLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-	}
-
-	VkImageMemoryBarrier2 toPresent = {
-		.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-		.srcStageMask = capture ? VK_PIPELINE_STAGE_2_COPY_BIT : VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-		.srcAccessMask = capture ? VK_ACCESS_2_NONE : VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-		.dstStageMask = VK_PIPELINE_STAGE_2_NONE,
-		.oldLayout = finalLayout,
-		.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-		.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-		.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-		.image = swapchainImage,
-		.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
-	};
-
-	VkDependencyInfo toPresentDep = {
-		.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-		.imageMemoryBarrierCount = 1,
-		.pImageMemoryBarriers = &toPresent,
-	};
-	vkCmdPipelineBarrier2(commandBuffer, &toPresentDep);
-
-	if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS) {
-		throw std::runtime_error("ERROR: vkRender.cpp -> recordCommandBuffer()");
-	}
 }
 
 VkRect2D foto::Render::getSceneRect() {
@@ -698,7 +870,7 @@ void foto::Render::saveScreenshot() {
 }
 
 std::unique_ptr<foto::Image> foto::Render::createHdrImage(Device& device, VkExtent2D extent) {
-	return std::make_unique<Image>(device, extent, HDR_FORMAT, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
+	return std::make_unique<Image>(device, extent, HDR_FORMAT, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT);
 }
 
 std::unique_ptr<foto::Image> foto::Render::createShadowAtlas(Device& device) {

@@ -245,6 +245,7 @@ void Visualizer::onUpdate(foto::f32 deltaTime) {
 	finishLightingDetection();
 	applySceneLighting();
 	updateObjectInteraction();
+	setPathTracing(pathTrace && !showOriginal && !showProxies && !showLights && supportsPathTracing(), photoMaterial);
 	drawScene();
 }
 
@@ -345,6 +346,16 @@ void Visualizer::onImGui() {
 	if (ImGui::SliderFloat("exposure", &exposure, -4.0f, 4.0f, "%.1f EV")) setExposure(exposure);
 
 	if (ImGui::CollapsingHeader("debug")) {
+		if (supportsPathTracing()) {
+			ImGui::Checkbox("path tracing", &pathTrace);
+			if (isPathTracing()) {
+				ImGui::SameLine();
+				ImGui::TextDisabled("%u samples", getPathTraceSamples());
+			}
+		}
+		else {
+			ImGui::TextDisabled("path tracing: this GPU has no ray queries");
+		}
 		ImGui::Checkbox("original photo", &showOriginal);
 		ImGui::Checkbox("show room proxies", &showProxies);
 		ImGui::Checkbox("show detected lights", &showLights);

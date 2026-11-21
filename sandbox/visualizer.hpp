@@ -59,6 +59,7 @@ private:
 	bool showProxies = false;
 	bool showLights = false;
 	bool showOriginal = false;
+	bool pathTrace = true;
 
 	void loadScene();
 	void saveScene();

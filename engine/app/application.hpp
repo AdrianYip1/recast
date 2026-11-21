@@ -73,6 +73,13 @@ namespace foto {
 		void setAmbient(const enginemath::Vec3& irradiance);
 		void screenshot(const std::string& filePath);
 
+		// Ray traced compositing of the dynamic casters into the photo (photoMaterial's texture), with static casters as
+		// the photo's surfaces. Replaces the raster scene: draws without a shadow caster are skipped while it's on
+		bool supportsPathTracing();
+		void setPathTracing(bool enabled, u32 photoMaterial);
+		bool isPathTracing();
+		u32 getPathTraceSamples();
+
 		void setExposure(f32 ev);
 		f32 getExposure() { return exposureEV; };
 		void setWhiteBalance(const enginemath::Vec3& gains);
@@ -92,6 +99,7 @@ namespace foto {
 		std::unique_ptr<Pipeline> pipeline;
 		std::unique_ptr<Pipeline> presentPipeline;
 		std::unique_ptr<Pipeline> shadowPipeline;
+		std::unique_ptr<Pipeline> pathTracePipeline;
 		std::unique_ptr<Render> render;
 		std::unique_ptr<ImGuiLayer> imgui;
 

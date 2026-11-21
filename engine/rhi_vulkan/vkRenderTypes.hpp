@@ -89,6 +89,35 @@ namespace foto {
 		enginemath::Vec3 tint = enginemath::Vec3(1.0f, 1.0f, 1.0f);
 	};
 
+	// Path tracing: static casters are the photo's surfaces, dynamic casters the inserted objects
+	inline constexpr u32 MAX_TRACE_INSTANCES = 256;
+	inline constexpr u32 MAX_TRACE_GEOMETRIES = 1024;
+	inline constexpr u32 MAX_TRACE_SAMPLES = 1024;
+
+	// One per (instance, submesh): set 1, binding 3 ("Geometries" in pathtrace.comp)
+	struct GpuGeometry {
+		VkDeviceAddress vertexAddress;
+		VkDeviceAddress indexAddress;
+		u32 firstIndex;
+		u32 materialIndex;
+		u32 dynamic;
+		u32 _pad = 0;
+	};
+	static_assert(sizeof(GpuGeometry) == 32);
+
+	struct TracePush {
+		u32 sampleIndex;
+		u32 photoTexture;
+		u32 trace; // 0 = only show the accumulated result
+		u32 _pad = 0;
+	};
+
+	inline constexpr VkPushConstantRange TRACE_PUSH_RANGE = {
+		.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+		.offset = 0,
+		.size = sizeof(TracePush)
+	};
+
 	enum class LightType : u32 { Point, Directional };
 
 	struct Light {

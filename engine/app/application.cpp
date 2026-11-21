@@ -18,11 +18,27 @@ using enginemath::Vec3;
 using enginemath::Mat4;
 
 static foto::DescriptorLayoutBuilder sceneSetLayout() {
+	constexpr VkShaderStageFlags stages = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT;
 	return foto::DescriptorLayoutBuilder()
-		.addBinding(0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT)
-		.addBinding(1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_FRAGMENT_BIT)
-		.addBinding(2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_FRAGMENT_BIT,
-					foto::MAX_TEXTURES, VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT);
+		.addBinding(0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, stages)
+		.addBinding(1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, stages)
+		.addBinding(2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, stages, foto::MAX_TEXTURES, VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT);
+}
+
+static std::unique_ptr<foto::Pipeline> createPathTracePipeline(foto::Device& device) {
+	if (!device.supportsRayTracing()) return nullptr;
+	return std::make_unique<foto::Pipeline>(device, foto::ComputePipelineConfig{
+		.shaderFilePath = "shaders/pathtrace.comp.spv",
+		.descriptorSetLayouts = {
+			sceneSetLayout(),
+			foto::DescriptorLayoutBuilder()
+				.addBinding(0, VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, VK_SHADER_STAGE_COMPUTE_BIT)
+				.addBinding(1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_SHADER_STAGE_COMPUTE_BIT)
+				.addBinding(2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_SHADER_STAGE_COMPUTE_BIT)
+				.addBinding(3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT),
+		},
+		.pushConstants = { foto::TRACE_PUSH_RANGE },
+	});
 }
 
 foto::Application::Application(const ApplicationConfig& config) :
@@ -58,7 +74,8 @@ foto::Application::Application(const ApplicationConfig& config) :
 				.depthBiasConstant = 1.25f,
 				.depthBiasSlope = 1.75f,
 			})),
-	render(std::make_unique<Render>(*device, *swapchain, *pipeline, *presentPipeline, *shadowPipeline)),
+	pathTracePipeline(createPathTracePipeline(*device)),
+	render(std::make_unique<Render>(*device, *swapchain, *pipeline, *presentPipeline, *shadowPipeline, pathTracePipeline.get())),
 	imgui(std::make_unique<ImGuiLayer>(*window, *device, *swapchain, VK_FORMAT_UNDEFINED)),
 	sampler(std::make_unique<Sampler>(*device))
 {
@@ -204,6 +221,22 @@ void foto::Application::setShadowBounds(const Vec3& center, f32 radius) {
 
 void foto::Application::setAmbient(const Vec3& irradiance) {
 	ambient = irradiance;
+}
+
+bool foto::Application::supportsPathTracing() {
+	return render->supportsPathTracing();
+}
+
+void foto::Application::setPathTracing(bool enabled, u32 photoMaterial) {
+	render->setPathTracing(enabled, render->getMaterial(photoMaterial).baseColorTexture);
+}
+
+bool foto::Application::isPathTracing() {
+	return render->isPathTracing();
+}
+
+foto::u32 foto::Application::getPathTraceSamples() {
+	return render->getPathTraceSamples();
 }
 
 void foto::Application::drawFullscreen(Pipeline* pipeline, u32 material) {

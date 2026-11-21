@@ -13,6 +13,7 @@
 #include "vkMesh.hpp"
 #include "vkRenderTypes.hpp"
 #include "vkDescriptorHelper.hpp"
+#include "vkAccel.hpp"
 
 namespace foto {
 	class Image;
@@ -25,7 +26,9 @@ namespace foto {
 		// Scene pipelines render into this; presentPipeline tonemaps it to the swapchain
 		static constexpr VkFormat HDR_FORMAT = VK_FORMAT_R16G16B16A16_SFLOAT;
 
-		Render(Device& device, Swapchain& swapchain, Pipeline& pipeline, Pipeline& presentPipeline, Pipeline& shadowPipeline);
+		// pathTracePipeline: nullptr when the GPU can't ray trace
+		Render(Device& device, Swapchain& swapchain, Pipeline& pipeline, Pipeline& presentPipeline, Pipeline& shadowPipeline,
+			   Pipeline* pathTracePipeline);
 		~Render();
 		Render(const Render& other) = delete;
 		Render& operator=(const Render& other) = delete;
@@ -55,6 +58,13 @@ namespace foto {
 		u32 getStaticShadowAtlas() { return staticShadowSlot; };
 		u32 getDynamicShadowAtlas() { return dynamicShadowSlot; };
 
+		// Replaces the shadow + scene passes with pathtrace.comp, which composites the dynamic casters into photoTexture.
+		// Samples accumulate over frames and restart whenever the casters, lights or camera change
+		void setPathTracing(bool enabled, u32 photoTexture);
+		bool isPathTracing() { return pathTracing; };
+		bool supportsPathTracing() { return pathTracePipeline != nullptr; };
+		u32 getPathTraceSamples() { return traceSamples; };
+
 		VkCommandPool getCommandPool() { return _commandPool; };
 	private:
 		Device& device;
@@ -62,6 +72,7 @@ namespace foto {
 		Pipeline& pipeline;
 		Pipeline& presentPipeline;
 		Pipeline& shadowPipeline;
+		Pipeline* pathTracePipeline = nullptr;
 
 		VkDevice _device = VK_NULL_HANDLE;
 		VkCommandPool _commandPool = VK_NULL_HANDLE;
@@ -97,6 +108,16 @@ namespace foto {
 		u32 staticShadowSlot = 0;
 		u32 dynamicShadowSlot = 0;
 
+		bool pathTracing = false;
+		u32 tracePhotoTexture = 0;
+		u32 traceSamples = 0;
+		std::vector<u8> traceKey;
+		std::unique_ptr<DescriptorPool> traceDescriptorPool;
+		std::vector<VkDescriptorSet> traceSets; // set 1 of pathtrace.comp, one per frame in flight
+		std::vector<std::unique_ptr<TopLevelAccelerationStructure>> topLevels;
+		std::vector<std::unique_ptr<Buffer>> geometryBuffers;
+		std::unique_ptr<Image> accumulationImage;
+
 		std::vector<VkSemaphore> imageAvailableSem;
 		std::vector<VkSemaphore> renderFinishedSem;
 		std::vector<VkFence> inFlightFence;
@@ -108,6 +129,10 @@ namespace foto {
 		void recordCommandBuffer(VkCommandBuffer commandBuffer, u32 imageIdx, std::span<const DrawItem> items,
 								 const FrameUbo& frameUbo, const std::function<void(VkCommandBuffer)>& overlay, bool capture);
 		void setFullViewport(VkCommandBuffer commandBuffer, VkExtent2D extent);
+		void recordRasterScene(VkCommandBuffer commandBuffer, std::span<const DrawItem> items, const FrameUbo& frameUbo, VkExtent2D extent);
+		void recordPathTrace(VkCommandBuffer commandBuffer, std::span<const DrawItem> items, const FrameUbo& frameUbo, VkExtent2D extent);
+		void updateTraceSamples(std::span<const DrawItem> items, const FrameUbo& frameUbo);
+		void createTraceImages();
 		void recordShadowPass(VkCommandBuffer commandBuffer, Image& atlas, ShadowCaster group, std::span<const DrawItem> items, const FrameUbo& frameUbo);
 		void setSceneViewport(VkCommandBuffer commandBuffer, VkExtent2D extent);
 		void writeTextureSlot(u32 slot, Image& texture, Sampler& sampler);

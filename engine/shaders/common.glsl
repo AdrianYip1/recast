@@ -38,8 +38,10 @@ layout(std430, set = 0, binding = 1) readonly buffer Materials {
 
 layout(set = 0, binding = 2) uniform sampler2D textures[MAX_TEXTURES];
 
+#ifndef CUSTOM_PUSH
 layout(push_constant) uniform Push {
 	mat4 model;
 	uint materialIndex;
 	vec4 tint;
 } push;
+#endif
