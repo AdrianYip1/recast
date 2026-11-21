@@ -93,8 +93,7 @@ add_executable(foto sandbox/main.cpp
     sandbox/scene/placement.cpp
     sandbox/lighting/lightFit.cpp
     sandbox/lighting/cameraMatch.cpp
-    sandbox/pipeline/pythonJob.cpp
-    sandbox/ui/theme.cpp)
+    sandbox/pipeline/pythonJob.cpp)
 target_include_directories(foto PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/sandbox ${CMAKE_CURRENT_SOURCE_DIR}/external)
 target_compile_definitions(foto PRIVATE
     RECAST_SAMPLE_SCENE="${CMAKE_CURRENT_SOURCE_DIR}/data/sample/scene.json"

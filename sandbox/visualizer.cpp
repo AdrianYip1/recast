@@ -8,7 +8,6 @@
 #include "scene/proxyMesh.hpp"
 #include "scene/raycast.hpp"
 #include "scene/placement.hpp"
-#include "ui/theme.hpp"
 
 #include <nlohmann/json.hpp>
 #include <stb_image.h>
@@ -78,10 +77,6 @@ Visualizer::Visualizer(const foto::ApplicationConfig& config, std::string sceneP
 }
 
 void Visualizer::onInit() {
-	float dpiX = 1.0f, dpiY = 1.0f;
-	if (GLFWmonitor* monitor = glfwGetPrimaryMonitor()) glfwGetMonitorContentScale(monitor, &dpiX, &dpiY);
-	recast::ui::applyTheme(dpiX);
-
 	backgroundPipeline = createPipeline({
 		.vertexShaderFilePath = "shaders/fullscreen.vert.spv",
 		.fragmentShaderFilePath = "shaders/background.frag.spv",
