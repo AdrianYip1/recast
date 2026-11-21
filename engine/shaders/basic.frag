@@ -16,6 +16,6 @@ void main() {
 	vec3 n = normalize(fragNormal);
 	if (!gl_FrontFacing) n = -n;
 
-	vec3 color = albedo.rgb * irradiance(fragWorldPos, n, true) + material.emissive.rgb;
+	vec3 color = albedo.rgb * irradiance(fragWorldPos, n, true) * push.tint.rgb + material.emissive.rgb;
 	outColor = vec4(color, albedo.a);
 }

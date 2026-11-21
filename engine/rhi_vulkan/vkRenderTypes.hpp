@@ -43,7 +43,10 @@ namespace foto {
 	struct DrawPush {
 		enginemath::Mat4 model;
 		u32 materialIndex;
+		u32 _pad[3] = {};
+		enginemath::Vec4 tint = { 1.0f, 1.0f, 1.0f, 1.0f }; // multiplies the lighting of the lit shader
 	};
+	static_assert(sizeof(DrawPush) == 96);
 
 	inline constexpr VkPushConstantRange DRAW_PUSH_RANGE = {
 		.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
@@ -81,6 +84,7 @@ namespace foto {
 		u32 materialOverride = NO_MATERIAL_OVERRIDE;
 		Pipeline* pipeline = nullptr;
 		ShadowCaster shadowCaster = ShadowCaster::None;
+		enginemath::Vec3 tint = enginemath::Vec3(1.0f, 1.0f, 1.0f);
 	};
 
 	struct PointLight {

@@ -51,7 +51,7 @@ namespace foto {
 
 		// Queues a draw for the current frame; call from onUpdate
 		void draw(Mesh* mesh, const enginemath::Mat4& transform, u32 materialOverride = NO_MATERIAL_OVERRIDE, Pipeline* pipeline = nullptr,
-				  ShadowCaster shadowCaster = ShadowCaster::None);
+				  ShadowCaster shadowCaster = ShadowCaster::None, const enginemath::Vec3& tint = enginemath::Vec3(1.0f, 1.0f, 1.0f));
 		void drawFullscreen(Pipeline* pipeline, u32 material);
 
 		// Scene pipeline with the engine's formats, descriptor layout and push constants filled in

@@ -183,9 +183,10 @@ const foto::Material& foto::Application::getMaterial(u32 index) {
 	return render->getMaterial(index);
 }
 
-void foto::Application::draw(Mesh* mesh, const Mat4& transform, u32 materialOverride, Pipeline* pipeline, ShadowCaster shadowCaster) {
+void foto::Application::draw(Mesh* mesh, const Mat4& transform, u32 materialOverride, Pipeline* pipeline, ShadowCaster shadowCaster,
+							  const Vec3& tint) {
 	drawList.push_back({ .mesh = mesh, .transform = transform, .materialOverride = materialOverride, .pipeline = pipeline,
-						 .shadowCaster = shadowCaster });
+						 .shadowCaster = shadowCaster, .tint = tint });
 }
 
 void foto::Application::setLights(std::span<const PointLight> newLights) {

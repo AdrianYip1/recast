@@ -40,4 +40,5 @@ layout(set = 0, binding = 2) uniform sampler2D textures[MAX_TEXTURES];
 layout(push_constant) uniform Push {
 	mat4 model;
 	uint materialIndex;
+	vec4 tint;
 } push;

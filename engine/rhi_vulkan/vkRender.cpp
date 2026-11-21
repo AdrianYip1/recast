@@ -357,7 +357,8 @@ void foto::Render::recordCommandBuffer(VkCommandBuffer commandBuffer, u32 imageI
 		for (const Submesh& submesh : item.mesh->getSubmeshes()) {
 			DrawPush push = {
 				.model = item.transform,
-				.materialIndex = (item.materialOverride != NO_MATERIAL_OVERRIDE) ? item.materialOverride : submesh.materialIndex
+				.materialIndex = (item.materialOverride != NO_MATERIAL_OVERRIDE) ? item.materialOverride : submesh.materialIndex,
+				.tint = { item.tint.x, item.tint.y, item.tint.z, 1.0f }
 			};
 			vkCmdPushConstants(commandBuffer, itemPipeline->getPipelineLayout(), DRAW_PUSH_RANGE.stageFlags, 0, sizeof(DrawPush), &push);
 			vkCmdDrawIndexed(commandBuffer, submesh.indexCount, 1, submesh.firstIndex, 0, 0);
