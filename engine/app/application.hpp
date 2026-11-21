@@ -7,6 +7,7 @@ namespace foto {
 	class Window;
 	class Device;
 	class Swapchain;
+	class Pipeline;
 
 	struct ApplicationConfig {
 		const char* title = "foto";
@@ -33,5 +34,6 @@ namespace foto {
 		std::unique_ptr<Window> window;
 		std::unique_ptr<Device> device;
 		std::unique_ptr<Swapchain> swapchain;
+		std::unique_ptr<Pipeline> pipeline;
 	};
 } // namespace foto
