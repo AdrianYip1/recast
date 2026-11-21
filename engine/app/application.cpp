@@ -66,9 +66,19 @@ foto::Application::~Application() {
 
 void foto::Application::run() {
 	onInit();
+
+	using Clock = std::chrono::steady_clock;
+	Clock::time_point lastFrame = Clock::now();
+
 	while (!window->shouldClose()) {
 		window->pollEvents();
-		onUpdate(0.0f);
+
+		// Seconds since the last frame, capped so a hitch (dragging the window, a breakpoint) isn't one giant step
+		Clock::time_point now = Clock::now();
+		f32 deltaTime = std::min(std::chrono::duration<f32>(now - lastFrame).count(), 0.1f);
+		lastFrame = now;
+
+		onUpdate(deltaTime);
 
 		VkExtent2D extent = swapchain->getExtent();
 		f32 aspect = static_cast<f32>(extent.width) / static_cast<f32>(extent.height);
