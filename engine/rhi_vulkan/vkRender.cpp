@@ -40,7 +40,7 @@ void foto::Render::setTexture(u32 binding, Image& texture, Sampler& sampler) {
 
 // CPU -> recording command buffer
 // GPU -> submitting/executing command buffer
-bool foto::Render::drawFrame(const std::vector<std::unique_ptr<Buffer>>& vertexBuffers, Buffer& indexBuffer, const Ubo& ubo) {
+bool foto::Render::drawFrame(std::span<Mesh* const> meshes, const Ubo& ubo) {
 	vkWaitForFences(device.getDevice(), 1, &inFlightFence[currentFrame], VK_TRUE, UINT64_MAX);
 
 	u32 imageIdx;
@@ -60,7 +60,7 @@ bool foto::Render::drawFrame(const std::vector<std::unique_ptr<Buffer>>& vertexB
 
 	VkCommandBuffer commandBuffer = commandBuffers[currentFrame];
 	vkResetCommandBuffer(commandBuffer, 0);
-	recordCommandBuffer(commandBuffer, imageIdx, vertexBuffers, indexBuffer);
+	recordCommandBuffer(commandBuffer, imageIdx, meshes);
 
 	// Submit info
 	VkSemaphore waitSemaphore[] = { imageAvailableSem[currentFrame] };
@@ -160,8 +160,7 @@ void foto::Render::createRenderFinishedSems(VkDevice device, size swapchainImage
 	}
 }
 
-void foto::Render::recordCommandBuffer(VkCommandBuffer commandBuffer, u32 imageIdx,
-									   const std::vector<std::unique_ptr<Buffer>>& vertexBuffers, Buffer& indexBuffer) {
+void foto::Render::recordCommandBuffer(VkCommandBuffer commandBuffer, u32 imageIdx, std::span<Mesh* const> meshes) {
 	VkCommandBufferBeginInfo beginInfo = {
 		.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
 	};
@@ -242,15 +241,13 @@ void foto::Render::recordCommandBuffer(VkCommandBuffer commandBuffer, u32 imageI
 	};
 	vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 
-	// Vertex buffers: bind + draw each one
-	for (const std::unique_ptr<Buffer>& vertexBuffer : vertexBuffers) {
-		VkBuffer buffers[] = { vertexBuffer->getBuffer() };
-		VkDeviceSize offsets[] = { 0 };
+	// Meshes: bind once, draw each submesh
+	for (Mesh* mesh : meshes) {
+		mesh->bind(commandBuffer);
 
-		vkCmdBindVertexBuffers(commandBuffer, 0, 1, buffers, offsets);
-		vkCmdBindIndexBuffer(commandBuffer, indexBuffer.getBuffer(), 0, VK_INDEX_TYPE_UINT32);
-
-		vkCmdDrawIndexed(commandBuffer, static_cast<u32>(indexBuffer.getSize() / sizeof(u32)), 1, 0, 0, 0);
+		for (const Submesh& submesh : mesh->getSubmeshes()) {
+			vkCmdDrawIndexed(commandBuffer, submesh.indexCount, 1, submesh.firstIndex, 0, 0);
+		}
 	}
 
 	vkCmdEndRendering(commandBuffer);

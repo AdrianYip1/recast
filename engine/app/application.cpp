@@ -8,6 +8,7 @@
 #include "../rhi_vulkan/vkPipeline.hpp"
 #include "../rhi_vulkan/vkRender.hpp"
 #include "../rhi_vulkan/vkBuffer.hpp"
+#include "../rhi_vulkan/vkMesh.hpp"
 #include "../rhi_vulkan/vkVertex.hpp"
 #include "../rhi_vulkan/vkImage.hpp"
 #include "../rhi_vulkan/vkDescriptorHelper.hpp"
@@ -41,14 +42,8 @@ foto::Application::Application(const ApplicationConfig& config) :
 			})),
 	render(std::make_unique<Render>(*device, *swapchain, *pipeline))
 {
-	// handle buffers
-	VkDeviceSize vertexBytes = sizeof(Vertex) * vertices.size();
-	vertexBuffers.push_back(Buffer::createDeviceLocal(*device, render->getCommandPool(),
-		vertices.data(), vertexBytes, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT));
-
-	VkDeviceSize indexBytes = sizeof(u32) * indices.size();
-	indexBuffer = Buffer::createDeviceLocal(*device, render->getCommandPool(),
-		indices.data(), indexBytes, VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
+	// handle meshes
+	quad = std::make_unique<Mesh>(*device, render->getCommandPool(), vertices, indices);
 
 	// handle textures
 	texture = Image::loadTexture(*device, render->getCommandPool(), "textures/checker.png");
@@ -70,7 +65,8 @@ void foto::Application::run() {
 		Ubo ubo = { enginemath::Mat4::identity(), enginemath::Mat4::identity(), enginemath::Mat4::identity() };
 		ubo.proj.m[1][1] = -1.0f;
 
-		bool outOfDate = render->drawFrame(vertexBuffers, *indexBuffer, ubo);
+		Mesh* meshes[] = { quad.get() };
+		bool outOfDate = render->drawFrame(meshes, ubo);
 		if (outOfDate || window->getFramebufferResized()) {
 			window->setFramebufferResized(false);
 			swapchain->recreate();

@@ -9,7 +9,7 @@ namespace foto {
 	class Swapchain;
 	class Pipeline;
 	class Render;
-	class Buffer;
+	class Mesh;
 	class Image;
 	class Sampler;
 
@@ -40,8 +40,7 @@ namespace foto {
 		std::unique_ptr<Swapchain> swapchain;
 		std::unique_ptr<Pipeline> pipeline;
 		std::unique_ptr<Render> render;
-		std::vector<std::unique_ptr<Buffer>> vertexBuffers;
-		std::unique_ptr<Buffer> indexBuffer;
+		std::unique_ptr<Mesh> quad;
 		std::unique_ptr<Image> texture;
 		std::unique_ptr<Sampler> sampler;
 	};
