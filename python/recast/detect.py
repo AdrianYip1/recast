@@ -72,6 +72,8 @@ class Detection:
 
 # --- models ------------------------------------------------------------------------
 
+_MODELS: dict = {}
+
 def run_models(rgb8: np.ndarray, min_score: float = 0.5) -> tuple[list[Segment], np.ndarray]:
     """sRGB uint8 (H, W, 3) -> (segments, relative disparity (H, W), bigger = nearer)."""
     try:
@@ -87,30 +89,37 @@ def run_models(rgb8: np.ndarray, min_score: float = 0.5) -> tuple[list[Segment],
     hf_logging.set_verbosity_error()
     hf_logging.disable_progress_bar()
 
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+
     def load(cls, name):
-        try:                                   # downloaded once; after that, no network at all
-            return cls.from_pretrained(name, local_files_only=True)
-        except OSError:
-            print(f"downloading {name} (once)")
-            return cls.from_pretrained(name)
+        key = (cls.__name__, name)
+        if key not in _MODELS:                 # kept loaded, so a long-running worker pays for this once
+            try:                               # downloaded once; after that, no network at all
+                model = cls.from_pretrained(name, local_files_only=True)
+            except OSError:
+                print(f"downloading {name} (once)")
+                model = cls.from_pretrained(name)
+            _MODELS[key] = model.to(device).eval() if hasattr(model, "eval") else model
+        return _MODELS[key]
 
     img = Image.fromarray(rgb8)
     h, w = rgb8.shape[:2]
 
     proc = load(OneFormerProcessor, SEG_MODEL)
-    model = load(OneFormerForUniversalSegmentation, SEG_MODEL).eval()
+    model = load(OneFormerForUniversalSegmentation, SEG_MODEL)
     with torch.no_grad():
-        out = model(**proc(images=img, task_inputs=["panoptic"], return_tensors="pt"))
+        inputs = proc(images=img, task_inputs=["panoptic"], return_tensors="pt")
+        out = model(**{k: v.to(device) if hasattr(v, "to") else v for k, v in inputs.items()})
     r = proc.post_process_panoptic_segmentation(out, target_sizes=[(h, w)], threshold=min_score,
                                                 label_ids_to_fuse=set())[0]
-    seg = r["segmentation"].numpy()
+    seg = r["segmentation"].cpu().numpy()
     segments = [Segment(model.config.id2label[s["label_id"]], float(s["score"]), seg == s["id"])
                 for s in r["segments_info"]]
 
     dproc = load(AutoImageProcessor, DEPTH_MODEL)
-    dmodel = load(AutoModelForDepthEstimation, DEPTH_MODEL).eval()
+    dmodel = load(AutoModelForDepthEstimation, DEPTH_MODEL)
     with torch.no_grad():
-        d = dmodel(**dproc(images=img, return_tensors="pt")).predicted_depth
+        d = dmodel(**{k: v.to(device) for k, v in dproc(images=img, return_tensors="pt").items()}).predicted_depth.float().cpu()
     disparity = torch.nn.functional.interpolate(d[None], size=(h, w), mode="bicubic",
                                                 align_corners=False)[0, 0].numpy()
     return segments, disparity.astype(np.float64)
