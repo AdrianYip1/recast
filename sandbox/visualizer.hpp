@@ -3,7 +3,10 @@
 #include <engine/app/application.hpp>
 #include <engine/core/fileWatcher.hpp>
 
+#include <future>
+
 #include "scene/sceneFile.hpp"
+#include "lighting/lightFit.hpp"
 
 class Visualizer : public foto::Application {
 public:
@@ -37,7 +40,7 @@ private:
 	foto::u32 photoMaterial = foto::DEFAULT_MATERIAL;
 	foto::u32 proxyMaterial = foto::DEFAULT_MATERIAL;
 	std::vector<foto::Mesh*> proxyMeshes;
-	bool showProxies = true;
+	bool showProxies = false;
 	float proxyOpacity = 0.25f;
 	bool freeCamera = false;
 
@@ -48,6 +51,24 @@ private:
 	bool leftMouseWasDown = false;
 	bool unsavedChanges = false;
 
+	enum class ViewMode { Composite, Photo, Lighting };
+	ViewMode viewMode = ViewMode::Composite;
+	foto::Pipeline* compositePipeline = nullptr;
+	foto::Pipeline* litProxyPipeline = nullptr;
+	std::vector<foto::u32> proxyAlbedoMaterials;
+	foto::Mesh* lightMarker = nullptr;
+	foto::u32 lightMarkerMaterial = foto::DEFAULT_MATERIAL;
+	bool showLights = true;
+	int placingLight = -1;
+
+	struct FitJob {
+		std::vector<enginemath::Vec3> positions;
+		recast::LightingFit fit;
+		std::string error;
+	};
+	std::future<FitJob> fitJob;
+	std::string fitStatus;
+
 	void loadScene();
 	void applySceneCamera();
 	void drawPhotoView();
@@ -57,4 +78,9 @@ private:
 	enginemath::Mat4 objectTransform() const;
 	void saveScene();
 	void resolveCollisions();
+	void applySceneLighting();
+	void updateLightPlacement();
+	void startLightingFit(bool refinePositions);
+	void finishLightingFit();
+	void drawLightingPanel();
 };
