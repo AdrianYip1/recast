@@ -8,7 +8,7 @@ struct GLFWwindow;
 namespace foto {
 	class Window {
 	public:
-		Window(f32 w, f32 h, const char* windowName);
+		Window(u32 w, u32 h, const char* windowName);
 		~Window();
 		Window(const Window& other) = delete;
 		Window& operator=(const Window& other) = delete;

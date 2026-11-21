@@ -1,7 +1,7 @@
 #include <GLFW/glfw3.h>
 #include "window.hpp"
 
-foto::Window::Window(f32 w, f32 h, const char* windowName) :
+foto::Window::Window(u32 w, u32 h, const char* windowName) :
 	WIDTH(w), HEIGHT(h), TITLE(windowName)
 {
 	initWindow();

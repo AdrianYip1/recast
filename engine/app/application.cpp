@@ -4,10 +4,12 @@
 #include "application.hpp"
 #include "../platform/window.hpp"
 #include "../rhi_vulkan/vkDevice.hpp"
+#include "../rhi_vulkan/vkSwapchain.hpp"
 
 foto::Application::Application(const ApplicationConfig& config) :
 	window(std::make_unique<Window>(config.width, config.height, config.title)),
-	device(std::make_unique<Device>(window->getWindow()))
+	device(std::make_unique<Device>(window->getWindow())),
+	swapchain(std::make_unique<Swapchain>(window->getWindow(), *device))
 {
 	 
 }

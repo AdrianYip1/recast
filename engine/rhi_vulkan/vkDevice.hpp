@@ -37,6 +37,7 @@ namespace foto {
 		VkQueue getComputeQ() { return computeQueue; };
 
 		static SwapchainSupportDetails querySwapchainSupport(VkPhysicalDevice device, VkSurfaceKHR surface);
+		static std::optional<foto::QueueInfos> findQueueFamilies(VkPhysicalDevice device, VkSurfaceKHR surface);
 
 	private:
 		VkInstance instance = VK_NULL_HANDLE;
@@ -55,7 +56,6 @@ namespace foto {
 		
 		static VkSurfaceKHR createSurface(VkInstance instance, GLFWwindow* window);
 		static VkPhysicalDevice selectPhysicalDevice(VkInstance instance, VkSurfaceKHR surface);
-		static std::optional<foto::QueueInfos> findQueueFamilies(VkPhysicalDevice device, VkSurfaceKHR surface);
 		static bool extensionsSuitable(VkPhysicalDevice device);
 		static VkDevice selectLogicalDevice(VkPhysicalDevice physicalDevice, const QueueInfos& queueInfo);
 	};

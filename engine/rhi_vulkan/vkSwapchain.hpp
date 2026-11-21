@@ -15,8 +15,13 @@ namespace foto {
 		~Swapchain();
 		Swapchain(const Swapchain& other) = delete;
 		Swapchain& operator=(const Swapchain& other) = delete;
+
+		VkSwapchainKHR getSwapchain() { return swapchain; };
+
 	private:
 		SwapchainSupportDetails swapchainSupport;
+		VkSwapchainKHR swapchain = VK_NULL_HANDLE;
+		VkDevice device = VK_NULL_HANDLE;
 
 		static VkSwapchainKHR createSwapchain(GLFWwindow* window, Device& device, SwapchainSupportDetails swapchainSupport);
 	};
