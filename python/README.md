@@ -141,12 +141,12 @@ clicks, one real measurement:
 python -m recast.object mug.jpg --mode revolution --height 0.12 --out ..\data\room1
 ```
 
-1. Load + calibrate like the scene photo (vanishing points of the floor/table;
+1. Load, shrink to `--max-size` (1600 px) and calibrate like the scene photo (vanishing points of the floor/table;
    `--lines` to trace them, or a level camera with `--pitch-deg` as fallback).
    World scale is arbitrary until the measurement fixes it.
-2. Segment: GrabCut from a dragged box, with brush fixes (`--chroma green|blue` for backdrop shots).
-3. Click (OpenCV window; or pass `--base`, `--top`, `--corners`; `--no-ui` uses defaults):
-   ground contact, then per mode: revolution = top of the axis, box = floor corners + a top corner.
+2. Segment: GrabCut from one dragged box (`--refine` for brush fixes, `--chroma green|blue` for backdrop shots).
+3. Ground contact = bottom-centre of the cutout, revolution axis top = top of the cutout above it
+   (`--click` to click them instead, or pass `--base`, `--top`). Box mode always asks for its floor corners + a top corner.
 4. Geometry, one module per mode in `recast/object/modes/`:
 
    | mode | for | how |
@@ -161,7 +161,9 @@ python -m recast.object mug.jpg --mode revolution --height 0.12 --out ..\data\ro
    back-facing vertices mirror through the axis plane (back = mirrored front);
    cropped to the mask; `--delight` divides out blurred luminance.
 6. Export: pivot at the base centre, +Y up, scaled to `--height` (or `--width`),
-   `object.glb` + `object_meta.json` (mode, clicks, camera, measurement, scores).
+   `object.glb` + `object_meta.json` (mode, clicks, camera, measurement, scores). `--glass` exports clear
+   glass (`KHR_materials_transmission` + `KHR_materials_ior`) instead of the photo's colours, for bottles and glasses.
+   A new object stands on the first floor or box top in view (searched from the bottom-middle of the photo).
 7. Check: the mesh is reprojected onto the photo; `object_check.jpg` shows mask
    (green) vs mesh (red) and the IoU is printed. `--compare truth.glb` adds
    height error and Chamfer distance against a known mesh (e.g. a GLB the engine

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import struct
 from pathlib import Path
 
 import numpy as np
@@ -50,6 +51,31 @@ def export_glb(mesh: trimesh.Trimesh, tex: Texture, path: str | Path, alpha_cuto
     out = trimesh.Trimesh(mesh.vertices, mesh.faces, process=False,
                           visual=trimesh.visual.TextureVisuals(uv=uv_gl, material=material))
     out.export(str(path), file_type="glb")
+
+
+def export_glass_glb(mesh: trimesh.Trimesh, path: str | Path, ior: float = 1.5) -> None:
+    """Untextured clear glass: KHR_materials_transmission + KHR_materials_ior, which the engine's path tracer refracts."""
+    material = trimesh.visual.material.PBRMaterial(baseColorFactor=[255, 255, 255, 255], metallicFactor=0.0,
+                                                   roughnessFactor=0.05)
+    out = trimesh.Trimesh(mesh.vertices, mesh.faces, process=False,
+                          visual=trimesh.visual.TextureVisuals(material=material))
+    glb = bytearray(out.export(file_type="glb"))
+
+    # trimesh has no glTF extension support: patch the JSON chunk (12-byte header, then length, type, data)
+    json_length = struct.unpack_from("<I", glb, 12)[0]
+    gltf = json.loads(glb[20:20 + json_length])
+    for m in gltf.get("materials", []):
+        m.setdefault("extensions", {}).update({
+            "KHR_materials_transmission": {"transmissionFactor": 1.0},
+            "KHR_materials_ior": {"ior": ior},
+        })
+    used = gltf.setdefault("extensionsUsed", [])
+    used += [e for e in ("KHR_materials_transmission", "KHR_materials_ior") if e not in used]
+    chunk = json.dumps(gltf, separators=(",", ":")).encode()
+    chunk += b" " * (-len(chunk) % 4)
+    rest = glb[20 + json_length:]
+    body = struct.pack("<II", len(chunk), 0x4E4F534A) + chunk + rest
+    Path(path).write_bytes(struct.pack("<III", 0x46546C67, 2, 12 + len(body)) + body)
 
 
 def write_meta(path: str | Path, meta: dict) -> None:

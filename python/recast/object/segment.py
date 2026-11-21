@@ -72,3 +72,30 @@ def soft_alpha(mask: np.ndarray, feather_px: float = 1.5) -> np.ndarray:
     if feather_px <= 0:
         return mask.astype(np.float32)
     return np.clip(cv2.GaussianBlur(mask.astype(np.float32), (0, 0), feather_px), 0.0, 1.0)
+
+
+_SESSION = None
+
+
+def salient_alpha(img_linear: np.ndarray, rect=None, margin: float = 0.08) -> np.ndarray:
+    """Soft cutout (H, W) in [0, 1] from BiRefNet lite (MIT, run locally as ONNX through rembg), inside `rect`
+    (x, y, w, h) grown by `margin` when given. Hair-thin edges and holes come out far cleaner than GrabCut."""
+    from PIL import Image
+    from rembg import new_session, remove
+
+    h, w = img_linear.shape[:2]
+    x0, y0, x1, y1 = 0, 0, w, h
+    if rect is not None:
+        rx, ry, rw, rh = rect
+        mx, my = int(rw * margin), int(rh * margin)
+        x0, y0 = max(0, rx - mx), max(0, ry - my)
+        x1, y1 = min(w, rx + rw + mx), min(h, ry + rh + my)
+    crop = (np.clip(linear_to_srgb(img_linear[y0:y1, x0:x1]), 0, 1) * 255).astype(np.uint8)
+    global _SESSION
+    if _SESSION is None:
+        # CPU: onnxruntime's DirectML build runs out of memory on this model (tried on an RTX 5060 laptop)
+        _SESSION = new_session("birefnet-general-lite", providers=["CPUExecutionProvider"])
+    mask = remove(Image.fromarray(crop), session=_SESSION, only_mask=True)
+    alpha = np.zeros((h, w), np.float32)
+    alpha[y0:y1, x0:x1] = np.asarray(mask, np.float32) / 255.0
+    return alpha

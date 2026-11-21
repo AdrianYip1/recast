@@ -1,9 +1,10 @@
 """python -m recast.object photo.jpg --mode revolution --height 0.32 --out data/room1/
 
-Anything not given on the command line is asked for in an OpenCV window
-(box around the object, mask fixes, ground contact, mode clicks) unless
---no-ui, in which case sensible defaults are used where possible:
-ground contact = bottom-centre of the mask, axis top = top of the mask above it.
+One box drag in an OpenCV window cuts the object out (or --rect). Ground contact
+is the bottom-centre of the cutout and the axis top is the top of the cutout above
+it; --click asks for them instead, --refine opens the brush to fix the cutout.
+Box mode always needs its corner clicks. --glass makes a clear glass object.
+Photos are shrunk to --max-size pixels first, which keeps the cutout fast.
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ import json
 import sys
 from pathlib import Path
 
+import cv2
 import numpy as np
 from PIL import Image
 
@@ -22,10 +24,10 @@ from ..io import load_photo, save_jpg
 from ..scene import ObjectPlacement, update_scene_file
 from ..vanishing import assign_axes, detect_segments, find_vanishing_points, vp_from_segments
 from . import MODES, annotate, check
-from .export import export_glb, normalize, write_meta
+from .export import export_glass_glb, export_glb, normalize, write_meta
 from .modes import build_box, build_card, build_extrude, build_revolution
 from .placement import base_point, height_from_click, mask_bottom_center, mask_top_above
-from .segment import chroma_key, grabcut, soft_alpha
+from .segment import chroma_key, grabcut, salient_alpha, soft_alpha
 from .texture import back_side_fill, crop_texture, delight, projective_uv
 
 DEFAULT_DATA_ROOT = Path(__file__).resolve().parents[3] / "data"
@@ -59,32 +61,48 @@ def solve_object_camera(img: np.ndarray, args, exif_focal: float | None) -> tupl
     if vps is not None:
         vx, vy, vz = vps
         try:
-            return solve_camera(w, h, vx, vz, vy, focal_px=focal if args.trust_exif else None,
-                                camera_height=1.0), "vanishing points"
+            return solve_camera(w, h, vx, vz, vy, focal_px=None if args.solve_focal else focal,
+                                camera_height=1.0), "vanishing points" + (" + EXIF focal" if focal and not args.solve_focal else "")
         except ValueError:
-            if focal:
-                return solve_camera(w, h, vx, vz, vy, focal_px=focal, camera_height=1.0), "vanishing points + EXIF focal"
+            fallback = focal or 0.9 * max(w, h)
+            return solve_camera(w, h, vx, vz, vy, focal_px=fallback, camera_height=1.0), \
+                "vanishing points + " + ("EXIF focal" if focal else "typical phone focal")
     focal = focal or 0.9 * max(w, h)
     return level_camera(w, h, focal, args.pitch_deg), f"level camera fallback (pitch {args.pitch_deg} deg)"
 
 
-def _pt(v) -> np.ndarray | None:
-    return None if v is None else np.asarray(v, dtype=np.float64)
+def _pt(v, scale: float = 1.0) -> np.ndarray | None:
+    return None if v is None else np.asarray(v, dtype=np.float64) * scale
 
 
 def run(args) -> dict:
     out = Path(args.out) if args.out else Path(args.data_root) / args.name
     out.mkdir(parents=True, exist_ok=True)
-    ui = (not args.no_ui) and sys.stdin.isatty()
+    ui = not args.no_ui
 
     photo = load_photo(args.photo)
     from ..cli import preprocess  # same undistortion as the scene photo
     img = preprocess(photo, {"lensfun": not args.no_lensfun, "k1": args.k1, "k2": args.k2,
                              "focal_px": args.focal_px or photo.focal_px() or 0.9 * max(photo.width, photo.height)})
 
+    # everything after this works in the shrunk photo's pixels, command line clicks included
+    shrink = min(1.0, args.max_size / max(img.shape[:2])) if args.max_size else 1.0
+    if shrink < 1.0:
+        img = cv2.resize(img.astype(np.float32), (round(img.shape[1] * shrink), round(img.shape[0] * shrink)),
+                         interpolation=cv2.INTER_AREA).astype(img.dtype)
+    exif_focal = photo.focal_px() * shrink if photo.focal_px() else None
+    if args.focal_px:
+        args.focal_px *= shrink
+
     # --- segment
-    rect = tuple(args.rect) if args.rect else None
-    if args.mask:
+    rect = tuple(int(round(v * shrink)) for v in args.rect) if args.rect else None
+    alpha = None
+    if args.mode == "generated" and not (args.mask or args.chroma):
+        if rect is None and ui:
+            rect = annotate.select_rect(img)
+        alpha = salient_alpha(img, rect)
+        mask = alpha > 0.5
+    elif args.mask:
         mask = np.asarray(Image.open(args.mask).convert("L")) > 127
     elif args.chroma:
         mask = chroma_key(img, args.chroma)
@@ -94,7 +112,7 @@ def run(args) -> dict:
                 sys.exit("give --rect x y w h (or --mask / --chroma)")
             rect = annotate.select_rect(img)
         mask = grabcut(img, rect)
-        if ui:
+        if ui and args.refine:
             mask = annotate.refine_mask(img, mask, rect)
     if not mask.any():
         sys.exit("the mask is empty")
@@ -114,28 +132,28 @@ def run(args) -> dict:
         print(f"wrote {out / 'object.glb'} (inflate, {height} m tall)")
         return meta
 
-    cam, how = solve_object_camera(img, args, photo.focal_px())
+    cam, how = solve_object_camera(img, args, exif_focal)
     print(f"camera: {how}, f = {cam.focal_px:.1f} px")
 
     # --- clicks
-    base_uv = _pt(args.base)
+    base_uv = _pt(args.base, shrink)
     if base_uv is None:
-        base_uv = annotate.click_points(img, ["ground contact"], mask)[0] if ui else mask_bottom_center(mask)
+        base_uv = annotate.click_points(img, ["ground contact"], mask)[0] if ui and args.click else mask_bottom_center(mask)
     base = base_point(cam, base_uv)
     clicks = {"ground_contact": base_uv}
 
     if args.mode == "card":
         mesh = build_card(mask, cam, base)
     elif args.mode == "revolution":
-        top_uv = _pt(args.top)
+        top_uv = _pt(args.top, shrink)
         if top_uv is None:
-            top_uv = annotate.click_points(img, ["top of the axis"], mask)[0] if ui else mask_top_above(mask, base_uv)
+            top_uv = annotate.click_points(img, ["top of the axis"], mask)[0] if ui and args.click else mask_top_above(mask, base_uv)
         clicks["axis_top"] = top_uv
         h = height_from_click(cam, base, top_uv)
         mesh = build_revolution(mask, cam, base, base + np.array([0.0, h, 0.0]), args.n_heights, args.n_segments)
     elif args.mode == "box":
-        corners = np.asarray(args.corners, float).reshape(-1, 2) if args.corners else None
-        top_uv = _pt(args.top)
+        corners = np.asarray(args.corners, float).reshape(-1, 2) * shrink if args.corners else None
+        top_uv = _pt(args.top, shrink)
         if corners is None or top_uv is None:
             if not ui:
                 sys.exit("box mode needs --corners (2-4 floor corners) and --top (a top corner)")
@@ -168,17 +186,22 @@ def run(args) -> dict:
     # --- normalize + export
     height, width = args.height, args.width
     if not (height or width):
-        if not ui:
+        if not (ui and sys.stdin.isatty()):
             sys.exit("give --height or --width in metres")
         height = annotate.ask_float("Real height in metres: ")
     world_mesh = mesh
     mesh, scale = normalize(mesh, base, height=height, width=width)
-    export_glb(mesh, tex, out / "object.glb", alpha_cutout=cutout, double_sided=args.mode == "card")
+    if args.glass:
+        export_glass_glb(mesh, out / "object.glb")
+    else:
+        export_glb(mesh, tex, out / "object.glb", alpha_cutout=cutout, double_sided=args.mode == "card")
     save_jpg(out / "object_mask.jpg", mask.astype(np.uint8) * 255, linear=False)
 
     meta = {
         "mode": args.mode,
+        "glass": bool(args.glass),
         "photo": str(args.photo),
+        "working_scale": shrink,
         "measurement": {"height_m": height} if height else {"width_m": width},
         "clicks_px": clicks,
         "rect": rect,
@@ -210,15 +233,21 @@ def _place_in_scene(out: Path) -> None:
     if not path.exists():
         return
     data = json.loads(path.read_text())
-    if not data.get("object"):
-        cam = Camera.from_dict(data["camera"], data["image_size"])
-        spot = cam.pixel_on_floor(np.array([[cam.width / 2, cam.height * 0.75]]))[0]
-        if np.isnan(spot).any():
-            spot = cam.position * [1, 0, 1]
-        data["object"] = ObjectPlacement("object.glb", (float(spot[0]), 0.0, float(spot[2]))).to_dict()
+    cam = Camera.from_dict(data["camera"], data["image_size"])
+    placed = data.get("object")
+    if placed and _in_view(cam, placed["transform"]["position"]):
+        placed["path"] = "object.glb"
     else:
-        data["object"]["path"] = "object.glb"  # keep wherever the engine placed it
-    update_scene_file(path, object=data["object"])
+        boxes = [(np.asarray(p["min"], float), np.asarray(p["max"], float))
+                 for p in data.get("proxies", []) if p.get("type") == "box"]
+        walls = [(np.asarray(p["point"], float), np.asarray(p["normal"], float))
+                 for p in data.get("proxies", []) if p.get("type") == "plane" and abs(p["normal"][1]) < 0.5]
+        spot = _support_spot(cam, boxes, walls)
+        placed = ObjectPlacement("object.glb", (float(spot[0]), float(spot[1]), float(spot[2]))).to_dict()
+        # the photographed side (+Z in object.glb) faces the camera
+        to_cam = cam.position - spot
+        placed["transform"]["rotation_y_deg"] = round(float(np.degrees(np.arctan2(to_cam[0], to_cam[2]))), 2)
+    update_scene_file(path, object=placed)
 
 
 def build_parser(prog: str = "python -m recast.object") -> argparse.ArgumentParser:
@@ -235,7 +264,10 @@ def build_parser(prog: str = "python -m recast.object") -> argparse.ArgumentPars
     g.add_argument("--rect", type=int, nargs=4, metavar=("X", "Y", "W", "H"))
     g.add_argument("--mask", help="ready-made cutout (white = object)")
     g.add_argument("--chroma", choices=("green", "blue"), help="backdrop colour to key out")
+    g.add_argument("--refine", action="store_true", help="open the brush to fix the cutout")
+    g.add_argument("--max-size", type=int, default=1600, help="shrink the photo to this many pixels on its long side (0 = full size)")
     g = p.add_argument_group("clicks (pixels in the photo)")
+    g.add_argument("--click", action="store_true", help="click the ground contact / axis top instead of taking them from the cutout")
     g.add_argument("--base", type=float, nargs=2, metavar=("U", "V"), help="ground contact")
     g.add_argument("--top", type=float, nargs=2, metavar=("U", "V"), help="revolution: axis top; box: a top corner")
     g.add_argument("--corners", type=float, nargs="+", help="box: 2-4 floor corners as u v u v ...")
@@ -243,7 +275,8 @@ def build_parser(prog: str = "python -m recast.object") -> argparse.ArgumentPars
     g.add_argument("--lines", help='JSON {"x": [[x1,y1,x2,y2],...], "z": [...], "y": [...]} of the floor/table')
     g.add_argument("--no-auto-lines", action="store_true")
     g.add_argument("--focal-px", type=float)
-    g.add_argument("--trust-exif", action="store_true")
+    g.add_argument("--trust-exif", action="store_true", help="(default now) use the EXIF focal length when there is one")
+    g.add_argument("--solve-focal", action="store_true", help="solve the focal length from vanishing points even with EXIF")
     g.add_argument("--pitch-deg", type=float, default=0.0, help="fallback camera tilt if no vanishing points")
     g.add_argument("--k1", type=float, default=0.0)
     g.add_argument("--k2", type=float, default=0.0)
@@ -253,6 +286,8 @@ def build_parser(prog: str = "python -m recast.object") -> argparse.ArgumentPars
     g.add_argument("--n-segments", type=int, default=48)
     g.add_argument("--depth-ratio", type=float, default=0.5, help="inflate only")
     g.add_argument("--delight", action="store_true", help="flatten baked-in shading (rough)")
+    g.add_argument("--glass", action="store_true", help="clear glass instead of the photo's colours (bottles, glasses)")
+    g.add_argument("--keep-shading", action="store_true", help="generated: keep the photo's lighting in the texture")
     p.add_argument("--compare", help="ground-truth .glb (normalized: metres, pivot at base) to score against")
     p.add_argument("--no-ui", action="store_true", help="never open windows; use defaults or fail")
     return p

@@ -227,3 +227,16 @@ def test_cli_revolution_end_to_end(tmp_path):
         assert Image.open(out / f).format == "JPEG"
     loaded = trimesh.load(out / "object.glb", force="mesh")
     assert np.isclose(loaded.bounds[0, 1], 0.0, atol=1e-6)
+
+
+def test_glass_glb_has_transmission(tmp_path):
+    from recast.object.export import export_glass_glb
+    import struct
+    export_glass_glb(trimesh.creation.cylinder(radius=0.05, height=0.2), tmp_path / "glass.glb")
+    data = (tmp_path / "glass.glb").read_bytes()
+    assert struct.unpack_from("<I", data, 8)[0] == len(data)
+    gltf = json.loads(data[20:20 + struct.unpack_from("<I", data, 12)[0]])
+    ext = gltf["materials"][0]["extensions"]
+    assert ext["KHR_materials_transmission"]["transmissionFactor"] == 1.0
+    assert ext["KHR_materials_ior"]["ior"] == 1.5
+    assert len(trimesh.load(tmp_path / "glass.glb", force="mesh").vertices) > 0
