@@ -2,17 +2,23 @@
 
 foto::Swapchain::Swapchain(GLFWwindow* window, Device& device) :
 	swapchainSupport(device.querySwapchainSupport(device.getPhysicalDevice(), device.getSurface())),
-	swapchain(createSwapchain(window, device, swapchainSupport)),
+	swapchain(createSwapchain(window, device, swapchainSupport, _format, _extent)),
+	images(getSwapchainImages(device, swapchain)),
+	imageViews(getImageViews(device, images, _format)),
 	device(device.getDevice())
 {
 
 }
 
 foto::Swapchain::~Swapchain() {
+	for (size i = 0; i < imageViews.size(); i++) {
+		vkDestroyImageView(device, imageViews[i], nullptr);
+	}
 	vkDestroySwapchainKHR(device, swapchain, nullptr);
 }
 
-VkSwapchainKHR foto::Swapchain::createSwapchain(GLFWwindow* window, Device& device, SwapchainSupportDetails swapchainSupport) {
+VkSwapchainKHR foto::Swapchain::createSwapchain(GLFWwindow* window, Device& device, SwapchainSupportDetails swapchainSupport,
+											    VkFormat& _format, VkExtent2D& _extent) {
 	VkSwapchainKHR swapchain = VK_NULL_HANDLE;
 
 	// Queue
@@ -84,5 +90,46 @@ VkSwapchainKHR foto::Swapchain::createSwapchain(GLFWwindow* window, Device& devi
 		throw std::runtime_error("ERROR: vkSwapchain.cpp -> createSwapchain()");
 	};
 
+	_format = format.format;
+	_extent = extent;
+
 	return swapchain;
+}
+
+std::vector<VkImage> foto::Swapchain::getSwapchainImages(Device& device, VkSwapchainKHR swapchain) {
+	u32 imageCount = 0;
+	vkGetSwapchainImagesKHR(device.getDevice(), swapchain, &imageCount, nullptr);
+	if (imageCount == 0) {
+		throw std::runtime_error("ERROR: vkSwapchain.cpp -> getSwapchainImages");
+	}
+	std::vector<VkImage> images(imageCount);
+	vkGetSwapchainImagesKHR(device.getDevice(), swapchain, &imageCount, images.data());
+
+	return images;
+}
+
+std::vector<VkImageView> foto::Swapchain::getImageViews(Device& device, std::vector<VkImage>& images, VkFormat _format) {
+	size numImages = images.size();
+	std::vector<VkImageView> imageViews(numImages);
+
+	for (size i = 0; i < numImages; i++) {
+		VkImageViewCreateInfo imageViewCreateInfo = {
+			.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+			.image = images[i],
+			.viewType = VK_IMAGE_VIEW_TYPE_2D,
+			.format = _format,
+			.subresourceRange = {
+				.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+				.baseMipLevel = 0,
+				.levelCount = 1,
+				.baseArrayLayer = 0,
+				.layerCount = 1,
+			},
+		};
+		if (vkCreateImageView(device.getDevice(), &imageViewCreateInfo, nullptr, &imageViews[i]) != VK_SUCCESS) {
+			throw std::runtime_error("ERROR: vkSwapchain.cpp -> getImageViews");
+		}
+	}
+
+	return imageViews;
 }
