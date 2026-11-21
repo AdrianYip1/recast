@@ -17,12 +17,20 @@ foto::Render::~Render() {
 
 // CPU -> recording command buffer
 // GPU -> submitting/executing command buffer
-void foto::Render::drawFrame(Device& device, Swapchain& swapchain, Pipeline& pipeline) {
+bool foto::Render::drawFrame(Device& device, Swapchain& swapchain, Pipeline& pipeline) {
 	vkWaitForFences(device.getDevice(), 1, &inFlightFence[currentFrame], VK_TRUE, UINT64_MAX);
-	vkResetFences(device.getDevice(), 1, &inFlightFence[currentFrame]);
 
 	u32 imageIdx;
-	vkAcquireNextImageKHR(device.getDevice(), swapchain.getSwapchain(), UINT64_MAX, imageAvailableSem[currentFrame], VK_NULL_HANDLE, &imageIdx);
+	VkResult acquireResult = vkAcquireNextImageKHR(device.getDevice(), swapchain.getSwapchain(), UINT64_MAX, imageAvailableSem[currentFrame], VK_NULL_HANDLE, &imageIdx);
+	if (acquireResult == VK_ERROR_OUT_OF_DATE_KHR) {
+		return true;
+	}
+	if (acquireResult != VK_SUCCESS && acquireResult != VK_SUBOPTIMAL_KHR) {
+		throw std::runtime_error("ERROR: vkRender.cpp -> drawFrame() acquire");
+	}
+
+	// Reset only once we know we will submit, otherwise an early return leaves it unsignaled -> deadlock
+	vkResetFences(device.getDevice(), 1, &inFlightFence[currentFrame]);
 
 	VkCommandBuffer commandBuffer = commandBuffers[currentFrame];
 	vkResetCommandBuffer(commandBuffer, 0);
@@ -68,9 +76,23 @@ void foto::Render::drawFrame(Device& device, Swapchain& swapchain, Pipeline& pip
 	};
 
 	// vkQueuePresentKHR doesn't wait, returns right away
-	vkQueuePresentKHR(device.getPresentQ(), &presentInfo);
+	VkResult presentResult = vkQueuePresentKHR(device.getPresentQ(), &presentInfo);
 
 	currentFrame = (currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
+
+	if (presentResult == VK_ERROR_OUT_OF_DATE_KHR || presentResult == VK_SUBOPTIMAL_KHR) {
+		return true;
+	}
+	if (presentResult != VK_SUCCESS) {
+		throw std::runtime_error("ERROR: vkRender.cpp -> drawFrame() present");
+	}
+	return false;
+}
+
+void foto::Render::onSwapchainRecreated(Swapchain& swapchain) {
+	for (VkSemaphore sem : renderFinishedSem) vkDestroySemaphore(_device, sem, nullptr);
+	renderFinishedSem.clear();
+	createRenderFinishedSems(_device, swapchain.getImages().size());
 }
 
 void foto::Render::createSyncObjects(VkDevice device, size swapchainImageCount) {
@@ -93,6 +115,14 @@ void foto::Render::createSyncObjects(VkDevice device, size swapchainImageCount) 
 			throw std::runtime_error("ERROR: vkRender.cpp -> createSyncObjects()");
 		}
 	}
+
+	createRenderFinishedSems(device, swapchainImageCount);
+}
+
+void foto::Render::createRenderFinishedSems(VkDevice device, size swapchainImageCount) {
+	VkSemaphoreCreateInfo semaphoreCreateInfo = {
+		.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO
+	};
 
 	// Per swapchain image: presentation engine holds it until that image is reacquired
 	renderFinishedSem.resize(swapchainImageCount);

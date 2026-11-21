@@ -32,7 +32,12 @@ void foto::Application::run() {
 		window->pollEvents();
 		onUpdate(0.0f);
 
-		render->drawFrame(*device, *swapchain, *pipeline);
+		bool outOfDate = render->drawFrame(*device, *swapchain, *pipeline);
+		if (outOfDate || window->getFramebufferResized()) {
+			window->setFramebufferResized(false);
+			swapchain->recreate();
+			render->onSwapchainRecreated(*swapchain);
+		}
 	}
 	vkDeviceWaitIdle(device->getDevice());
 	onShutdown();

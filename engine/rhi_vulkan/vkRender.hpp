@@ -17,7 +17,11 @@ namespace foto {
 		Render(const Render& other) = delete;
 		Render& operator=(const Render& other) = delete;
 
-		void drawFrame(Device& device, Swapchain& swapchain, Pipeline& pipeline);
+		// Returns true if the swapchain is out of date / suboptimal and must be recreated
+		bool drawFrame(Device& device, Swapchain& swapchain, Pipeline& pipeline);
+
+		// Call after Swapchain::recreate() (image count may change)
+		void onSwapchainRecreated(Swapchain& swapchain);
 	private:
 		VkDevice _device = VK_NULL_HANDLE;
 		VkCommandPool _commandPool = VK_NULL_HANDLE;
@@ -30,6 +34,7 @@ namespace foto {
 		u32 currentFrame = 0;
 
 		void createSyncObjects(VkDevice device, size swapchainImageCount);
+		void createRenderFinishedSems(VkDevice device, size swapchainImageCount);
 		void recordCommandBuffer(Swapchain& swapchain, Pipeline& pipeline, VkCommandBuffer commandBuffer, u32 imageIdx);
 		static VkCommandPool createCommandPool(Device& device);
 		static std::vector<VkCommandBuffer> createCommandBuffers(Device& device, VkCommandPool commandPool);
