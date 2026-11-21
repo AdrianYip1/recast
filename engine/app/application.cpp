@@ -12,10 +12,10 @@ foto::Application::Application(const ApplicationConfig& config) :
 	device(std::make_unique<Device>(window->getWindow())),
 	swapchain(std::make_unique<Swapchain>(window->getWindow(), *device)),
 	pipeline(std::make_unique<Pipeline>(*device, GraphicsPipelineConfig{
-			.vertexShaderFilePath = "shaders/basic.vert.spv",
-			.fragmentShaderFilePath = "shaders/basic.frag.spv",
-			.colorFormat = swapchain->getFormat(),
-		}))
+				.vertexShaderFilePath = "shaders/basic.vert.spv",
+				.fragmentShaderFilePath = "shaders/basic.frag.spv",
+				.colorFormat = swapchain->getFormat(),
+			}))
 {
 	 
 }
