@@ -247,9 +247,16 @@ VkDevice foto::Device::selectLogicalDevice(VkPhysicalDevice physicalDevice, cons
 		.dynamicRendering = VK_TRUE
 	};
 
+	// Optional features: turn on whatever the GPU supports
+	VkPhysicalDeviceFeatures supported;
+	vkGetPhysicalDeviceFeatures(physicalDevice, &supported);
+
 	VkPhysicalDeviceFeatures2 features2 = {
 		.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
-		.pNext = &features13
+		.pNext = &features13,
+		.features = {
+			.samplerAnisotropy = supported.samplerAnisotropy
+		}
 	};
 
 	VkDeviceCreateInfo createInfo = {
@@ -324,6 +331,16 @@ void foto::Device::immediateSubmit(VkCommandPool commandPool, const std::functio
 	vkQueueWaitIdle(graphicsQueue);
 
 	vkFreeCommandBuffers(logicalDevice, commandPool, 1, &commandBuffer);
+}
+
+foto::f32 foto::Device::getMaxSamplerAnisotropy() {
+	VkPhysicalDeviceFeatures features;
+	vkGetPhysicalDeviceFeatures(physicalDevice, &features);
+	if (!features.samplerAnisotropy) return 1.0f;
+
+	VkPhysicalDeviceProperties properties;
+	vkGetPhysicalDeviceProperties(physicalDevice, &properties);
+	return properties.limits.maxSamplerAnisotropy;
 }
 
 foto::SwapchainSupportDetails foto::Device::querySwapchainSupport(VkPhysicalDevice device, VkSurfaceKHR surface) {
