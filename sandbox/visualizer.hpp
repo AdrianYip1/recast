@@ -57,6 +57,12 @@ private:
 	std::future<DetectJob> detectJob;
 	std::chrono::steady_clock::time_point detectStarted;
 	std::string lightingStatus;
+	// detection that takes longer than this is given up on (its late result is ignored)
+	// and the light editor is opened so the lights can be placed by hand
+	static constexpr int LIGHT_DETECT_TIMEOUT_S = 10;
+	bool detectGaveUp = false;
+	bool openLightEditor = false;
+	void askForManualLights(const std::string& reason);
 
 	enginemath::Vec3 shadowCenter;
 	foto::f32 shadowRadius = 5.0f;

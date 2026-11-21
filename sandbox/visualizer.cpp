@@ -201,6 +201,7 @@ void Visualizer::detectLighting() {
 
 	lightingStatus = "detecting lighting...";
 	detectStarted = std::chrono::steady_clock::now();
+	detectGaveUp = false;
 	recast::SceneFile sceneCopy = scene;
 	recast::LinearImage photo = photoPixels;
 	detectJob = std::async(std::launch::async, [sceneCopy, photo]() {
@@ -216,10 +217,26 @@ void Visualizer::detectLighting() {
 	});
 }
 
+void Visualizer::askForManualLights(const std::string& reason) {
+	lightingStatus = "no light source detected (" + reason + "): add lights by hand with debug > show and edit lights > add light";
+	showLights = true;
+	openLightEditor = true;
+	std::cout << "[recast] no light source detected (" << reason << ")" << std::endl;
+}
+
 void Visualizer::finishLightingDetection() {
-	if (!detectJob.valid() || detectJob.wait_for(std::chrono::seconds(0)) != std::future_status::ready) return;
+	if (!detectJob.valid()) return;
+	if (detectJob.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
+		auto waited = std::chrono::steady_clock::now() - detectStarted;
+		if (!detectGaveUp && waited >= std::chrono::seconds(LIGHT_DETECT_TIMEOUT_S)) {
+			detectGaveUp = true;
+			askForManualLights("gave up after " + std::to_string(LIGHT_DETECT_TIMEOUT_S) + " s");
+		}
+		return;
+	}
 
 	DetectJob job = detectJob.get();
+	if (detectGaveUp) return; // too late: the lights are being placed by hand now
 	if (!job.error.empty()) {
 		lightingStatus = "lighting detection failed: " + job.error;
 		return;
@@ -249,6 +266,7 @@ void Visualizer::finishLightingDetection() {
 	lightingStatus = "detected " + std::to_string(job.lights.size() - directionalCount) + " point + " +
 					 std::to_string(directionalCount) + " directional light(s) in " + std::to_string(seconds) + " s";
 	std::cout << "[recast] " << lightingStatus << std::endl;
+	if (job.lights.empty()) askForManualLights("none found in the photo");
 }
 
 void Visualizer::onUpdate(foto::f32 deltaTime) {
@@ -526,6 +544,10 @@ void Visualizer::onImGui() {
 	float exposure = getExposure();
 	if (ImGui::SliderFloat("exposure", &exposure, -4.0f, 4.0f, "%.1f EV")) setExposure(exposure);
 
+	if (openLightEditor) {
+		ImGui::SetNextItemOpen(true);
+		openLightEditor = false;
+	}
 	if (ImGui::CollapsingHeader("debug")) {
 		if (supportsPathTracing()) {
 			ImGui::Checkbox("path tracing", &pathTrace);
