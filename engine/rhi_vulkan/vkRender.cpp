@@ -319,15 +319,27 @@ void foto::Render::recordCommandBuffer(VkCommandBuffer commandBuffer, u32 imageI
 		.pDepthAttachment = &depthAttachment,
 	};
 	vkCmdBeginRendering(commandBuffer, &sceneRendering);
-	setFullViewport(commandBuffer, extent);
+	setSceneViewport(commandBuffer, extent);
 
-	vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.getPipeline());
-	vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.getPipelineLayout(),
-							0, 1, &descriptorSets[currentFrame], 0, nullptr);
-
+	Pipeline* boundPipeline = nullptr;
 	Mesh* boundMesh = nullptr;
 	for (const DrawItem& item : items) {
-		if (!item.mesh) continue;
+		Pipeline* itemPipeline = item.pipeline ? item.pipeline : &pipeline;
+		if (!item.mesh && !item.pipeline) continue;
+
+		if (itemPipeline != boundPipeline) {
+			vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, itemPipeline->getPipeline());
+			vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, itemPipeline->getPipelineLayout(),
+									0, 1, &descriptorSets[currentFrame], 0, nullptr);
+			boundPipeline = itemPipeline;
+		}
+
+		if (!item.mesh) {
+			DrawPush push = { .model = item.transform, .materialIndex = (item.materialOverride != NO_MATERIAL_OVERRIDE) ? item.materialOverride : DEFAULT_MATERIAL };
+			vkCmdPushConstants(commandBuffer, itemPipeline->getPipelineLayout(), DRAW_PUSH_RANGE.stageFlags, 0, sizeof(DrawPush), &push);
+			vkCmdDraw(commandBuffer, 3, 1, 0, 0);
+			continue;
+		}
 
 		if (item.mesh != boundMesh) {
 			item.mesh->bind(commandBuffer);
@@ -339,7 +351,7 @@ void foto::Render::recordCommandBuffer(VkCommandBuffer commandBuffer, u32 imageI
 				.model = item.transform,
 				.materialIndex = (item.materialOverride != NO_MATERIAL_OVERRIDE) ? item.materialOverride : submesh.materialIndex
 			};
-			vkCmdPushConstants(commandBuffer, pipeline.getPipelineLayout(), DRAW_PUSH_RANGE.stageFlags, 0, sizeof(DrawPush), &push);
+			vkCmdPushConstants(commandBuffer, itemPipeline->getPipelineLayout(), DRAW_PUSH_RANGE.stageFlags, 0, sizeof(DrawPush), &push);
 			vkCmdDrawIndexed(commandBuffer, submesh.indexCount, 1, submesh.firstIndex, 0, 0);
 		}
 	}
@@ -438,6 +450,33 @@ void foto::Render::recordCommandBuffer(VkCommandBuffer commandBuffer, u32 imageI
 	if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS) {
 		throw std::runtime_error("ERROR: vkRender.cpp -> recordCommandBuffer()");
 	}
+}
+
+VkRect2D foto::Render::getSceneRect() {
+	VkExtent2D extent = swapchain.getExtent();
+	if (viewportAspect <= 0.0f || extent.height == 0) return { {0, 0}, extent };
+
+	f32 windowAspect = static_cast<f32>(extent.width) / static_cast<f32>(extent.height);
+	if (windowAspect > viewportAspect) {
+		u32 width = static_cast<u32>(extent.height * viewportAspect + 0.5f);
+		return { { static_cast<i32>((extent.width - width) / 2), 0 }, { width, extent.height } };
+	}
+	u32 height = static_cast<u32>(extent.width / viewportAspect + 0.5f);
+	return { { 0, static_cast<i32>((extent.height - height) / 2) }, { extent.width, height } };
+}
+
+void foto::Render::setSceneViewport(VkCommandBuffer commandBuffer, VkExtent2D extent) {
+	VkRect2D rect = getSceneRect();
+	VkViewport viewport = {
+		.x = static_cast<f32>(rect.offset.x),
+		.y = static_cast<f32>(rect.offset.y),
+		.width = static_cast<f32>(rect.extent.width),
+		.height = static_cast<f32>(rect.extent.height),
+		.minDepth = 0.0f,
+		.maxDepth = 1.0f,
+	};
+	vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
+	vkCmdSetScissor(commandBuffer, 0, 1, &rect);
 }
 
 void foto::Render::setFullViewport(VkCommandBuffer commandBuffer, VkExtent2D extent) {

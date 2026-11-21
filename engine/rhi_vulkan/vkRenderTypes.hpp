@@ -10,6 +10,7 @@
 
 namespace foto {
 	class Mesh;
+	class Pipeline;
 
 	// Per-frame uniforms: set 0, binding 0 ("FrameUbo" in the shaders)
 	struct FrameUbo {
@@ -51,10 +52,12 @@ namespace foto {
 	};
 	static_assert(sizeof(Material) == 48);
 
-	// One mesh drawn with one transform. Every submesh uses its own material unless overridden
+	// One mesh drawn with one transform. Every submesh uses its own material unless overridden.
+	// pipeline = nullptr uses the default scene pipeline. mesh = nullptr draws a fullscreen triangle (needs a pipeline).
 	struct DrawItem {
 		Mesh* mesh = nullptr;
 		enginemath::Mat4 transform;
 		u32 materialOverride = NO_MATERIAL_OVERRIDE;
+		Pipeline* pipeline = nullptr;
 	};
 } // namespace foto

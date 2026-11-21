@@ -47,6 +47,10 @@ namespace foto {
 		// Saves the next presented frame (including the overlay) as a PNG
 		void requestScreenshot(const std::string& filePath) { screenshotPath = filePath; };
 
+		// Letterboxes the scene pass to this width/height ratio (0 = fill the window)
+		void setViewportAspect(f32 aspect) { viewportAspect = aspect; };
+		VkRect2D getSceneRect();
+
 		VkCommandPool getCommandPool() { return _commandPool; };
 	private:
 		Device& device;
@@ -81,6 +85,7 @@ namespace foto {
 		std::unique_ptr<Sampler> hdrSampler;
 		u32 hdrTextureSlot = 0;
 		u32 tonemapMaterial = 0;
+		f32 viewportAspect = 0.0f;
 
 		std::vector<VkSemaphore> imageAvailableSem;
 		std::vector<VkSemaphore> renderFinishedSem;
@@ -93,6 +98,7 @@ namespace foto {
 		void recordCommandBuffer(VkCommandBuffer commandBuffer, u32 imageIdx, std::span<const DrawItem> items,
 								 const std::function<void(VkCommandBuffer)>& overlay, bool capture);
 		void setFullViewport(VkCommandBuffer commandBuffer, VkExtent2D extent);
+		void setSceneViewport(VkCommandBuffer commandBuffer, VkExtent2D extent);
 		void writeTextureSlot(u32 slot, Image& texture, Sampler& sampler);
 		bool prepareScreenshot();
 		void saveScreenshot();

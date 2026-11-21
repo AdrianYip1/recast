@@ -14,6 +14,7 @@ namespace foto {
 	class Pipeline;
 	class Render;
 	class Image;
+	struct GraphicsPipelineConfig;
 	class Sampler;
 	class ImGuiLayer;
 
@@ -42,13 +43,22 @@ namespace foto {
 		Mesh* createMesh(std::span<const Vertex> vertices, std::span<const u32> indices, std::vector<Submesh> submeshes = {});
 		Mesh* loadModel(const std::string& filePath);
 		u32 loadTexture(const std::string& filePath);
+		u32 loadTextureHDR(const std::string& filePath);
 		u32 createTexture(const void* rgba, u32 width, u32 height);
 		u32 createMaterial(const Material& material);
 		void updateMaterial(u32 index, const Material& material);
 		const Material& getMaterial(u32 index);
 
 		// Queues a draw for the current frame; call from onUpdate
-		void draw(Mesh* mesh, const enginemath::Mat4& transform, u32 materialOverride = NO_MATERIAL_OVERRIDE);
+		void draw(Mesh* mesh, const enginemath::Mat4& transform, u32 materialOverride = NO_MATERIAL_OVERRIDE, Pipeline* pipeline = nullptr);
+		void drawFullscreen(Pipeline* pipeline, u32 material);
+
+		// Scene pipeline with the engine's formats, descriptor layout and push constants filled in
+		Pipeline* createPipeline(GraphicsPipelineConfig config);
+		void destroyMesh(Mesh* mesh);
+
+		// Letterboxes the 3D view to width/height (0 = fill the window)
+		void setViewportAspect(f32 aspect);
 
 		Camera& getCamera() { return camera; };
 		Window& getWindow() { return *window; };
@@ -76,6 +86,8 @@ namespace foto {
 		std::unique_ptr<Sampler> sampler;
 		std::vector<std::unique_ptr<Image>> textures;
 		std::vector<std::unique_ptr<Mesh>> meshes;
+		std::vector<std::unique_ptr<Pipeline>> pipelines;
+		f32 viewportAspect = 0.0f;
 
 		std::vector<DrawItem> drawList;
 		Camera camera;
