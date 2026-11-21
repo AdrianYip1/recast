@@ -43,7 +43,13 @@ Engine: `foto.exe data/<scene_name>/scene.json`
 camera `rotation` is camera-to-world in engine convention (looks down -Z);
 pixel origin top-left; colours linear RGB. Python only rewrites the sections it
 owns, keeps any keys it doesn't know, and writes atomically (temp file + rename),
-so hot reload never sees half a file.
+so hot reload never sees half a file. Until stage B has run there is no `object`
+key at all (the engine's loader rejects `"object": null`).
+
+Checked against the engine: every scene.json the Python writes loads in
+`sandbox/scene/sceneFile.cpp`, and `light`/`eval` run on the sample from
+`tools/make_test_scene.py` (`eval` picks up its `ground_truth.json`;
+see `tests/test_engine_scene.py`).
 
 `data/example/` is a complete fake room (made by `python examples/make_example.py`)
 for testing the loader before real photos exist.

@@ -150,6 +150,8 @@ def cmd_light(args) -> None:
 # --- stage D ----------------------------------------------------------------------
 
 def _load_srgb(path: Path) -> np.ndarray:
+    if Path(path).suffix.lower() == ".hdr":
+        return np.clip(linear_to_srgb(load_image_linear(path)), 0, 1).astype(np.float64)
     return np.asarray(Image.open(path).convert("RGB"), dtype=np.float64) / 255.0
 
 
@@ -162,8 +164,17 @@ def cmd_eval(args) -> None:
         render_path = next((out / n for n in ("render.jpg", "render.png") if (out / n).exists()), out / "render.jpg")
     render = _load_srgb(require(render_path, "the engine writes render.jpg; or pass --render"))
 
+    # default truth: the one tools/make_test_scene.py (engine side) lists in ground_truth.json
+    truth_path = args.truth
+    if truth_path is None:
+        gt = out / "ground_truth.json"
+        if not gt.exists():
+            sys.exit("pass --truth (a photo of the scene with the real object in it)")
+        truth_path = out / json.loads(gt.read_text())["photo_with_object"]
     # the ground truth went through the same lens, so undistort it the same way
-    truth_photo = load_photo(args.truth)
+    # (.hdr truths are synthetic renders: already linear, no EXIF)
+    truth_photo = Photo(load_image_linear(truth_path)) if Path(truth_path).suffix.lower() == ".hdr" \
+        else load_photo(truth_path)
     truth = np.clip(linear_to_srgb(preprocess(truth_photo, data.get("preprocess", {}))), 0, 1)
     if truth.shape != render.shape:
         truth = cv2.resize(truth, (render.shape[1], render.shape[0]), interpolation=cv2.INTER_AREA)
@@ -220,7 +231,7 @@ def main(argv=None) -> None:
 
     d = sub.add_parser("eval", help="stage D: PSNR/SSIM against a ground-truth photo")
     common(d)
-    d.add_argument("--truth", required=True)
+    d.add_argument("--truth", help="ground-truth photo (.jpg, or .hdr); default: ground_truth.json's photo_with_object")
     d.add_argument("--render")
     d.add_argument("--mask", help="object region (white) instead of the automatic one")
     d.set_defaults(func=cmd_eval)

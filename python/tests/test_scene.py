@@ -101,3 +101,19 @@ def test_box_on_floor_from_clicks():
     box = box_on_floor(5, cam, cam.project(corners), 0.8)
     assert np.allclose(box.min, [0.5, 0, 3.0], atol=1e-6)
     assert np.allclose(box.max, [1.2, 0.8, 3.6], atol=1e-6)
+
+
+def test_no_object_key_is_left_out_for_the_engine(tmp_path):
+    """The engine's loader rejects "object": null; missing (or an empty path) means no object."""
+    s = _scene()
+    s.object = None
+    d = s.to_dict()
+    assert "object" not in d
+    jsonschema.validate(d, SCHEMA)
+    assert Scene.from_dict(dict(d, object={"path": "", "transform": {}})).object is None
+    assert Scene.from_dict(dict(d, object=None)).object is None
+    # an older file with null gets cleaned up on the next update
+    p = tmp_path / "scene.json"
+    p.write_text(json.dumps(dict(d, object=None)))
+    update_scene_file(p, photo="photo.jpg")
+    assert "object" not in json.loads(p.read_text())

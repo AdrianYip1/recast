@@ -209,11 +209,15 @@ class Scene:
             "image_size": [self.camera.width, self.camera.height],
             "camera": self.camera.to_dict(),
             "scale_reference": self.scale_reference,
-            "object": None if self.object is None else self.object.to_dict(),
             "proxies": [p.to_dict() for p in self.proxies],
             "lights": [l.to_dict() for l in self.lights],
             "lighting": self.lighting.to_dict(),
         })
+        # no object yet -> leave the key out: the engine's loader rejects "object": null
+        # and falls back to an empty path when the key is missing
+        d.pop("object", None)
+        if self.object is not None:
+            d["object"] = self.object.to_dict()
         return d
 
     @classmethod
@@ -224,7 +228,8 @@ class Scene:
             camera=Camera.from_dict(d["camera"], d["image_size"]),
             photo=d.get("photo", PHOTO_NAME),
             scale_reference=d.get("scale_reference", {"kind": "camera_height", "metres": 1.5}),
-            object=None if not d.get("object") else ObjectPlacement.from_dict(d["object"]),
+            # missing, null, or the engine's default (empty path) all mean "no object yet"
+            object=ObjectPlacement.from_dict(d["object"]) if (d.get("object") or {}).get("path") else None,
             proxies=[proxy_from_dict(p) for p in d.get("proxies", [])],
             lights=[AreaLight.from_dict(l) for l in d.get("lights", []) if l.get("type", "area") == "area"],
             lighting=Lighting.from_dict(d.get("lighting")),
@@ -261,6 +266,8 @@ def update_scene_file(path: str | Path, **sections) -> None:
     path = Path(path)
     data = json.loads(path.read_text())
     data.update(sections)
+    if data.get("object", 0) is None:  # older files wrote null, which the engine rejects
+        del data["object"]
     write_json_atomic(path, data)
 
 
