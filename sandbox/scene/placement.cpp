@@ -66,7 +66,9 @@ bool recast::resolveCollisions(const std::vector<Proxy>& proxies, ObjectTransfor
 					moved = true;
 				}
 			}
-			else if (proxy.type == "box" || proxy.type == "hull") { // a hull collides as its bounding box
+			// a fitted shape doesn't push: its bounding box would keep objects off a chair's seat or out from behind its
+			// arms; dragging lands on its real surface, and the photo's depth decides what hides the object
+			else if (proxy.type == "box") {
 				if (worldMin.y >= proxy.max[1] - epsilon || worldMax.y <= proxy.min[1] + epsilon) continue;
 				if (overlapsSupport(proxy)) continue;
 
