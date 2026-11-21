@@ -376,7 +376,10 @@ def geometry_segments(cam: Camera, P: np.ndarray, segments: list[Segment], kind:
         n, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
         for i in range(1, n):
             if stats[i, cv2.CC_STAT_AREA] >= min_area * h * w:
-                out.append(Segment(label, 0.0, labels == i))
+                name = label
+                if label == "pillar" and stats[i, cv2.CC_STAT_HEIGHT] < 1.5 * stats[i, cv2.CC_STAT_WIDTH]:
+                    name = "ledge"                                  # wide and low: sills, shelves, counters
+                out.append(Segment(name, 0.0, labels == i))
     return out
 
 
