@@ -109,12 +109,16 @@ namespace foto {
 	};
 	static_assert(sizeof(GpuGeometry) == 32);
 
+	inline constexpr u32 CAUSTIC_PHOTONS = 65536; // per frame
+
 	struct TracePush {
 		u32 sampleIndex;
 		u32 photoTexture;
 		u32 trace; // 0 = only show the accumulated result
-		u32 _pad = 0;
+		u32 photonCount = CAUSTIC_PHOTONS;
+		enginemath::Vec4 objectSphere; // bounding sphere of the dynamic casters, w = radius (0 = none)
 	};
+	static_assert(sizeof(TracePush) == 32);
 
 	inline constexpr VkPushConstantRange TRACE_PUSH_RANGE = {
 		.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,

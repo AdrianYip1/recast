@@ -5,9 +5,9 @@
 #include <stb_image_write.h>
 
 foto::Render::Render(Device& device, Swapchain& swapchain, Pipeline& pipeline, Pipeline& presentPipeline, Pipeline& shadowPipeline,
-					 Pipeline* pathTracePipeline) :
+					 Pipeline* pathTracePipeline, Pipeline* causticsPipeline) :
 	device(device), swapchain(swapchain), pipeline(pipeline), presentPipeline(presentPipeline), shadowPipeline(shadowPipeline),
-	pathTracePipeline(pathTracePipeline),
+	pathTracePipeline(pathTracePipeline), causticsPipeline(causticsPipeline),
 	_device(device.getDevice()), _commandPool(createCommandPool(device)),
 	commandBuffers(createCommandBuffers(device, _commandPool)),
 	uniformBuffers(createUniformBuffers(device)),
@@ -206,8 +206,12 @@ void foto::Render::setPathTracing(bool enabled, u32 photoTexture) {
 
 void foto::Render::createTraceImages() {
 	accumulationImage = std::make_unique<Image>(device, swapchain.getExtent(), VK_FORMAT_R32G32B32A32_SFLOAT, VK_IMAGE_USAGE_STORAGE_BIT);
+	VkExtent2D extent = swapchain.getExtent();
+	causticImage = std::make_unique<Image>(device, VkExtent2D{ extent.width * 3, extent.height }, VK_FORMAT_R32_UINT,
+										   VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
 	device.immediateSubmit(_commandPool, [&](VkCommandBuffer commandBuffer) {
 		Image::transitionLayout(commandBuffer, accumulationImage->getImage(), VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
+		Image::transitionLayout(commandBuffer, causticImage->getImage(), VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
 	});
 
 	for (size i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
@@ -216,6 +220,7 @@ void foto::Render::createTraceImages() {
 			.writeImage(1, accumulationImage->getView(), VK_NULL_HANDLE, VK_IMAGE_LAYOUT_GENERAL, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
 			.writeImage(2, hdrImage->getView(), VK_NULL_HANDLE, VK_IMAGE_LAYOUT_GENERAL, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
 			.writeBuffer(3, geometryBuffers[i]->getBuffer(), sizeof(GpuGeometry) * MAX_TRACE_GEOMETRIES, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER)
+			.writeImage(4, causticImage->getView(), VK_NULL_HANDLE, VK_IMAGE_LAYOUT_GENERAL, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
 			.update(device, traceSets[i]);
 	}
 	traceKey.clear();
@@ -252,6 +257,22 @@ void foto::Render::updateTraceSamples(std::span<const DrawItem> items, const Fra
 void foto::Render::recordPathTrace(VkCommandBuffer commandBuffer, std::span<const DrawItem> items, const FrameUbo& frameUbo, VkExtent2D extent) {
 	updateTraceSamples(items, frameUbo);
 
+	if (traceSamples == 0) {
+		VkMemoryBarrier2 beforeClear = {
+			.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+			.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+			.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+			.dstStageMask = VK_PIPELINE_STAGE_2_CLEAR_BIT,
+			.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+		};
+		VkDependencyInfo clearDependency = { .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &beforeClear };
+		vkCmdPipelineBarrier2(commandBuffer, &clearDependency);
+		VkClearColorValue zero = {};
+		VkImageSubresourceRange range = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+		vkCmdClearColorImage(commandBuffer, causticImage->getImage(), VK_IMAGE_LAYOUT_GENERAL, &zero, 1, &range);
+	}
+
+	enginemath::Vec3 objectMin(1e30f), objectMax(-1e30f);
 	std::vector<VkAccelerationStructureInstanceKHR> instances;
 	std::vector<GpuGeometry> geometries;
 	for (const DrawItem& item : items) {
@@ -260,6 +281,18 @@ void foto::Render::recordPathTrace(VkCommandBuffer commandBuffer, std::span<cons
 		if (instances.size() >= MAX_TRACE_INSTANCES || geometries.size() + submeshes.size() > MAX_TRACE_GEOMETRIES) break;
 
 		bool dynamic = item.shadowCaster == ShadowCaster::Dynamic;
+		if (dynamic) {
+			const enginemath::Vec3& low = item.mesh->getBoundsMin();
+			const enginemath::Vec3& high = item.mesh->getBoundsMax();
+			for (int corner = 0; corner < 8; corner++) {
+				enginemath::Vec4 local((corner & 1) ? high.x : low.x, (corner & 2) ? high.y : low.y, (corner & 4) ? high.z : low.z, 1.0f);
+				enginemath::Vec4 world = item.transform * local;
+				for (int a = 0; a < 3; a++) {
+					objectMin[a] = std::min(objectMin[a], world[a]);
+					objectMax[a] = std::max(objectMax[a], world[a]);
+				}
+			}
+		}
 		VkAccelerationStructureInstanceKHR instance = {
 			.instanceCustomIndex = static_cast<u32>(geometries.size()),
 			.mask = dynamic ? 0x02u : 0x01u,
@@ -295,8 +328,8 @@ void foto::Render::recordPathTrace(VkCommandBuffer commandBuffer, std::span<cons
 		},
 		{
 			.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
-			.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-			.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+			.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_CLEAR_BIT,
+			.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT,
 			.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
 			.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
 		},
@@ -323,10 +356,33 @@ void foto::Render::recordPathTrace(VkCommandBuffer commandBuffer, std::span<cons
 	};
 	vkCmdPipelineBarrier2(commandBuffer, &beforeTrace);
 
+	TracePush push = { .sampleIndex = traceSamples, .photoTexture = tracePhotoTexture, .trace = traceSamples < MAX_TRACE_SAMPLES ? 1u : 0u };
+	if (objectMin.x <= objectMax.x) {
+		enginemath::Vec3 center = (objectMin + objectMax) * 0.5f;
+		enginemath::Vec3 half = (objectMax - objectMin) * 0.5f;
+		push.objectSphere = { center.x, center.y, center.z, std::sqrt(half.dot(half)) };
+	}
 	VkDescriptorSet sets[] = { descriptorSets[currentFrame], traceSets[currentFrame] };
+
+	if (causticsPipeline && push.trace && push.objectSphere.w > 0.0f) {
+		vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, causticsPipeline->getPipeline());
+		vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, causticsPipeline->getPipelineLayout(), 0, 2, sets, 0, nullptr);
+		vkCmdPushConstants(commandBuffer, causticsPipeline->getPipelineLayout(), TRACE_PUSH_RANGE.stageFlags, 0, sizeof(TracePush), &push);
+		vkCmdDispatch(commandBuffer, (push.photonCount + 63) / 64, 1, 1);
+
+		VkMemoryBarrier2 photonsDone = {
+			.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+			.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+			.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+			.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+			.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
+		};
+		VkDependencyInfo photonDependency = { .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &photonsDone };
+		vkCmdPipelineBarrier2(commandBuffer, &photonDependency);
+	}
+
 	vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pathTracePipeline->getPipeline());
 	vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pathTracePipeline->getPipelineLayout(), 0, 2, sets, 0, nullptr);
-	TracePush push = { .sampleIndex = traceSamples, .photoTexture = tracePhotoTexture, .trace = traceSamples < MAX_TRACE_SAMPLES ? 1u : 0u };
 	vkCmdPushConstants(commandBuffer, pathTracePipeline->getPipelineLayout(), TRACE_PUSH_RANGE.stageFlags, 0, sizeof(TracePush), &push);
 	vkCmdDispatch(commandBuffer, (extent.width + 7) / 8, (extent.height + 7) / 8, 1);
 	if (traceSamples < MAX_TRACE_SAMPLES) traceSamples++;

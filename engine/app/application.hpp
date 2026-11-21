@@ -105,6 +105,7 @@ namespace foto {
 		std::unique_ptr<Pipeline> presentPipeline;
 		std::unique_ptr<Pipeline> shadowPipeline;
 		std::unique_ptr<Pipeline> pathTracePipeline;
+		std::unique_ptr<Pipeline> causticsPipeline;
 		std::unique_ptr<Render> render;
 		std::unique_ptr<ImGuiLayer> imgui;
 

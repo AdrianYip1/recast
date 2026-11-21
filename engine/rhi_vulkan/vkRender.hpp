@@ -26,9 +26,9 @@ namespace foto {
 		// Scene pipelines render into this; presentPipeline tonemaps it to the swapchain
 		static constexpr VkFormat HDR_FORMAT = VK_FORMAT_R16G16B16A16_SFLOAT;
 
-		// pathTracePipeline: nullptr when the GPU can't ray trace
+		// pathTracePipeline / causticsPipeline: nullptr when the GPU can't ray trace
 		Render(Device& device, Swapchain& swapchain, Pipeline& pipeline, Pipeline& presentPipeline, Pipeline& shadowPipeline,
-			   Pipeline* pathTracePipeline);
+			   Pipeline* pathTracePipeline, Pipeline* causticsPipeline);
 		~Render();
 		Render(const Render& other) = delete;
 		Render& operator=(const Render& other) = delete;
@@ -74,6 +74,7 @@ namespace foto {
 		Pipeline& presentPipeline;
 		Pipeline& shadowPipeline;
 		Pipeline* pathTracePipeline = nullptr;
+		Pipeline* causticsPipeline = nullptr;
 
 		VkDevice _device = VK_NULL_HANDLE;
 		VkCommandPool _commandPool = VK_NULL_HANDLE;
@@ -118,6 +119,7 @@ namespace foto {
 		std::vector<std::unique_ptr<TopLevelAccelerationStructure>> topLevels;
 		std::vector<std::unique_ptr<Buffer>> geometryBuffers;
 		std::unique_ptr<Image> accumulationImage;
+		std::unique_ptr<Image> causticImage; // R32_UINT, 3 columns (rgb) per framebuffer pixel
 
 		std::vector<VkSemaphore> imageAvailableSem;
 		std::vector<VkSemaphore> renderFinishedSem;

@@ -28,17 +28,18 @@ static foto::DescriptorLayoutBuilder sceneSetLayout(foto::Device& device) {
 		.addBinding(2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, stages, textures.capacity, textureFlags);
 }
 
-static std::unique_ptr<foto::Pipeline> createPathTracePipeline(foto::Device& device) {
+static std::unique_ptr<foto::Pipeline> createTracePipeline(foto::Device& device, const char* shaderFilePath) {
 	if (!device.supportsRayTracing()) return nullptr;
 	return std::make_unique<foto::Pipeline>(device, foto::ComputePipelineConfig{
-		.shaderFilePath = "shaders/pathtrace.comp.spv",
+		.shaderFilePath = shaderFilePath,
 		.descriptorSetLayouts = {
 			sceneSetLayout(device),
 			foto::DescriptorLayoutBuilder()
 				.addBinding(0, VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, VK_SHADER_STAGE_COMPUTE_BIT)
 				.addBinding(1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_SHADER_STAGE_COMPUTE_BIT)
 				.addBinding(2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_SHADER_STAGE_COMPUTE_BIT)
-				.addBinding(3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT),
+				.addBinding(3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT)
+				.addBinding(4, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_SHADER_STAGE_COMPUTE_BIT),
 		},
 		.pushConstants = { foto::TRACE_PUSH_RANGE },
 	});
@@ -77,8 +78,10 @@ foto::Application::Application(const ApplicationConfig& config) :
 				.depthBiasConstant = 1.25f,
 				.depthBiasSlope = 1.75f,
 			})),
-	pathTracePipeline(createPathTracePipeline(*device)),
-	render(std::make_unique<Render>(*device, *swapchain, *pipeline, *presentPipeline, *shadowPipeline, pathTracePipeline.get())),
+	pathTracePipeline(createTracePipeline(*device, "shaders/pathtrace.comp.spv")),
+	causticsPipeline(createTracePipeline(*device, "shaders/caustics.comp.spv")),
+	render(std::make_unique<Render>(*device, *swapchain, *pipeline, *presentPipeline, *shadowPipeline, pathTracePipeline.get(),
+									causticsPipeline.get())),
 	imgui(std::make_unique<ImGuiLayer>(*window, *device, *swapchain, VK_FORMAT_UNDEFINED)),
 	sampler(std::make_unique<Sampler>(*device))
 {

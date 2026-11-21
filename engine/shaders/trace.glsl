@@ -5,7 +5,8 @@ layout(push_constant) uniform TracePush {
 	uint sampleIndex;
 	uint photoTexture;
 	uint trace;
-	uint pad;
+	uint photonCount;
+	vec4 objectSphere; // bounding sphere of the dynamic casters (w = radius, 0 = none), where photons are aimed
 } push;
 
 layout(set = 1, binding = 0) uniform accelerationStructureEXT scene;
@@ -24,6 +25,9 @@ struct Geometry {
 layout(std430, set = 1, binding = 3) readonly buffer Geometries {
 	Geometry geometries[];
 };
+
+// Caustic photons landing on each framebuffer pixel, summed since the last reset: 3 columns per pixel (rgb) in photonUnit()s
+layout(set = 1, binding = 4, r32ui) uniform uimage2D caustics;
 
 layout(buffer_reference, std430, buffer_reference_align = 4) readonly buffer Floats { float f[]; };
 layout(buffer_reference, std430, buffer_reference_align = 4) readonly buffer Indices { uint i[]; };
@@ -235,6 +239,34 @@ vec3 glassBounce(Hit hit, inout vec3 direction, inout vec3 throughput, inout uin
 	if (hit.frontFace) throughput *= albedoOf(hit);
 	return hit.position - hit.normal * SURFACE_OFFSET;
 }
+
+bool mirrorLike(Material material) {
+	return material.metallic > 0.5 && material.roughness < 0.3;
+}
+
+// Photon flux unit: the largest flux a photon can start with, over 256. Photons from point lights are aimed at the
+// objects' bounding sphere, photons from directional lights cross a disk that covers it
+float photonUnit() {
+	float largest = 0.0;
+	uint count = frame.lightInfo.x;
+	float perLight = float(push.photonCount) / float(max(count, 1u));
+	for (uint i = 0u; i < count; i++) {
+		Light light = frame.lights[i];
+		float radius = push.objectSphere.w;
+		float area;
+		if (light.intensity.w > 0.5) {
+			area = PI * radius * radius;
+		}
+		else {
+			float distance = length(push.objectSphere.xyz - light.position.xyz);
+			float sinMax = min(radius / max(distance, 1e-4), 1.0);
+			area = 2.0 * PI * (1.0 - sqrt(1.0 - sinMax * sinMax));
+		}
+		largest = max(largest, max(light.intensity.r, max(light.intensity.g, light.intensity.b)) * area / perLight);
+	}
+	return max(largest, 1e-12) / 256.0;
+}
+
 
 // Light leaving a photo surface: the photo itself where the camera sees that point, otherwise its albedo lit by the scene
 vec3 roomRadiance(Hit hit, uint lightSeed) {
