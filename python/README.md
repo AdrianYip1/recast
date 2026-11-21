@@ -16,12 +16,19 @@ pytest
 
 Extras: `lens` = lensfun database for undistortion, `raw` = camera RAW files
 (better than JPEG, the colours are already linear), `models` = the pretrained
-models for `recast detect` (CPU torch first, ~0.5 GB with the models):
+models for `recast detect` and `recast.object --mode generated` (torch first; the
+CUDA build if there's an NVIDIA GPU, ~3 GB, else the CPU one; the models download
+once, ~2.5 GB, then everything runs offline):
 
 ```powershell
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu130   # or .../whl/cpu
 pip install -e ".[models]"
 ```
+
+Models (all local, no online AI service): OneFormer ADE20K swin-tiny (MIT) and
+Depth Anything V2 Base (CC-BY-NC-4.0, non-commercial) for `detect`; TripoSR
+(MIT, code vendored in `third_party/TripoSR`) and BiRefNet lite (MIT, ONNX via
+rembg) for `--mode generated`.
 
 ## Scene folder (the contract)
 
@@ -86,7 +93,7 @@ Until the engine exports it, `light --python-gbuffer` renders the same thing fro
 ```powershell
 python -m recast scene  room.jpg --name living_room --camera-height 1.45   # A
 python -m recast detect --name living_room                                  # A2 (optional)
-python -m recast object mug.jpg  --name living_room --mode revolution --height 0.12        # B
+python -m recast object mug.jpg  --name living_room --mode generated --height 0.12         # B
 #   ... engine: click proxies + lights, export gbuffer/ ...
 python -m recast light  --name living_room                                  # C
 #   ... engine: render.jpg ...
@@ -134,8 +141,18 @@ Rerunning replaces what the last run added and keeps the floor and any proxies
 made by hand (`--clear` drops those too). An object already placed stays at
 the same spot in the photo, standing on whatever surface is there now.
 
-**B. Object photo -> object.glb** (`recast.object`), no ML. One photo, a few
-clicks, one real measurement:
+**B. Object photo -> object.glb** (`recast.object`). One photo, one box drag, one real measurement.
+
+`--mode generated` (the panel's **3D model** and **glass**): BiRefNet cuts the object out inside the
+dragged box, TripoSR builds the whole shape (back included), the mesh is simplified to 20k faces and
+unwrapped (xatlas), and a 1024 px texture is baked: the photo itself wherever the surface faced the
+camera (projected through TripoSR's input camera), TripoSR's predicted colour on the back. The photo's
+lighting is divided out (order-1 spherical harmonics fitted over the normals), the object is stood
+straight (slice centres on one vertical line: photos from above make TripoSR lean things back), and
+its photographed side faces the scene camera when placed. About 45 s on an RTX 5060 laptop GPU.
+`object_meta.json` records the outline match (`silhouette_iou`), the share of photo texels and the tilt.
+
+The other modes use no models:
 
 ```powershell
 python -m recast.object mug.jpg --mode revolution --height 0.12 --out ..\data\room1

@@ -22,9 +22,11 @@ dependencies = [
 raw = ["rawpy>=0.19"]
 lens = ["lensfunpy>=1.15"]
 dev = ["pytest>=8.0", "jsonschema>=4.0"]
-# `python -m recast detect` (pretrained models, run offline on the CPU). Install the CPU build of
-# torch first: pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
-models = ["torch>=2.2", "torchvision>=0.17", "transformers>=4.45"]
+# `python -m recast detect` and `recast.object --mode generated` (pretrained models, run offline).
+# `recast.object --mode generated` (TripoSR, vendored in third_party/TripoSR) also needs these.
+# GPU: install the CUDA build of torch first (see README); on the CPU it works, much slower
+models = ["torch>=2.2", "torchvision>=0.17", "transformers>=4.45", "omegaconf>=2.3", "einops>=0.7",
+          "xatlas>=0.0.9", "rembg[cpu]>=2.0.57", "fast_simplification>=0.1"]
 
 [project.scripts]
 recast = "recast.cli:main"

@@ -20,7 +20,7 @@ from PIL import Image
 
 from .. import object3d
 from ..camera import Camera, solve_camera
-from ..io import load_photo, save_jpg
+from ..io import load_photo, save_jpg, to_srgb8
 from ..scene import ObjectPlacement, update_scene_file
 from ..vanishing import assign_axes, detect_segments, find_vanishing_points, vp_from_segments
 from . import MODES, annotate, check
@@ -117,9 +117,13 @@ def run(args) -> dict:
     if not mask.any():
         sys.exit("the mask is empty")
 
+    # --- generated: TripoSR builds the whole shape and texture, no camera or clicks needed
+    if args.mode == "generated":
+        return _run_generated(args, out, img, mask, alpha, shrink)
+
     # --- inflate: the older rounded-silhouette mesh, no camera needed
     if args.mode == "inflate":
-        height = args.height or (annotate.ask_float("Real height in metres: ") if ui else None)
+        height = args.height or (annotate.ask_float("Real height in metres: ") if ui and sys.stdin.isatty() else None)
         if not height:
             sys.exit("give --height in metres")
         obj = object3d.build_object(img, mask, height_m=height, depth_ratio=args.depth_ratio,
@@ -227,8 +231,81 @@ def run(args) -> dict:
     return meta
 
 
+def _run_generated(args, out: Path, img: np.ndarray, mask: np.ndarray, alpha, shrink: float) -> dict:
+    from .modes.generated import build_generated
+
+    height, width = args.height, args.width
+    if not (height or width):
+        sys.exit("give --height or --width in metres")
+    a = alpha if alpha is not None else mask.astype(np.float32)
+    mesh, tex, info = build_generated(to_srgb8(img), a, remove_lighting=not args.keep_shading)
+    lo, hi = mesh.bounds
+    base = np.array([0.5 * (lo[0] + hi[0]), lo[1], 0.5 * (lo[2] + hi[2])])
+    mesh, scale = normalize(mesh, base, height=height, width=width)
+    if args.glass:
+        export_glass_glb(mesh, out / "object.glb")
+    else:
+        export_glb(mesh, tex, out / "object.glb")
+    save_jpg(out / "object_mask.jpg", mask.astype(np.uint8) * 255, linear=False)
+    meta = {"mode": "generated", "glass": bool(args.glass), "photo": str(args.photo), "working_scale": shrink,
+            "measurement": {"height_m": height} if height else {"width_m": width}, "model": info,
+            "scale_units_to_m": scale, "vertices": len(mesh.vertices), "faces": len(mesh.faces)}
+    write_meta(out / "object_meta.json", meta)
+    _place_in_scene(out)
+    size = np.ptp(mesh.vertices, axis=0)
+    print(f"wrote {out / 'object.glb'} (generated on {info['device']}, {size[0]:.3f} x {size[1]:.3f} x {size[2]:.3f} m)")
+    return meta
+
+
+def _in_view(cam: Camera, point: np.ndarray) -> bool:
+    local = (np.asarray(point, dtype=np.float64) - cam.position) @ cam.R.T
+    if local[2] <= 0.1:
+        return False
+    u, v = cam.project(np.asarray(point, dtype=np.float64)[None])[0]
+    return 0 <= u < cam.width and 0 <= v < cam.height
+
+
+def _first_hit(origin: np.ndarray, d: np.ndarray, boxes, walls) -> tuple[float, bool]:
+    """Distance to the first floor / box / wall along the ray, and whether that surface faces up."""
+    best, up = np.inf, False
+    if d[1] < -1e-6:
+        best, up = -origin[1] / d[1], True
+    for lo, hi in boxes:
+        with np.errstate(divide="ignore", invalid="ignore"):
+            t1, t2 = (lo - origin) / d, (hi - origin) / d
+        entry = np.minimum(t1, t2)
+        near, far = np.nanmax(entry), np.nanmin(np.maximum(t1, t2))
+        if far >= max(near, 0.0) and 0.0 < near < best:
+            best, up = near, int(np.nanargmax(entry)) == 1 and d[1] < 0
+    for p0, n in walls:
+        facing = float(d @ n)
+        if facing < -1e-6:
+            t = float((p0 - origin) @ n) / facing
+            if 0.0 < t < best:
+                best, up = t, False
+    return best, up
+
+
+def _support_spot(cam: Camera, boxes: list[tuple[np.ndarray, np.ndarray]],
+                  walls: list[tuple[np.ndarray, np.ndarray]]) -> np.ndarray:
+    """The first floor or box top the camera sees, searched from the bottom-middle of the photo outwards,
+    or the floor 2.5 m in front of the camera when nothing to stand on is in view."""
+    for v in np.arange(0.95, 0.45, -0.02):
+        for u in (0.5, 0.4, 0.6, 0.3, 0.7, 0.2, 0.8, 0.1, 0.9):
+            d = cam.rays(np.array([[cam.width * u, cam.height * v]]))[0]
+            t, up = _first_hit(cam.position, d, boxes, walls)
+            spot = cam.position + d * t
+            if up and 0.8 < np.hypot(*(spot - cam.position)[[0, 2]]) < 15.0:
+                return spot
+    forward = cam.R[2] * [1.0, 0.0, 1.0]
+    length = np.linalg.norm(forward)
+    forward = forward / length if length > 1e-6 else np.array([0.0, 0.0, 1.0])
+    return cam.position * [1.0, 0.0, 1.0] + forward * 2.5
+
+
 def _place_in_scene(out: Path) -> None:
-    """If this folder has a scene.json, point it at object.glb (dropping it on the floor the first time)."""
+    """If this folder has a scene.json, point it at object.glb. A new object (or one the camera can't see)
+    stands on the floor or a box top in view; one the engine placed in view stays where it is."""
     path = out / "scene.json"
     if not path.exists():
         return
