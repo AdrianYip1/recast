@@ -33,6 +33,22 @@ namespace foto {
 
 	inline constexpr u32 NO_MATERIAL_OVERRIDE = UINT32_MAX;
 
+	inline constexpr u32 MAX_TEXTURES = 1024;
+	inline constexpr u32 MAX_MATERIALS = 1024;
+	inline constexpr u32 DEFAULT_TEXTURE = 0;
+	inline constexpr u32 DEFAULT_MATERIAL = 0;
+
+	// set 0, binding 1 (std430 storage buffer)
+	struct Material {
+		alignas(16) enginemath::Vec4 baseColor = { 1.0f, 1.0f, 1.0f, 1.0f };
+		alignas(16) enginemath::Vec4 emissive = { 0.0f, 0.0f, 0.0f, 0.0f };
+		f32 roughness = 1.0f;
+		f32 metallic = 0.0f;
+		u32 baseColorTexture = DEFAULT_TEXTURE;
+		u32 _pad = 0;
+	};
+	static_assert(sizeof(Material) == 48);
+
 	// One mesh drawn with one transform. Every submesh uses its own material unless overridden
 	struct DrawItem {
 		Mesh* mesh = nullptr;

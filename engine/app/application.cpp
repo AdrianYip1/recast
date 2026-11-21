@@ -38,10 +38,11 @@ foto::Application::Application(const ApplicationConfig& config) :
 				.colorFormat = swapchain->getFormat(),
 				.depthFormat = Render::DEPTH_FORMAT,
 				.descriptorSetLayouts = {
-					// set 0 matches the bindings in common.glsl / basic.frag
 					DescriptorLayoutBuilder()
 						.addBinding(0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT)
-						.addBinding(1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_FRAGMENT_BIT)
+						.addBinding(1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_FRAGMENT_BIT)
+						.addBinding(2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_FRAGMENT_BIT,
+									MAX_TEXTURES, VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT)
 				},
 				.pushConstants = { DRAW_PUSH_RANGE },
 			})),
@@ -50,12 +51,12 @@ foto::Application::Application(const ApplicationConfig& config) :
 	// handle meshes
 	quad = std::make_unique<Mesh>(*device, render->getCommandPool(), vertices, indices);
 
-	// handle textures
 	texture = Image::loadTexture(*device, render->getCommandPool(), "textures/checker.png");
 	sampler = std::make_unique<Sampler>(*device);
-	render->setTexture(1, *texture, *sampler);
+	u32 checkerTexture = render->addTexture(*texture, *sampler);
+	checkerMaterial = render->addMaterial({ .baseColorTexture = checkerTexture });
+	tintedMaterial = render->addMaterial({ .baseColor = { 1.0f, 0.6f, 0.3f, 1.0f }, .baseColorTexture = checkerTexture });
 
-	// Slightly off-axis so the perspective is visible
 	camera.position = { 0.6f, 0.4f, 1.6f };
 	camera.lookAt({ 0.0f, 0.0f, 0.0f });
 }
@@ -94,8 +95,8 @@ void foto::Application::run() {
 
 		// Two quads, one behind and to the side, to show per-draw transforms + depth testing
 		DrawItem items[] = {
-			{ .mesh = quad.get(), .transform = Mat4::identity() },
-			{ .mesh = quad.get(), .transform = Mat4::translationM(0.45f, 0.2f, -0.4f) },
+			{ .mesh = quad.get(), .transform = Mat4::identity(), .materialOverride = checkerMaterial },
+			{ .mesh = quad.get(), .transform = Mat4::translationM(0.45f, 0.2f, -0.4f), .materialOverride = tintedMaterial },
 		};
 		bool outOfDate = render->drawFrame(items, frameUbo);
 		if (outOfDate || window->getFramebufferResized()) {

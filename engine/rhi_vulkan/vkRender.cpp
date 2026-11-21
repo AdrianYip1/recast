@@ -9,14 +9,28 @@ foto::Render::Render(Device& device, Swapchain& swapchain, Pipeline& pipeline) :
 	// Pool sized from the pipeline's set 0 bindings, one set per frame in flight
 	descriptorPool(device, MAX_FRAMES_IN_FLIGHT, pipeline.getDescriptorSetLayoutInfo(0).poolSizes(MAX_FRAMES_IN_FLIGHT)),
 	descriptorSets(descriptorPool.allocate(pipeline.getDescriptorSetLayout(0), MAX_FRAMES_IN_FLIGHT)),
+	materialBuffers(createMaterialBuffers(device)),
 	depthImage(createDepthImage(device, swapchain.getExtent()))
 {
-	// Point binding 0 of each frame's set at that frame's uniform buffer
+	VkPhysicalDeviceProperties properties;
+	vkGetPhysicalDeviceProperties(device.getPhysicalDevice(), &properties);
+	if (properties.limits.maxPerStageDescriptorSampledImages < MAX_TEXTURES ||
+		properties.limits.maxPerStageDescriptorSamplers < MAX_TEXTURES) {
+		throw std::runtime_error("ERROR: vkRender.cpp -> Render(): GPU can't bind MAX_TEXTURES textures");
+	}
+
 	for (size i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
 		DescriptorWriter()
 			.writeBuffer(0, uniformBuffers[i]->getBuffer(), sizeof(FrameUbo))
+			.writeBuffer(1, materialBuffers[i]->getBuffer(), sizeof(Material) * MAX_MATERIALS, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER)
 			.update(device, descriptorSets[i]);
 	}
+
+	const u8 white[4] = { 255, 255, 255, 255 };
+	defaultTexture = Image::createTexture(device, _commandPool, white, sizeof(white), { 1, 1 }, VK_FORMAT_R8G8B8A8_SRGB, false);
+	defaultSampler = std::make_unique<Sampler>(device);
+	addTexture(*defaultTexture, *defaultSampler);
+	addMaterial(Material{});
 
 	createSyncObjects(_device, swapchain.getImages().size());
 };
@@ -30,13 +44,36 @@ foto::Render::~Render() {
 	// descriptorPool (and its sets) + uniformBuffers are destroyed by their own destructors after this
 };
 
-void foto::Render::setTexture(u32 binding, Image& texture, Sampler& sampler) {
-	DescriptorWriter writer;
-	writer.writeImage(binding, texture.getView(), sampler.getSampler());
+foto::u32 foto::Render::addTexture(Image& texture, Sampler& sampler) {
+	if (textureCount >= MAX_TEXTURES) {
+		throw std::runtime_error("ERROR: vkRender.cpp -> addTexture(): MAX_TEXTURES reached");
+	}
 
+	vkDeviceWaitIdle(_device);
+
+	DescriptorWriter writer;
+	writer.writeImage(2, texture.getView(), sampler.getSampler(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+					  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, textureCount);
 	for (VkDescriptorSet set : descriptorSets) {
 		writer.update(device, set);
 	}
+
+	return textureCount++;
+}
+
+foto::u32 foto::Render::addMaterial(const Material& material) {
+	if (materials.size() >= MAX_MATERIALS) {
+		throw std::runtime_error("ERROR: vkRender.cpp -> addMaterial(): MAX_MATERIALS reached");
+	}
+
+	materials.push_back(material);
+	materialsVersion++;
+	return static_cast<u32>(materials.size() - 1);
+}
+
+void foto::Render::updateMaterial(u32 index, const Material& material) {
+	materials.at(index) = material;
+	materialsVersion++;
 }
 
 // CPU -> recording command buffer
@@ -56,8 +93,12 @@ bool foto::Render::drawFrame(std::span<const DrawItem> items, const FrameUbo& fr
 	// Reset only once we know we will submit, otherwise an early return leaves it unsignaled -> deadlock
 	vkResetFences(device.getDevice(), 1, &inFlightFence[currentFrame]);
 
-	// Update uniforms
 	uniformBuffers[currentFrame]->upload(&frameUbo, sizeof(frameUbo));
+
+	if (uploadedMaterialsVersion[currentFrame] != materialsVersion) {
+		materialBuffers[currentFrame]->upload(materials.data(), sizeof(Material) * materials.size());
+		uploadedMaterialsVersion[currentFrame] = materialsVersion;
+	}
 
 	VkCommandBuffer commandBuffer = commandBuffers[currentFrame];
 	vkResetCommandBuffer(commandBuffer, 0);
@@ -368,6 +409,18 @@ std::vector<std::unique_ptr<foto::Buffer>> foto::Render::createUniformBuffers(De
 	// HOST_VISIBLE: rewritten from the CPU every frame, so no staging buffer
 	for (size i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
 		buffers.push_back(std::make_unique<Buffer>(device, sizeof(FrameUbo), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT));
+	}
+
+	return buffers;
+}
+
+std::vector<std::unique_ptr<foto::Buffer>> foto::Render::createMaterialBuffers(Device& device) {
+	std::vector<std::unique_ptr<Buffer>> buffers;
+	buffers.reserve(MAX_FRAMES_IN_FLIGHT);
+
+	for (size i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+		buffers.push_back(std::make_unique<Buffer>(device, sizeof(Material) * MAX_MATERIALS, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT));
 	}
 

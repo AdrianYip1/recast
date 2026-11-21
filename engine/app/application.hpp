@@ -46,5 +46,7 @@ namespace foto {
 		std::unique_ptr<Sampler> sampler;
 
 		Camera camera;
+		u32 checkerMaterial = 0;
+		u32 tintedMaterial = 0;
 	};
 } // namespace foto

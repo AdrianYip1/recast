@@ -1,19 +1,30 @@
 #include "vkDescriptorHelper.hpp"
 
 foto::DescriptorLayoutBuilder& foto::DescriptorLayoutBuilder::addBinding(u32 binding, VkDescriptorType type,
-																		 VkShaderStageFlags stages, u32 count) {
+																		 VkShaderStageFlags stages, u32 count,
+																		 VkDescriptorBindingFlags flags) {
 	bindings.push_back({
 		.binding = binding,
 		.descriptorType = type,
 		.descriptorCount = count,
 		.stageFlags = stages,
 	});
+	bindingFlags.push_back(flags);
 	return *this;
 }
 
 VkDescriptorSetLayout foto::DescriptorLayoutBuilder::build(Device& device) const {
+	bool anyFlags = std::any_of(bindingFlags.begin(), bindingFlags.end(), [](VkDescriptorBindingFlags f) { return f != 0; });
+
+	VkDescriptorSetLayoutBindingFlagsCreateInfo flagsCreateInfo = {
+		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO,
+		.bindingCount = static_cast<u32>(bindingFlags.size()),
+		.pBindingFlags = bindingFlags.data()
+	};
+
 	VkDescriptorSetLayoutCreateInfo layoutCreateInfo = {
 		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+		.pNext = anyFlags ? &flagsCreateInfo : nullptr,
 		.bindingCount = static_cast<u32>(bindings.size()),
 		.pBindings = bindings.data()
 	};
@@ -113,7 +124,7 @@ foto::DescriptorWriter& foto::DescriptorWriter::writeBuffer(u32 binding, VkBuffe
 }
 
 foto::DescriptorWriter& foto::DescriptorWriter::writeImage(u32 binding, VkImageView view, VkSampler sampler,
-														   VkImageLayout layout, VkDescriptorType type) {
+														   VkImageLayout layout, VkDescriptorType type, u32 arrayElement) {
 	VkDescriptorImageInfo& info = imageInfos.emplace_back(VkDescriptorImageInfo{
 		.sampler = sampler,
 		.imageView = view,
@@ -124,7 +135,7 @@ foto::DescriptorWriter& foto::DescriptorWriter::writeImage(u32 binding, VkImageV
 		.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
 		.dstSet = VK_NULL_HANDLE, // filled in by update()
 		.dstBinding = binding,
-		.dstArrayElement = 0,
+		.dstArrayElement = arrayElement,
 		.descriptorCount = 1,
 		.descriptorType = type,
 		.pImageInfo = &info

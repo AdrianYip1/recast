@@ -19,7 +19,7 @@ namespace foto {
 														 const void* data, VkDeviceSize size, VkBufferUsageFlags usage);
 
 		// Copies raw bytes into the buffer (memory must be HOST_VISIBLE)
-		void upload(const void* data, VkDeviceSize dataSize);
+		void upload(const void* data, VkDeviceSize dataSize, VkDeviceSize offset = 0);
 
 		void copyFrom(Device& device, VkCommandPool commandPool, Buffer& src);
 

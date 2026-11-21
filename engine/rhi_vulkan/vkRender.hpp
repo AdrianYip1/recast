@@ -34,9 +34,12 @@ namespace foto {
 		// Call after Swapchain::recreate() (image count may change)
 		void onSwapchainRecreated();
 
-		// Points `binding` of every frame's descriptor set (set 0) at the texture.
-		// Only call when no frame is in flight: at init, or after vkDeviceWaitIdle.
-		void setTexture(u32 binding, Image& texture, Sampler& sampler);
+		// Bindless texture slot for the shaders (Material::baseColorTexture). Waits for the GPU to go idle.
+		u32 addTexture(Image& texture, Sampler& sampler);
+
+		u32 addMaterial(const Material& material);
+		void updateMaterial(u32 index, const Material& material);
+		const Material& getMaterial(u32 index) { return materials.at(index); };
 
 		VkCommandPool getCommandPool() { return _commandPool; };
 	private:
@@ -51,6 +54,15 @@ namespace foto {
 		std::vector<std::unique_ptr<Buffer>> uniformBuffers;
 		DescriptorPool descriptorPool;
 		std::vector<VkDescriptorSet> descriptorSets; // set 0, one per frame in flight, freed with the pool
+
+		std::vector<Material> materials;
+		std::vector<std::unique_ptr<Buffer>> materialBuffers;
+		u64 materialsVersion = 1;
+		std::array<u64, MAX_FRAMES_IN_FLIGHT> uploadedMaterialsVersion = {};
+
+		u32 textureCount = 0;
+		std::unique_ptr<Image> defaultTexture;
+		std::unique_ptr<Sampler> defaultSampler;
 
 		// Swapchain-sized, shared by the frames in flight (the barrier at the start of each frame orders them)
 		std::unique_ptr<Image> depthImage;
@@ -67,6 +79,7 @@ namespace foto {
 		static VkCommandPool createCommandPool(Device& device);
 		static std::vector<VkCommandBuffer> createCommandBuffers(Device& device, VkCommandPool commandPool);
 		static std::vector<std::unique_ptr<Buffer>> createUniformBuffers(Device& device);
+		static std::vector<std::unique_ptr<Buffer>> createMaterialBuffers(Device& device);
 		static std::unique_ptr<Image> createDepthImage(Device& device, VkExtent2D extent);
 	};
 } // namespace foto

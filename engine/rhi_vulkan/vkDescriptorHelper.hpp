@@ -15,7 +15,8 @@ namespace foto {
 	//       .addBinding(1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_FRAGMENT_BIT)
 	class DescriptorLayoutBuilder {
 	public:
-		DescriptorLayoutBuilder& addBinding(u32 binding, VkDescriptorType type, VkShaderStageFlags stages, u32 count = 1);
+		DescriptorLayoutBuilder& addBinding(u32 binding, VkDescriptorType type, VkShaderStageFlags stages, u32 count = 1,
+											VkDescriptorBindingFlags flags = 0);
 
 		// Caller owns the returned layout
 		VkDescriptorSetLayout build(Device& device) const;
@@ -27,6 +28,7 @@ namespace foto {
 
 	private:
 		std::vector<VkDescriptorSetLayoutBinding> bindings;
+		std::vector<VkDescriptorBindingFlags> bindingFlags;
 	};
 
 	// Owns a VkDescriptorPool. Destroying it frees every set allocated from it.
@@ -57,7 +59,8 @@ namespace foto {
 									  VkDescriptorType type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
 		DescriptorWriter& writeImage(u32 binding, VkImageView view, VkSampler sampler,
 									 VkImageLayout layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-									 VkDescriptorType type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
+									 VkDescriptorType type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+									 u32 arrayElement = 0);
 
 		void update(Device& device, VkDescriptorSet set);
 		void clear();
