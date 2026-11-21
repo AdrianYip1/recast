@@ -46,6 +46,9 @@ namespace foto {
 		// GPU's anisotropy limit, or 1.0 if samplerAnisotropy isn't supported (it's enabled whenever it is)
 		f32 getMaxSamplerAnisotropy();
 
+		// Whether LINE/POINT polygon modes work (fillModeNonSolid is enabled whenever it's supported)
+		bool supportsWireframe();
+
 		static SwapchainSupportDetails querySwapchainSupport(VkPhysicalDevice device, VkSurfaceKHR surface);
 		static std::optional<foto::QueueInfos> findQueueFamilies(VkPhysicalDevice device, VkSurfaceKHR surface);
 

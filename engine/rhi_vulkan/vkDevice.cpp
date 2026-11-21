@@ -255,6 +255,7 @@ VkDevice foto::Device::selectLogicalDevice(VkPhysicalDevice physicalDevice, cons
 		.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
 		.pNext = &features13,
 		.features = {
+			.fillModeNonSolid = supported.fillModeNonSolid, // wireframe
 			.samplerAnisotropy = supported.samplerAnisotropy
 		}
 	};
@@ -341,6 +342,12 @@ foto::f32 foto::Device::getMaxSamplerAnisotropy() {
 	VkPhysicalDeviceProperties properties;
 	vkGetPhysicalDeviceProperties(physicalDevice, &properties);
 	return properties.limits.maxSamplerAnisotropy;
+}
+
+bool foto::Device::supportsWireframe() {
+	VkPhysicalDeviceFeatures features;
+	vkGetPhysicalDeviceFeatures(physicalDevice, &features);
+	return features.fillModeNonSolid;
 }
 
 foto::SwapchainSupportDetails foto::Device::querySwapchainSupport(VkPhysicalDevice device, VkSurfaceKHR surface) {

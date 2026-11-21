@@ -4,7 +4,7 @@ foto::Pipeline::Pipeline(Device& device, const GraphicsPipelineConfig& graphicsP
 	_device(device.getDevice()),
 	setLayoutInfos(graphicsPipelineConfig.descriptorSetLayouts),
 	setLayouts(createDescriptorSetLayouts(device, setLayoutInfos)),
-	pipelineLayout(createPipelineLayout(device, setLayouts)),
+	pipelineLayout(createPipelineLayout(device, setLayouts, graphicsPipelineConfig.pushConstants)),
 	pipeline(createGraphicsPipeline(device, graphicsPipelineConfig, pipelineLayout))
 {
 
@@ -64,14 +64,17 @@ std::vector<VkDescriptorSetLayout> foto::Pipeline::createDescriptorSetLayouts(De
 	return setLayouts;
 }
 
-VkPipelineLayout foto::Pipeline::createPipelineLayout(Device& device, const std::vector<VkDescriptorSetLayout>& setLayouts) {
+VkPipelineLayout foto::Pipeline::createPipelineLayout(Device& device, const std::vector<VkDescriptorSetLayout>& setLayouts,
+													  const std::vector<VkPushConstantRange>& pushConstants) {
 	// Pipeline Layout
 	VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
 
 	VkPipelineLayoutCreateInfo pipelineLayoutCreateInfo = {
 		.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
 		.setLayoutCount = static_cast<u32>(setLayouts.size()),
-		.pSetLayouts = setLayouts.data()
+		.pSetLayouts = setLayouts.data(),
+		.pushConstantRangeCount = static_cast<u32>(pushConstants.size()),
+		.pPushConstantRanges = pushConstants.data()
 	};
 
 	if (vkCreatePipelineLayout(device.getDevice(), &pipelineLayoutCreateInfo, nullptr, &pipelineLayout) != VK_SUCCESS) {
@@ -105,17 +108,17 @@ VkPipeline foto::Pipeline::createGraphicsPipeline(Device& device, const Graphics
 
 	VkPipelineShaderStageCreateInfo shaderStagesCreateInfo[] = { vertShaderStageInfo, fragShaderStageInfo };
 
-	// Vertex Input
+	// Vertex Input (none when the vertex shader generates its own vertices)
 
 	auto vertexBindingDescription = Vertex::getBindingDescription();
 	auto vertexAttributeDescription = Vertex::getAttributeDescriptions();
 
 	VkPipelineVertexInputStateCreateInfo vertexInputCreateInfo = {
 		.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
-		.vertexBindingDescriptionCount = 1,
-		.pVertexBindingDescriptions = &vertexBindingDescription,
-		.vertexAttributeDescriptionCount = static_cast<u32>(vertexAttributeDescription.size()),
-		.pVertexAttributeDescriptions = vertexAttributeDescription.data()
+		.vertexBindingDescriptionCount = config.useVertexInput ? 1u : 0u,
+		.pVertexBindingDescriptions = config.useVertexInput ? &vertexBindingDescription : nullptr,
+		.vertexAttributeDescriptionCount = config.useVertexInput ? static_cast<u32>(vertexAttributeDescription.size()) : 0u,
+		.pVertexAttributeDescriptions = config.useVertexInput ? vertexAttributeDescription.data() : nullptr
 	};
 
 	// Input Assembly
@@ -144,12 +147,16 @@ VkPipeline foto::Pipeline::createGraphicsPipeline(Device& device, const Graphics
 	};
 
 	// Rasterizer
+	if (config.polygonMode != VK_POLYGON_MODE_FILL && !device.supportsWireframe()) {
+		throw std::runtime_error("ERROR: vkPipeline.cpp -> createGraphicsPipeline(): polygonMode needs fillModeNonSolid");
+	}
+
 	VkPipelineRasterizationStateCreateInfo rasterizerCreateInfo = {
 		.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
 		.depthClampEnable = VK_FALSE,
-		.polygonMode = VK_POLYGON_MODE_FILL,
-		.cullMode = VK_CULL_MODE_BACK_BIT,
-		.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE,
+		.polygonMode = config.polygonMode,
+		.cullMode = config.cullMode,
+		.frontFace = config.frontFace,
 		.depthBiasEnable = VK_FALSE,
 		.lineWidth = 1.0f
 	};
@@ -161,12 +168,23 @@ VkPipeline foto::Pipeline::createGraphicsPipeline(Device& device, const Graphics
 		.sampleShadingEnable = VK_FALSE
 	};
 
-	// Depth + Stencil
-	// do later, nullptr for now
-	
+	// Depth (stencil unused)
+	bool hasDepth = config.depthFormat != VK_FORMAT_UNDEFINED;
+
+	VkPipelineDepthStencilStateCreateInfo depthStencilCreateInfo = {
+		.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+		.depthTestEnable = (hasDepth && config.depthTest) ? VK_TRUE : VK_FALSE,
+		.depthWriteEnable = (hasDepth && config.depthWrite) ? VK_TRUE : VK_FALSE,
+		.depthCompareOp = config.depthCompare,
+		.depthBoundsTestEnable = VK_FALSE,
+		.stencilTestEnable = VK_FALSE,
+		.minDepthBounds = 0.0f,
+		.maxDepthBounds = 1.0f
+	};
+
 	// Colour Blending
 	VkPipelineColorBlendAttachmentState colorBlendAttachment = {
-		.blendEnable = VK_TRUE,
+		.blendEnable = config.alphaBlend ? VK_TRUE : VK_FALSE,
 		.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA,
 		.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
 		.colorBlendOp = VK_BLEND_OP_ADD,
@@ -188,6 +206,7 @@ VkPipeline foto::Pipeline::createGraphicsPipeline(Device& device, const Graphics
 		.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
 		.colorAttachmentCount = 1,
 		.pColorAttachmentFormats = &config.colorFormat,
+		.depthAttachmentFormat = config.depthFormat,
 	};
 	// Pipeline Creation
 	VkPipeline graphicsPipeline = VK_NULL_HANDLE;
@@ -202,7 +221,7 @@ VkPipeline foto::Pipeline::createGraphicsPipeline(Device& device, const Graphics
 		.pViewportState = &viewportStateCreateInfo,
 		.pRasterizationState = &rasterizerCreateInfo,
 		.pMultisampleState = &multisamplingCreateInfo,
-		.pDepthStencilState = nullptr,
+		.pDepthStencilState = hasDepth ? &depthStencilCreateInfo : nullptr,
 		.pColorBlendState = &colorBlendStateCreateInfo,
 		.pDynamicState = &dynamicStateCreateInfo,
 		.layout = layout,
