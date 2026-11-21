@@ -32,14 +32,14 @@ def _room():
     return cam, truth
 
 
-def _fake_models(cam, truth):
+def _fake_models(cam, truth, names=None):
     """What ideal models would return: labelled outlines + disparity = a / z + b."""
     _, ids, t = render_gbuffer(truth)
     rays = cam.rays(np.column_stack([np.mgrid[0:cam.height, 0:cam.width][1].ravel(),
                                      np.mgrid[0:cam.height, 0:cam.width][0].ravel()]).astype(float))
     z = t.ravel() * (rays @ cam.R[2])
     disparity = np.where(np.isfinite(z), 2.0 / np.where(np.isfinite(z), z, 1.0) + 0.3, 0.3).reshape(ids.shape)
-    names = {0: "floor", 1: "wall", 2: "wall", 3: "table", 4: "vase"}
+    names = names or {0: "floor", 1: "wall", 2: "wall", 3: "table", 4: "vase"}
     segments = [detect.Segment(names[i], 0.95, ids == i) for i in names if (ids == i).any()]
     return segments, disparity
 
@@ -139,3 +139,24 @@ def test_scale_from_a_table():
     small = scaled(det, k)
     assert np.isclose(small.proxies[0].max[1], 0.74)
     assert np.isclose(small.proxies[1].point[2], -5.0 * k)
+
+
+def test_outdoor_photo_uses_the_ground_as_floor():
+    """A street: sidewalk instead of floor, a bench and a post box, buildings behind. Detect must
+    use the sidewalk for scale and box the street furniture instead of failing for want of a floor."""
+    cam, truth = _room()
+    names = {0: "sidewalk", 1: "building", 2: "building", 3: "bench", 4: "signboard"}
+    segments, disparity = _fake_models(cam, truth, names)
+    assert detect.is_outdoors(segments)
+    det = detect.build_proxies(cam, segments, disparity, first_id=1)
+    assert det.depth_fit["a"] == pytest.approx(2.0, rel=1e-3)
+    labels = {o["label"] for o in det.objects}
+    assert labels == {"bench", "signboard"}
+    bench = next(p for p in det.proxies if p.id in next(o for o in det.objects if o["label"] == "bench")["proxy_ids"])
+    assert bench.min[1] == 0.0
+    np.testing.assert_allclose(bench.max, TABLE[1], atol=0.1)
+    assert not det.walls                                     # buildings are backdrop, not room walls
+
+    # indoors is unchanged: a room with a rug is not outdoors
+    indoor, _ = _fake_models(cam, truth)
+    assert not detect.is_outdoors(indoor)

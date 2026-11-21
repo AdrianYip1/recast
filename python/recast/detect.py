@@ -37,6 +37,10 @@ WALL = {"wall", "window", "door", "curtain", "painting", "mirror", "blind", "scr
         "bulletin board", "radiator", "sconce", "clock", "flag"}
 CEILING = {"ceiling"}
 IGNORE = {"sky", "light", "chandelier", "fan", "person", "animal"}  # hanging or moving things
+# an outdoor photo (is_outdoors): this ground is the floor, and the backdrop is too far to matter
+OUTDOOR_GROUND = {"road", "sidewalk", "path", "dirt track", "field", "land", "grass", "sand", "earth"}
+OUTDOOR_BACKDROP = {"sky", "building", "skyscraper", "house", "tower", "hovel", "tree", "palm", "plant life",
+                    "mountain", "hill", "sea", "river", "lake", "water", "bridge"}
 # seen through windows: not part of the room
 OUTDOOR = {"tree", "grass", "plant life", "palm", "street lamp", "streetlight", "car", "bus", "truck", "van",
            "bicycle", "minibike", "building", "skyscraper", "house", "tower", "hovel", "road", "sidewalk", "path",
@@ -47,6 +51,7 @@ FLOOR_SNAP = 0.12        # m: a bottom this close to the floor rests on it
 SUPPORT_SNAP = 0.15      # m: a bottom this close to a box top rests on that box
 FLOATING = 2.2           # m: an unsupported bottom this high is a depth error or something outside
 MAX_DEPTH = 40.0         # m: anything farther counts as unknown
+MAX_OBJECT_DISTANCE = 15.0   # m: objects farther than this get no box
 LEVEL_GAP = 0.2          # m: seat vs back height difference that splits an object in two
 
 
@@ -380,14 +385,26 @@ def geometry_segments(cam: Camera, P: np.ndarray, segments: list[Segment], kind:
     return out
 
 
+def is_outdoors(segments: list[Segment]) -> bool:
+    """A photo taken outside: more outdoor ground (sidewalk, road, grass...) than indoor floor, and no ceiling."""
+    def area(names):
+        return sum(int(s.mask.sum()) for s in segments if short_label(s.label) in names)
+    return area(CEILING) == 0 and area(OUTDOOR_GROUND) > max(area(FLOOR), 0)
+
+
 def build_proxies(cam: Camera, segments: list[Segment], disparity: np.ndarray, first_id: int,
                   photo_linear: np.ndarray | None = None, min_area: float = 0.001) -> Detection:
     h, w = cam.height, cam.width
     if disparity.shape != (h, w):
         raise ValueError(f"depth is {disparity.shape[::-1]}, photo is {(w, h)}")
     kind = []
+    outdoors = is_outdoors(segments)
     for s in segments:
         name = short_label(s.label)
+        if outdoors:   # the ground is the floor, nearby street things are objects, the backdrop is ignored
+            kind.append("floor" if name in OUTDOOR_GROUND or name in FLOOR else "ignore"
+                        if name in OUTDOOR_BACKDROP or name in IGNORE or name in WALL or name in CEILING else "object")
+            continue
         kind.append("floor" if name in FLOOR else "wall" if name in WALL else "ceiling" if name in CEILING
                     else "ignore" if name in IGNORE or name in OUTDOOR else "object")
     floor_mask = np.zeros((h, w), bool)
@@ -403,8 +420,12 @@ def build_proxies(cam: Camera, segments: list[Segment], disparity: np.ndarray, f
 
     # objects -> boxes
     found = []
+    dist_all = np.linalg.norm(P - cam.position, axis=2)
     for s, k in zip(segments, kind):
         if k != "object" or s.mask.mean() < min_area:
+            continue
+        # far things (across a street) get depth too rough for a box and are too far to place anything on
+        if np.nanmedian(np.where(s.mask, dist_all, np.nan)) > MAX_OBJECT_DISTANCE:
             continue
         m = _erode(s.mask, 2 if s.mask.sum() > 4000 else 1)
         if m.sum() < 0.4 * s.mask.sum():          # thin parts (legs) would vanish
