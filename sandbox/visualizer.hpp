@@ -45,6 +45,7 @@ private:
 	recast::CameraMatch cameraMatch;
 
 	foto::Mesh* objectMesh = nullptr;
+	recast::ObjectTransform placedTransform; // the object's place when it was loaded
 	std::string loadedObjectPath;
 	bool draggingObject = false;
 	enginemath::Vec3 dragOffset;

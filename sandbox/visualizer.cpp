@@ -153,6 +153,7 @@ void Visualizer::loadScene() {
 			try {
 				objectMesh = loadModel(objectPath);
 				loadedObjectPath = objectPath;
+				placedTransform = loaded.object.transform; // where it was put (on the table): "reset object" goes back here
 			}
 			catch (const std::exception& e) {
 				std::cerr << "[recast] " << e.what() << std::endl;
@@ -374,7 +375,8 @@ void Visualizer::onUpdate(foto::f32 deltaTime) {
 	else if (!(showLights && updateLightEditing())) updateObjectInteraction();
 	setPathTraceOwners(ownerTexture);
 	setPathTraceDepth(depthTexture);
-	setPathTracing(pathTrace && !showOriginal && !editRoom && !showLights && supportsPathTracing(), photoMaterial);
+	// the room and light editors draw over the photo, so the path traced image (the real result) stays on while editing
+	setPathTracing(pathTrace && !showOriginal && supportsPathTracing(), photoMaterial);
 	float pixelsPerPhotoPixel = getViewportSize().x / std::max(static_cast<float>(scene.image_size[0]), 1.0f);
 	setCameraMatch(cameraMatch.grain, cameraMatch.blur * pixelsPerPhotoPixel);
 	drawScene();
@@ -718,7 +720,9 @@ void Visualizer::drawScene() {
 		Mat4 matrix = proxyMatrix(i);
 		if (showOriginal) draw(proxyMeshes[i], matrix, overlayMaterial, proxyDepthPipeline, foto::ShadowCaster::Static);
 		else if (isPathTracing()) draw(proxyMeshes[i], matrix, proxyAlbedoMaterials[i], nullptr, foto::ShadowCaster::Static);
-		else draw(proxyMeshes[i], matrix, photoMaterial, compositePipeline, foto::ShadowCaster::Static);
+		// the raster preview's shadow maps have no window openings: walls cast none there, so sunlight through them shows
+		else draw(proxyMeshes[i], matrix, photoMaterial, compositePipeline,
+				  scene.proxies[i].type == "plane" && std::abs(scene.proxies[i].normal[1]) < 0.5f ? foto::ShadowCaster::None : foto::ShadowCaster::Static);
 	}
 
 	if (objectMesh && !showOriginal) draw(objectMesh, objectTransform(), foto::NO_MATERIAL_OVERRIDE, nullptr, foto::ShadowCaster::Dynamic);
@@ -749,6 +753,13 @@ void Visualizer::onImGui() {
 
 	if (objectMesh) {
 		recast::ObjectTransform& transform = scene.object.transform;
+		if (ImGui::Button("reset object")) {
+			transform = placedTransform;
+			draggingObject = false;
+			unsavedChanges = true;
+		}
+		ImGui::SameLine();
+		ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - ImGui::CalcTextSize("object size").x - 8.0f);
 		if (ImGui::SliderFloat("object size", &transform.scale, 0.1f, 10.0f, "%.2fx", ImGuiSliderFlags_Logarithmic)) {
 			transform.scale = std::max(transform.scale, 0.01f);
 			recast::resolveCollisions(scene.proxies, transform, objectMesh->getBoundsMin(), objectMesh->getBoundsMax());
