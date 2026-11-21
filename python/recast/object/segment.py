@@ -93,8 +93,13 @@ def salient_alpha(img_linear: np.ndarray, rect=None, margin: float = 0.08) -> np
     crop = (np.clip(linear_to_srgb(img_linear[y0:y1, x0:x1]), 0, 1) * 255).astype(np.uint8)
     global _SESSION
     if _SESSION is None:
-        # CPU: onnxruntime's DirectML build runs out of memory on this model (tried on an RTX 5060 laptop)
-        _SESSION = new_session("birefnet-general-lite", providers=["CPUExecutionProvider"])
+        import onnxruntime
+        # CPU: onnxruntime's DirectML build runs out of memory on this model (tried on an RTX 5060 laptop).
+        # Without the memory arena it holds ~0.5 GB instead of ~7 GB between runs, for about 1 s more per cutout
+        options = onnxruntime.SessionOptions()
+        options.enable_cpu_mem_arena = False
+        options.enable_mem_pattern = False
+        _SESSION = new_session("birefnet-general-lite", sess_opts=options, providers=["CPUExecutionProvider"])
     mask = remove(Image.fromarray(crop), session=_SESSION, only_mask=True)
     alpha = np.zeros((h, w), np.float32)
     alpha[y0:y1, x0:x1] = np.asarray(mask, np.float32) / 255.0

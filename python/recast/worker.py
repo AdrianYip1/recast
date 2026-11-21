@@ -42,6 +42,19 @@ def _parent_alive(pid: int | None) -> bool:
         return False
 
 
+def _lower_priority() -> None:
+    """Below the engine, so loading models never starves its light detection or frame rate."""
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+        kernel32 = ctypes.WinDLL("kernel32")
+        kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+        kernel32.SetPriorityClass.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        kernel32.SetPriorityClass(kernel32.GetCurrentProcess(), 0x00004000)   # BELOW_NORMAL_PRIORITY_CLASS
+    else:
+        os.nice(5)
+
+
 def _warm_up() -> None:
     """Import and load everything the steps use, while the user is still picking photos."""
     with _busy:
@@ -82,6 +95,7 @@ def main(argv=None) -> None:
     args = p.parse_args(argv)
     queue = Path(args.queue)
     queue.mkdir(parents=True, exist_ok=True)
+    _lower_priority()
     print(f"worker: ready, watching {queue}", flush=True)
     threading.Thread(target=_warm_up, daemon=True).start()
 
