@@ -386,7 +386,7 @@ def geometry_segments(cam: Camera, P: np.ndarray, segments: list[Segment], kind:
 HULL_POINTS = 1500       # points a hull is fitted to (a random subset: plenty for its outline, fast)
 
 
-def shape_hull(points: np.ndarray, lo: np.ndarray, hi: np.ndarray, top_seen: bool):
+def shape_hull(points: np.ndarray, lo: np.ndarray, hi: np.ndarray, top_seen: bool, may_stand_on_legs: bool = False):
     """Convex shape around an object's 3D points, inside its box: (anchor, local vertices, outward faces), or None.
     Only its front is seen, so the points are mirrored through the box's centre to fill in the back, unless the top is
     seen (it then covers the whole outline). It reaches down to the bottom of its box: what it stands on (the floor or
@@ -399,14 +399,28 @@ def shape_hull(points: np.ndarray, lo: np.ndarray, hi: np.ndarray, top_seen: boo
         return None
     if len(points) > HULL_POINTS:
         points = points[np.random.default_rng(0).choice(len(points), HULL_POINTS, replace=False)]
+    # Furniture on legs or a pedestal is open underneath: its bottom 30% is either much narrower than the rest or
+    # holds few of its points (thin legs, even when a star base spreads wide). The legs are left out and the shape
+    # doesn't reach down, so light and shadows pass under it. Only for things standing on the floor and fully in the photo
+    height = float(points[:, 1].max() - lo[1])
+    low = points[:, 1] < lo[1] + 0.3 * height
+
+    def spread(pts):
+        return float(np.prod(np.ptp(pts[:, [0, 2]], axis=0))) if len(pts) >= 3 else 0.0
+
+    open_below = (may_stand_on_legs and 0 < low.sum() and (~low).sum() >= 50 and
+                  (spread(points[low]) < 0.35 * spread(points[~low]) or low.sum() < 0.1 * len(points)))
+    if open_below:
+        points = points[~low]
     if not top_seen:
         centre = 0.5 * (lo + hi)
         mirrored = points.copy()
         mirrored[:, [0, 2]] = 2.0 * centre[[0, 2]] - points[:, [0, 2]]
         points = np.vstack([points, mirrored])
-    base = points.copy()                                    # its outline at the bottom, so it stands on its support
-    base[:, 1] = lo[1]
-    points = np.vstack([points, base])
+    if not open_below:                                      # its outline at the bottom, so it stands on its support
+        base = points.copy()
+        base[:, 1] = lo[1]
+        points = np.vstack([points, base])
     points = np.clip(points, lo, hi)
     try:
         hull = ConvexHull(points)
@@ -523,7 +537,7 @@ def build_proxies(cam: Camera, segments: list[Segment], disparity: np.ndarray, f
         if boxes:
             # cut off by the bottom of the photo: it carries on below the frame, down to the floor
             cut_off = bool(s.mask[-3:].any())
-            found.append({"segment": s, "boxes": boxes, "on_floor": on_floor or cut_off,
+            found.append({"segment": s, "boxes": boxes, "on_floor": on_floor or cut_off, "cut_off": cut_off,
                           "albedo": _albedo(photo_linear, s.mask, floor_ref)})
 
     # what does each rest on? lowest first, so supports are settled before what's on them
@@ -585,7 +599,8 @@ def build_proxies(cam: Camera, segments: list[Segment], disparity: np.ndarray, f
             if i in hulled:
                 continue
             e_lo, e_hi = envelope[i]
-            shape = shape_hull(P[f["segment"].mask], e_lo, e_hi, top_seen=cam.position[1] > e_hi[1] + 0.1)
+            shape = shape_hull(P[f["segment"].mask], e_lo, e_hi, top_seen=cam.position[1] > e_hi[1] + 0.1,
+                               may_stand_on_legs=e_lo[1] < 1e-6 and not f["cut_off"])
             if shape is not None:
                 anchor, local, faces = shape
                 world = local + anchor
