@@ -30,7 +30,7 @@ bool foto::Window::shouldClose() {
 	return glfwWindowShouldClose(window);
 }
 
-void pollEvents() {
+void foto::Window::pollEvents() {
 	glfwPollEvents();
 }
 
