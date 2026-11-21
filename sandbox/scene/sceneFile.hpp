@@ -23,6 +23,7 @@ namespace recast {
 	struct ScaleReference {
 		std::string kind = "camera_height";
 		foto::f32 metres = 0.0f;
+		foto::f32 guess = 0.0f; // the camera height first guessed (detect keeps its scale correction within 0.8-1.25x of it)
 	};
 
 	struct ObjectTransform {

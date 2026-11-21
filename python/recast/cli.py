@@ -177,8 +177,11 @@ def cmd_detect(args) -> None:
     print(f"depth in metres from {fit['floor_pixels']} floor pixels "
           f"(typical error {100 * fit['floor_depth_error']:.0f}%)")
 
-    # the camera height was a guess: tables and counters say how big the room really is
+    # the camera height was a guess: tables and counters say how big the room really is. The correction is kept within
+    # 0.8-1.25x of the original guess in total, so running detect again doesn't compound it
     k, used = detect.scale_from_known_heights(det)
+    guess = float(scene.scale_reference.get("guess") or scene.scale_reference.get("metres") or cam.position[1])
+    k = float(np.clip(cam.position[1] * k, 0.8 * guess, 1.25 * guess) / cam.position[1])
     rescaled = abs(k - 1.0) > 0.03
     if rescaled:
         det = detect.scaled(det, k)
@@ -238,7 +241,7 @@ def cmd_detect(args) -> None:
     sections = {"proxies": proxies, "lights": emitters}
     if rescaled:
         sections.update(camera=full_cam.to_dict(),
-                        scale_reference={"kind": "camera_height", "metres": float(cam.position[1]), "from": used})
+                        scale_reference={"kind": "camera_height", "metres": float(cam.position[1]), "guess": guess, "from": used})
         if data.get("object"):
             sections["object"] = data["object"]
     obj = data.get("object")
