@@ -439,6 +439,76 @@ def shape_hull(points: np.ndarray, lo: np.ndarray, hi: np.ndarray, top_seen: boo
     return anchor, points[used] - anchor, faces
 
 
+CARVE_CELLS = 48         # voxels across an object's longest side when carving its shape
+MAX_FACES = 600          # carved shapes are simplified to about this many triangles (picking and the light fit test them on the CPU)
+
+
+def shape_carve(cam: Camera, P: np.ndarray, mask: np.ndarray, hidden: np.ndarray, lo: np.ndarray, hi: np.ndarray):
+    """The object's shape carved from its box by what the photo shows (single-view space carving): a voxel stays where
+    it projects inside the object's cutout and lies behind the surface the photo sees there. The outline is the cutout
+    itself, and the space above a seat or between armrests is carved away (it's in front of the backrest). Pixels
+    another object hides count as unknown, not empty. Returns (anchor, local vertices, outward faces) or None."""
+    import trimesh
+    from skimage.measure import marching_cubes
+
+    if (hi - lo).min() < 0.03:
+        return None
+    # The box comes from depth, which can be off: carve from a bigger one. The cutout bounds it sideways and the photo's
+    # surface in front; behind that surface, the object reaches back at most as far as it is wide
+    thickness = float(max(hi[0] - lo[0], hi[2] - lo[2]))
+    grow = np.maximum(0.35 * (hi - lo), 0.1)
+    lo = np.array([lo[0] - grow[0], lo[1], lo[2] - grow[2]])     # never below what it stands on
+    hi = np.array([hi[0] + grow[0], hi[1] + 0.05, hi[2] + grow[2]])
+    size = hi - lo
+    cell = float(np.clip(size.max() / CARVE_CELLS, 0.015, 0.05))
+    counts = np.maximum(np.ceil(size / cell).astype(int), 2)
+    axes = [lo[a] + (np.arange(counts[a]) + 0.5) * size[a] / counts[a] for a in range(3)]
+    X, Y, Z = np.meshgrid(*axes, indexing="ij")
+    centres = np.column_stack([X.ravel(), Y.ravel(), Z.ravel()])
+
+    local = (centres - cam.position) @ cam.R.T
+    in_front = local[:, 2] > 0.05
+    uv = np.full((len(centres), 2), -1.0)
+    uv[in_front] = cam.project(centres[in_front])
+    u = np.round(uv[:, 0]).astype(int)
+    v = np.round(uv[:, 1]).astype(int)
+    inside = in_front & (u >= 0) & (v >= 0) & (u < mask.shape[1]) & (v < mask.shape[0])
+    # hidden pixels only where the outline carries on behind the other object: right next to the cutout
+    near_cutout = cv2.dilate(mask.astype(np.uint8), np.ones((31, 31), np.uint8)) > 0
+    allowed = cv2.dilate((mask | (hidden & near_cutout)).astype(np.uint8), np.ones((3, 3), np.uint8)) > 0
+    keep = np.zeros(len(centres), bool)
+    keep[inside] = allowed[v[inside], u[inside]]
+
+    # behind what the photo sees along the voxel's ray (unknown depth: kept)
+    seen = np.linalg.norm(P - cam.position, axis=2)
+    surface = np.full(len(centres), np.nan)
+    surface[inside] = seen[v[inside], u[inside]]
+    distance = np.linalg.norm(centres - cam.position, axis=1)
+    # the back: as far behind its nearest visible point as the object is wide (a round thing's back, a chair's back)
+    nearest = float(np.nanpercentile(seen[mask], 5)) if np.isfinite(seen[mask]).any() else np.inf
+    with np.errstate(invalid="ignore"):
+        keep &= ~(distance < surface - 1.5 * cell) & (distance <= nearest + thickness)
+
+    grid = keep.reshape(counts)
+    if grid.sum() < 8:
+        return None
+    padded = np.pad(grid.astype(np.float32), 1)
+    try:
+        verts, faces, _, _ = marching_cubes(padded, 0.5)
+    except (ValueError, RuntimeError):
+        return None
+    verts = lo + (verts - 0.5) * (size / counts)
+    mesh = trimesh.Trimesh(verts, faces, process=True)
+    if len(mesh.faces) > MAX_FACES:
+        mesh = mesh.simplify_quadric_decimation(face_count=MAX_FACES)
+    mesh.fix_normals()
+    if len(mesh.faces) < 4:
+        return None
+    vertices = np.asarray(mesh.vertices)
+    anchor = vertices.mean(axis=0)
+    return anchor, vertices - anchor, np.asarray(mesh.faces).tolist()
+
+
 def build_proxies(cam: Camera, segments: list[Segment], disparity: np.ndarray, first_id: int,
                   photo_linear: np.ndarray | None = None, min_area: float = 0.001) -> Detection:
     h, w = cam.height, cam.width
@@ -599,8 +669,10 @@ def build_proxies(cam: Camera, segments: list[Segment], disparity: np.ndarray, f
             if i in hulled:
                 continue
             e_lo, e_hi = envelope[i]
-            shape = shape_hull(P[f["segment"].mask], e_lo, e_hi, top_seen=cam.position[1] > e_hi[1] + 0.1,
-                               may_stand_on_legs=e_lo[1] < 1e-6 and not f["cut_off"])
+            shape = shape_carve(cam, P, f["segment"].mask, f["hidden"], e_lo, e_hi)
+            if shape is None:
+                shape = shape_hull(P[f["segment"].mask], e_lo, e_hi, top_seen=cam.position[1] > e_hi[1] + 0.1,
+                                   may_stand_on_legs=e_lo[1] < 1e-6 and not f["cut_off"])
             if shape is not None:
                 anchor, local, faces = shape
                 world = local + anchor

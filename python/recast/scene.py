@@ -91,7 +91,8 @@ class BoxProxy:
 
 @dataclass
 class HullProxy(BoxProxy):
-    """Convex shape fitted around a detected object: `vertices` (local, around `point`) and outward `faces`.
+    """Shape fitted to a detected object (carved from its cutout and depth, or a convex hull): `vertices` (local,
+    around `point`) and outward `faces`.
     min/max hold its world bounding box, so everything that handles boxes treats it as that box."""
 
     point: tuple[float, float, float] = (0.0, 0.0, 0.0)
