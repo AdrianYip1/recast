@@ -2,6 +2,7 @@
 
     python -m recast scene  room.jpg   --name living_room --camera-height 1.45
     python -m recast object mug.jpg    --name living_room --mode revolution --height 0.12
+    python -m recast detect            --name living_room              (find walls + objects, optional)
     python -m recast light             --name living_room              (after the engine wrote gbuffer/)
     python -m recast eval              --name living_room --truth with_real_mug.jpg
 
@@ -124,6 +125,89 @@ def cmd_scene(args) -> None:
         print(f"wrote {path}")
 
 
+# --- stage A2: walls and objects, found automatically ---------------------------------
+
+DETECT_FILE = "detect.json"
+
+
+def cmd_detect(args) -> None:
+    from . import detect
+
+    out = scene_dir(args)
+    path = require(out / "scene.json", "run `python -m recast scene` (stage A) first")
+    scene = Scene.load(path)
+    cam = scene.camera
+    rgb8 = np.asarray(Image.open(out / scene.photo).convert("RGB"))
+    if rgb8.shape[:2] != (cam.height, cam.width):
+        sys.exit(f"{scene.photo} is {rgb8.shape[1]}x{rgb8.shape[0]} but the camera is {cam.width}x{cam.height}")
+
+    print("running the segmentation and depth models on the CPU")
+    segments, disparity = detect.run_models(rgb8, min_score=args.min_score)
+    print(f"{len(segments)} regions: " + ", ".join(sorted({detect.short_label(s.label) for s in segments})))
+
+    # replace what the last detect run added; keep the floor and anything made by hand
+    old = json.loads((out / DETECT_FILE).read_text()) if (out / DETECT_FILE).exists() else {}
+    drop = set(old.get("proxy_ids", []))
+    data = json.loads(path.read_text())
+    kept = [p for p in data.get("proxies", [])
+            if p["id"] not in drop and not (args.clear and p.get("id") != 0)]
+    first_id = max((p["id"] for p in kept), default=-1) + 1
+
+    try:
+        det = detect.build_proxies(cam, segments, disparity, first_id, load_image_linear(out / scene.photo),
+                                   min_area=args.min_area)
+    except ValueError as e:
+        sys.exit(f"detect failed: {e}")
+    fit = det.depth_fit
+    print(f"depth in metres from {fit['floor_pixels']} floor pixels "
+          f"(typical error {100 * fit['floor_depth_error']:.0f}%)")
+
+    mdir = out / "masks"
+    mdir.mkdir(exist_ok=True)
+    for f in mdir.glob("*.png"):
+        f.unlink()
+    objects = []
+    for o in det.objects:
+        name = f"{o['proxy_ids'][0]:02d}_{o['label'].replace(' ', '_')}.png"
+        cv2.imwrite(str(mdir / name), o["segment"].mask.astype(np.uint8) * 255)
+        boxes = [scene_box for scene_box in det.proxies if scene_box.id in o["proxy_ids"]]
+        lo = np.min([b.min for b in boxes], axis=0)
+        hi = np.max([b.max for b in boxes], axis=0)
+        size = hi - lo
+        rests = "floor" if lo[1] < 1e-6 else f"{lo[1]:.2f} m up"
+        print(f"  {o['label']:<14} {size[0]:.2f} x {size[1]:.2f} x {size[2]:.2f} m, on the {rests}"
+              f"{'  (2 boxes: seat + back)' if len(boxes) > 1 else ''}")
+        objects.append({"label": o["label"], "score": o["score"], "proxy_ids": o["proxy_ids"],
+                        "mask": f"masks/{name}"})
+    for w in det.walls:
+        kind = "ceiling" if w["axis"] == 1 else "wall"
+        print(f"  {kind:<14} at {'xyz'[w['axis']]} = {w['value']:.2f} m")
+
+    proxies = kept + [p.to_dict() for p in det.proxies]
+    sections = {"proxies": proxies}
+    obj = data.get("object")
+    if obj and obj.get("transform"):
+        # the surfaces changed under the object: keep it at the same spot in the photo and stand it
+        # on whatever surface is there now, like dragging it there in the engine does
+        from .scene import cast, proxy_from_dict
+        pos = np.asarray(obj["transform"]["position"], float)
+        ray = cam.rays(cam.project(pos))
+        t, n, hit_id = cast(cam.position, ray, [proxy_from_dict(p) for p in proxies])
+        if hit_id[0] >= 0 and n[0][1] > 0.7:
+            pos = cam.position + ray[0] * t[0]
+            pos[1] += 0.002   # just above the surface: the engine pushes overlapping objects aside
+            obj["transform"]["position"] = [round(float(v), 4) for v in pos]
+            sections["object"] = obj
+    update_scene_file(path, **sections)
+    write_json_atomic(out / DETECT_FILE, {
+        "models": {"segmentation": detect.SEG_MODEL, "depth": detect.DEPTH_MODEL},
+        "depth_fit": fit, "proxy_ids": [p.id for p in det.proxies], "objects": objects,
+        "walls": [{k: v for k, v in w.items() if k != "points"} for w in det.walls]})
+    cv2.imwrite(str(out / "detect_check.jpg"), cv2.cvtColor(detect.draw_check(rgb8, cam, det), cv2.COLOR_RGB2BGR),
+                [cv2.IMWRITE_JPEG_QUALITY, 92])
+    print(f"added {len(det.proxies)} proxies to {path}; see detect_check.jpg")
+
+
 # --- stage C ----------------------------------------------------------------------
 
 def cmd_light(args) -> None:
@@ -233,6 +317,13 @@ def main(argv=None) -> None:
     # stage B has its own command line (modes, clicks, checks): python -m recast.object --help
     sub.add_parser("object", help="stage B: object photo -> object.glb (python -m recast.object --help)",
                    add_help=False)
+
+    a2 = sub.add_parser("detect", help="find walls, ceiling and objects in the scene photo (pretrained models)")
+    common(a2)
+    a2.add_argument("--min-score", type=float, default=0.5, help="drop detections less certain than this")
+    a2.add_argument("--min-area", type=float, default=0.001, help="ignore objects smaller than this share of the photo")
+    a2.add_argument("--clear", action="store_true", help="also remove boxes/walls made by hand (keeps the floor)")
+    a2.set_defaults(func=cmd_detect)
 
     c = sub.add_parser("light", help="stage C: fit lighting from photo + gbuffer")
     common(c)

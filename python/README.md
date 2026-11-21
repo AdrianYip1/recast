@@ -15,7 +15,13 @@ pytest
 ```
 
 Extras: `lens` = lensfun database for undistortion, `raw` = camera RAW files
-(better than JPEG, the colours are already linear).
+(better than JPEG, the colours are already linear), `models` = the pretrained
+models for `recast detect` (CPU torch first, ~0.5 GB with the models):
+
+```powershell
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+pip install -e ".[models]"
+```
 
 ## Scene folder (the contract)
 
@@ -26,6 +32,9 @@ data/<scene_name>/
   object.glb        extracted object, metres, +Y up, pivot at base (Python)
   object_mask.jpg   cutout, for debugging                       (Python)
   object_check.jpg  mesh outline reprojected on the object photo (Python)
+  detect.json       what `detect` found: labels, proxy ids, masks, depth fit (Python)
+  masks/            one cutout per detected object (white = object) (Python)
+  detect_check.jpg  detected objects (left), their boxes + walls (right) (Python)
   gbuffer/          normals.hdr, ids.png, depth.hdr             (engine, for the lighting fit)
   render.jpg        final composite (render.png also accepted)  (engine)
 ```
@@ -45,6 +54,14 @@ pixel origin top-left; colours linear RGB. Python only rewrites the sections it
 owns, keeps any keys it doesn't know, and writes atomically (temp file + rename),
 so hot reload never sees half a file. Until stage B has run there is no `object`
 key at all (the engine's loader rejects `"object": null`).
+
+Lights: Python's area lights and the engine's point/directional lights share
+`lights` (the engine detects them when a scene has none, and they can be
+added, dragged, removed and dimmed by hand in its debug panel). Python keeps
+every engine light and `lighting.ambient` as written, and only replaces the SH;
+the object's `scale` (the engine's size slider) is kept too. If the engine's
+light detection takes over 10 s or finds nothing, it says "no light source
+detected" and opens its light editor.
 
 Checked against the engine: every scene.json the Python writes loads in
 `sandbox/scene/sceneFile.cpp`, and `light`/`eval` run on the sample from
@@ -68,6 +85,7 @@ Until the engine exports it, `light --python-gbuffer` renders the same thing fro
 
 ```powershell
 python -m recast scene  room.jpg --name living_room --camera-height 1.45   # A
+python -m recast detect --name living_room                                  # A2 (optional)
 python -m recast object mug.jpg  --name living_room --mode revolution --height 0.12        # B
 #   ... engine: click proxies + lights, export gbuffer/ ...
 python -m recast light  --name living_room                                  # C
@@ -82,6 +100,28 @@ python -m recast eval   --name living_room --truth with_real_mug.jpg        # D
 4. Rotation from 3 vanishing points (LSD segments + RANSAC; `--lines` to trace them by hand).
 5. Scale from `--camera-height`; floor is y = 0.
 6. OpenCV camera -> engine convention (`R_engine = R_cv * diag(1, -1, -1)`), written to scene.json.
+
+**A2. Walls and objects, automatically** (`detect`). The only step with
+pretrained models, both run offline on the CPU (~30 s, downloaded once):
+OneFormer ADE20K swin-tiny (MIT) outlines and names everything (floor, wall,
+ceiling, sofa, table, vase, ...), Depth Anything V2 Small (Apache-2.0) gives
+relative depth. The rest is ours:
+1. Depth in metres: fit `disparity = a / z + b` on the floor pixels, whose true
+   depth the solved camera gives exactly.
+2. Each object -> its 3D points -> an axis-aligned box (two stacked boxes when it
+   has a clear seat and back). Objects whose outline meets the floor (checked
+   against depth, so a table top's overhang doesn't count) are pinned to y = 0
+   and their feet widen the footprint; the outline's top edge, put on the plane
+   of the top by the camera, fixes the far side that depth sees edge-on.
+3. Each box rests on the floor or on the box under it (vase on table); boxes
+   inside bigger ones (cushions in a sofa) are dropped.
+4. Wall and ceiling pixels -> axis-aligned planes, pushed behind every object.
+   These also keep the engine's shadow map sized to the room: without them the
+   floor reaches the horizon and the object's shadow is too small to show.
+
+Rerunning replaces what the last run added and keeps the floor and any proxies
+made by hand (`--clear` drops those too). An object already placed stays at
+the same spot in the photo, standing on whatever surface is there now.
 
 **B. Object photo -> object.glb** (`recast.object`), no ML. One photo, a few
 clicks, one real measurement:
