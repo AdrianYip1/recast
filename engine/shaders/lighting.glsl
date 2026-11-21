@@ -15,7 +15,7 @@ float shadowVisibility(uint atlas, uint lightIndex, vec3 worldPos, vec3 normal) 
 	if (light.position.w < 0.5) return 1.0;
 
 	vec3 offsetPos = worldPos + normal * SHADOW_NORMAL_OFFSET;
-	uint face = light.intensity.w > 0.5 ? 0u : shadowFace(offsetPos - light.position.xyz);
+	uint face = isDirectional(light) ? 0u : shadowFace(offsetPos - light.position.xyz);
 	vec4 clip = light.faceViewProj[face] * vec4(offsetPos, 1.0);
 	vec3 ndc = clip.xyz / clip.w;
 
@@ -49,15 +49,18 @@ vec3 irradiance(vec3 worldPos, vec3 normal, bool includeDynamic) {
 	vec3 result = frame.ambient.rgb;
 	for (uint i = 0u; i < lightCount; i++) {
 		Light light = frame.lights[i];
-		bool directional = light.intensity.w > 0.5;
+		bool directional = isDirectional(light);
 		vec3 toLight = directional ? -light.direction.xyz : light.position.xyz - worldPos;
 		float distanceSquared = directional ? 1.0 : max(dot(toLight, toLight), 1e-4);
-		float cosine = max(dot(normal, toLight * inversesqrt(dot(toLight, toLight))), 0.0);
+		vec3 unit = toLight * inversesqrt(dot(toLight, toLight));
+		float cosine = max(dot(normal, unit), 0.0);
 		if (cosine <= 0.0) continue;
+		vec3 intensity = directional ? light.intensity.rgb : pointIntensity(light);
+		if (isArea(light)) intensity *= max(dot(areaNormal(light), -unit), 0.0);
 
 		float visibility = shadowVisibility(frame.lightInfo.y, i, worldPos, normal);
 		if (includeDynamic) visibility *= shadowVisibility(frame.lightInfo.z, i, worldPos, normal);
-		result += light.intensity.rgb * (cosine * visibility / distanceSquared);
+		result += intensity * (cosine * visibility / distanceSquared);
 	}
 	return result;
 }

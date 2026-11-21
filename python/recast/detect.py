@@ -578,6 +578,77 @@ def build_proxies(cam: Camera, segments: list[Segment], disparity: np.ndarray, f
     return Detection(proxies, objects, walls, fit, P)
 
 
+# --- lights seen in the photo ----------------------------------------------------------------
+
+WINDOWS = {"window", "windowpane", "skylight"}
+LAMPS = {"lamp", "light", "chandelier", "sconce", "spotlight"}
+EMITTER_OFFSET = 0.05    # m in front of the wall, so the wall's own plane doesn't shadow its window
+
+
+def find_emitters(cam: Camera, P: np.ndarray, segments: list[Segment], walls: list[dict],
+                  max_windows: int = 2, max_lamps: int = 1) -> list[dict]:
+    """Windows become area lights on the wall they're in (one rectangle per wall, from where the window pixels' rays
+    meet that wall, not from depth, which sees through glass), lamps become small point lights at their 3D centre.
+    Strengths are left at zero: the engine fits them to the photo. At most 2 windows + 1 lamp, leaving the engine's
+    fourth light for a sun it may add."""
+    h, w = P.shape[:2]
+    window_mask = np.zeros((h, w), bool)
+    lamps = []
+    for s in segments:
+        name = short_label(s.label)
+        if name in WINDOWS:
+            window_mask |= s.mask
+        elif name in LAMPS:
+            pts = P[s.mask]
+            pts = pts[np.isfinite(pts).all(axis=1)]
+            if len(pts) >= 20:
+                lamps.append((int(s.mask.sum()), np.median(pts, axis=0)))
+
+    windows = []
+    vertical = [wall for wall in walls if wall["axis"] != 1]
+    if vertical and window_mask.any():
+        ys, xs = np.nonzero(window_mask)
+        step = max(1, len(ys) // 20000)
+        rays = cam.rays(np.column_stack([xs[::step], ys[::step]]).astype(np.float64))
+        hits = []
+        for wall in vertical:
+            with np.errstate(divide="ignore", invalid="ignore"):
+                t = (wall["value"] - cam.position[wall["axis"]]) / rays[:, wall["axis"]]
+            hits.append(np.where(t > 0, t, np.inf))
+        hits = np.stack(hits)
+        first = hits.argmin(axis=0)
+        for k, wall in enumerate(vertical):
+            mine = np.isfinite(hits[k]) & (first == k)
+            if mine.sum() < 50:
+                continue
+            pts = cam.position + rays[mine] * hits[k, mine][:, None]
+            a = wall["axis"]
+            o = 2 - a                                            # the wall's horizontal direction
+            h_lo, h_hi = np.percentile(pts[:, o], [2, 98])
+            y_lo, y_hi = np.percentile(pts[:, 1], [2, 98])
+            y_lo, y_hi = max(float(y_lo), 0.0), min(float(y_hi), 4.0)
+            if h_hi - h_lo < 0.2 or y_hi - y_lo < 0.2:
+                continue
+            normal = np.zeros(3)
+            normal[a] = wall["side"]                             # into the room
+            along = np.cross([0.0, 1.0, 0.0], normal)           # corner 0 -> 1, so it shines along `normal`
+            centre = np.zeros(3)
+            centre[a] = wall["value"] + wall["side"] * EMITTER_OFFSET
+            centre[o] = 0.5 * (h_lo + h_hi)
+            centre[1] = 0.5 * (y_lo + y_hi)
+            half_w = along * 0.5 * (h_hi - h_lo)
+            half_h = np.array([0.0, 0.5 * (y_hi - y_lo), 0.0])
+            corners = [centre - half_w - half_h, centre + half_w - half_h, centre + half_w + half_h, centre - half_w + half_h]
+            windows.append(((h_hi - h_lo) * (y_hi - y_lo),
+                            {"type": "area", "corners": [[round(float(v), 4) for v in c] for c in corners],
+                             "radiance": [0.0, 0.0, 0.0]}))
+
+    lights = [light for _, light in sorted(windows, key=lambda x: -x[0])[:max_windows]]
+    lights += [{"type": "point", "position": [round(float(v), 4) for v in p], "intensity": [0.0, 0.0, 0.0], "radius": 0.1}
+               for _, p in sorted(lamps, key=lambda x: -x[0])[:max_lamps]]
+    return lights
+
+
 # --- scale ----------------------------------------------------------------------------
 
 # Furniture whose height hardly varies (m, top above the floor). A single photo can't tell a big room

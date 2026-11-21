@@ -19,8 +19,8 @@ namespace foto {
 	// Directional lights: one orthographic map in face 0
 	struct GpuLight {
 		alignas(16) enginemath::Vec4 position;  // xyz, w = 1 if it casts shadows
-		alignas(16) enginemath::Vec4 intensity; // rgb, w = 1 for directional. Point: irradiance = intensity * cos / distance^2, directional: intensity * cos
-		alignas(16) enginemath::Vec4 direction; // xyz = the way a directional light travels, w = Light::size
+		alignas(16) enginemath::Vec4 intensity; // rgb, w = 0 point, 1 directional, 2 area. Point: irradiance = intensity * cos / distance^2, directional: intensity * cos, area: radiance
+		alignas(16) enginemath::Vec4 direction; // xyz = the way a directional light travels (area: half its width), w = Light::size
 		alignas(16) enginemath::Mat4 faceViewProj[6] = {
 			enginemath::Mat4::identity(), enginemath::Mat4::identity(), enginemath::Mat4::identity(),
 			enginemath::Mat4::identity(), enginemath::Mat4::identity(), enginemath::Mat4::identity()
@@ -144,14 +144,17 @@ namespace foto {
 		.size = sizeof(DenoisePush)
 	};
 
-	enum class LightType : u32 { Point, Directional };
+	enum class LightType : u32 { Point, Directional, Area };
 
+	// Area: a vertical rectangle (a window), position = its centre, direction = half its width along the wall (not
+	// normalized), size = half its height, intensity = radiance. It shines towards cross(direction, up). The raster path
+	// treats it as a point at its centre
 	struct Light {
 		LightType type = LightType::Point;
 		enginemath::Vec3 position;
 		enginemath::Vec3 direction = enginemath::Vec3(0.0f, -1.0f, 0.0f);
 		enginemath::Vec3 intensity;
-		f32 size = 0.0f; // point: radius in metres, directional: angular radius in radians. Path tracing only (soft shadows)
+		f32 size = 0.0f; // point: radius in metres, directional: angular radius in radians, area: half height. Path tracing only (soft shadows)
 		bool castsShadows = true;
 	};
 

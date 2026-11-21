@@ -201,7 +201,11 @@ void Visualizer::loadScene() {
 	detectedLights = scene.lights;
 	detectedAmbient = scene.lighting.ambient;
 	selectedLight = -1;
-	if (recast::fitLightsFromScene(scene).empty()) detectLighting();
+	photoEmitters = recast::emittersToFit(scene);
+	bool unfitted = std::any_of(scene.lights.begin(), scene.lights.end(), [](const recast::SceneLight& light) {
+		return light.type == "area" ? light.radiance == recast::Vec3f{ 0, 0, 0 } : light.intensity == recast::Vec3f{ 0, 0, 0 };
+	});
+	if (scene.lights.empty() || unfitted) detectLighting();
 	else lightingStatus = std::to_string(scene.lights.size()) + " light(s) from scene.json";
 
 	std::cout << "[recast] loaded " << scenePath << std::endl;
@@ -240,6 +244,18 @@ void Visualizer::applySceneCamera() {
 void Visualizer::applySceneLighting() {
 	std::vector<foto::Light> lights;
 	for (const recast::SceneLight& light : scene.lights) {
+		if (light.type == "area") {
+			Vec3 c[4];
+			for (int k = 0; k < 4; k++) c[k] = Vec3(light.corners[k][0], light.corners[k][1], light.corners[k][2]);
+			lights.push_back({
+				.type = foto::LightType::Area,
+				.position = (c[0] + c[1] + c[2] + c[3]) * 0.25f,
+				.direction = (c[1] - c[0]) * 0.5f,
+				.intensity = Vec3(light.radiance[0], light.radiance[1], light.radiance[2]),
+				.size = 0.5f * (c[3].y - c[0].y),
+			});
+			continue;
+		}
 		if (light.type != "point" && light.type != "directional") continue;
 		lights.push_back({
 			.type = light.type == "directional" ? foto::LightType::Directional : foto::LightType::Point,
@@ -265,10 +281,12 @@ void Visualizer::detectLighting() {
 	recast::SceneFile sceneCopy = scene;
 	recast::LinearImage photo = photoPixels;
 	int stride = lightingStride(8);
-	detectJob = std::async(std::launch::async, [sceneCopy, photo, stride]() {
+	std::vector<recast::FitLight> emitters = photoEmitters;
+	detectJob = std::async(std::launch::async, [sceneCopy, photo, stride, emitters]() {
 		DetectJob job;
 		try {
 			std::vector<recast::LightingSample> samples = recast::collectLightingSamples(sceneCopy, photo, stride);
+			job.lights = emitters;
 			job.fit = recast::fitMainLight(sceneCopy, samples, job.lights);
 		}
 		catch (const std::exception& e) {
@@ -311,18 +329,10 @@ void Visualizer::finishLightingDetection() {
 	}
 
 	scene.lights.clear();
-	int directionalCount = 0;
+	int windows = 0, others = 0;
 	for (size_t i = 0; i < job.lights.size(); i++) {
-		const recast::FitLight& fitted = job.lights[i];
-		recast::SceneLight light;
-		light.type = fitted.directional ? "directional" : "point";
-		light.position = { fitted.position.x, fitted.position.y, fitted.position.z };
-		light.direction = { fitted.direction.x, fitted.direction.y, fitted.direction.z };
-		light.intensity = { job.fit.intensities[i].x, job.fit.intensities[i].y, job.fit.intensities[i].z };
-		if (fitted.directional) light.angular_radius_deg = fitted.size * 180.0f / enginemath::PI;
-		else light.radius = fitted.size;
-		scene.lights.push_back(light);
-		directionalCount += fitted.directional ? 1 : 0;
+		scene.lights.push_back(recast::sceneLightFrom(job.lights[i], job.fit.intensities[i]));
+		(job.lights[i].area ? windows : others)++;
 	}
 	scene.lighting.ambient = { job.fit.ambient.x, job.fit.ambient.y, job.fit.ambient.z };
 	detectedLights = scene.lights;
@@ -331,8 +341,8 @@ void Visualizer::finishLightingDetection() {
 	unsavedChanges = true;
 
 	int seconds = static_cast<int>(std::chrono::duration<double>(std::chrono::steady_clock::now() - detectStarted).count());
-	lightingStatus = "detected " + std::to_string(job.lights.size() - directionalCount) + " point + " +
-					 std::to_string(directionalCount) + " directional light(s) in " + std::to_string(seconds) + " s";
+	lightingStatus = "lit by " + std::to_string(windows) + " window(s) and " + std::to_string(others) + " other light(s), found in " +
+					 std::to_string(seconds) + " s";
 	std::cout << "[recast] " << lightingStatus << std::endl;
 	if (job.lights.empty()) askForManualLights("none found in the photo");
 }

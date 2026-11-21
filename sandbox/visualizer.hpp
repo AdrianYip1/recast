@@ -97,6 +97,7 @@ private:
 	void drawPipeline();
 
 	std::vector<recast::SceneLight> detectedLights; // what "reset lights" goes back to
+	std::vector<recast::FitLight> photoEmitters;    // windows and lamps detect found, whose strength the fit solves
 	recast::Vec3f detectedAmbient = { 0.0f, 0.0f, 0.0f };
 	int selectedLight = -1;
 	bool draggingLight = false;

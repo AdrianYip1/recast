@@ -164,14 +164,24 @@ void directLight(vec3 position, vec3 normal, vec3 view, uint mask, uint seed, fl
 	vec3 origin = position + normal * SURFACE_OFFSET;
 	for (uint i = 0u; i < count; i++) {
 		Light light = frame.lights[i];
-		bool directional = light.intensity.w > 0.5;
 		vec3 direction;
 		float distance;
 		vec3 incoming;
-		if (directional) {
+		if (isDirectional(light)) {
 			direction = sampleCone(-light.direction.xyz, light.direction.w, seed);
 			distance = 1e30;
 			incoming = light.intensity.rgb;
+		}
+		else if (isArea(light)) {
+			// one random point on the rectangle: radiance * cos at the light * area / distance^2
+			vec3 target = light.position.xyz + light.direction.xyz * (2.0 * random(seed) - 1.0)
+						+ vec3(0.0, light.direction.w * (2.0 * random(seed) - 1.0), 0.0);
+			vec3 toLight = target - position;
+			distance = length(toLight);
+			direction = toLight / max(distance, 1e-4);
+			float cosLight = dot(areaNormal(light), -direction);
+			if (cosLight <= 0.0) continue;
+			incoming = light.intensity.rgb * (cosLight * areaSize(light) / max(distance * distance, 1e-4));
 		}
 		else {
 			vec3 toLight = light.position.xyz + sampleSphere(seed) * light.direction.w - position;
@@ -268,7 +278,7 @@ float photonUnit() {
 		Light light = frame.lights[i];
 		float radius = push.objectSphere.w;
 		float area;
-		if (light.intensity.w > 0.5) {
+		if (isDirectional(light)) {
 			area = PI * radius * radius;
 		}
 		else {
@@ -276,7 +286,8 @@ float photonUnit() {
 			float sinMax = min(radius / max(distance, 1e-4), 1.0);
 			area = 2.0 * PI * (1.0 - sqrt(1.0 - sinMax * sinMax));
 		}
-		largest = max(largest, max(light.intensity.r, max(light.intensity.g, light.intensity.b)) * area / perLight);
+		vec3 strength = isDirectional(light) ? light.intensity.rgb : pointIntensity(light);
+		largest = max(largest, max(strength.r, max(strength.g, strength.b)) * area / perLight);
 	}
 	return max(largest, 1e-12) / 256.0;
 }

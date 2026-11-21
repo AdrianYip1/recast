@@ -786,7 +786,7 @@ void foto::Render::recordShadowPass(VkCommandBuffer commandBuffer, Image& atlas,
 	u32 lightCount = std::min(frameUbo.lightInfo[0], MAX_LIGHTS);
 	for (u32 light = 0; light < lightCount; light++) {
 		if (frameUbo.lights[light].position.w < 0.5f) continue;
-		u32 faceCount = frameUbo.lights[light].intensity.w > 0.5f ? 1 : 6;
+		u32 faceCount = std::abs(frameUbo.lights[light].intensity.w - 1.0f) < 0.5f ? 1 : 6; // directional: one map, point/area: a cube
 
 		for (u32 face = 0; face < faceCount; face++) {
 			VkViewport viewport = {

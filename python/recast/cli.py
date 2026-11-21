@@ -216,10 +216,17 @@ def cmd_detect(args) -> None:
         kind = "ceiling" if w["axis"] == 1 else "wall"
         print(f"  {kind:<14} at {'xyz'[w['axis']]} = {w['value']:.2f} m")
 
+    # windows and lamps in the photo: the engine fits their strength (a new room means new lighting)
+    emitters = detect.find_emitters(cam, det.points, segments, det.walls)
+    for light in emitters:
+        print(f"  {'window light' if light['type'] == 'area' else 'lamp light':<14} " +
+              (f"{np.ptp(np.array(light['corners'])[:, [0, 2]], axis=0).max():.2f} x {np.ptp(np.array(light['corners'])[:, 1]):.2f} m"
+               if light["type"] == "area" else "at " + ", ".join(f"{v:.2f}" for v in light["position"])))
+
     proxies = kept + [p.to_dict() for p in det.proxies]
-    sections = {"proxies": proxies}
+    sections = {"proxies": proxies, "lights": emitters}
     if rescaled:
-        sections.update(camera=full_cam.to_dict(), lights=data.get("lights", []),
+        sections.update(camera=full_cam.to_dict(),
                         scale_reference={"kind": "camera_height", "metres": float(cam.position[1]), "from": used})
         if data.get("object"):
             sections["object"] = data["object"]

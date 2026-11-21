@@ -144,6 +144,28 @@ namespace {
 	double lightTerm(const Occluders& occluders, const recast::LightingSample& sample, const recast::FitLight& light) {
 		Vec3 origin = sample.point + sample.normal * 1e-3f;
 
+		if (light.area) {
+			// irradiance per unit radiance: a 4x4 grid of points on the rectangle, each cos * cos / d^2 * its share of the area
+			Vec3 up(0.0f, light.halfHeight, 0.0f);
+			Vec3 facing = light.halfWidth.cross(Vec3(0.0f, 1.0f, 0.0f)).normalized();
+			double cell = 4.0 * std::sqrt(light.halfWidth.dot(light.halfWidth)) * light.halfHeight / 16.0;
+			double sum = 0.0;
+			for (int i = 0; i < 4; i++) {
+				for (int j = 0; j < 4; j++) {
+					Vec3 target = light.position + light.halfWidth * ((i + 0.5f) / 2.0f - 1.0f) + up * ((j + 0.5f) / 2.0f - 1.0f);
+					Vec3 toLight = target - origin;
+					float distanceSquared = std::max(toLight.dot(toLight), 1e-6f);
+					float distance = std::sqrt(distanceSquared);
+					Vec3 direction = toLight / distance;
+					double cosSurface = sample.normal.dot(direction), cosLight = facing.dot(-direction);
+					if (cosSurface <= 0.0 || cosLight <= 0.0) continue;
+					if (occluders.blocked(origin, direction, distance - 1e-3f, false)) continue;
+					sum += cosSurface * cosLight / distanceSquared;
+				}
+			}
+			return sum * cell;
+		}
+
 		if (light.directional) {
 			double cosine = sample.normal.dot(-light.direction);
 			if (cosine <= 0.0) return 0.0;
@@ -308,6 +330,7 @@ namespace {
 			while (improved) {
 				improved = false;
 				for (size_t l = 0; l < lights.size(); l++) {
+					if (lights[l].fixed) continue;
 					for (int axis = 0; axis < 3; axis++) {
 						if (lights[l].directional && axis == 2) continue;
 						for (float sign : { -1.0f, 1.0f }) {
@@ -535,6 +558,7 @@ static void fitLightSizes(const SceneFile& scene, const std::vector<LightingSamp
 	}
 
 	for (FitLight& light : lights) {
+		if (light.fixed) continue;
 		std::vector<float> sizes = light.directional
 			? std::vector<float>{ 0.0f, 0.25f, 0.5f, 1.0f, 2.0f, 4.0f, 8.0f }
 			: std::vector<float>{ 0.0f, 0.02f, 0.05f, 0.1f, 0.2f, 0.35f };
@@ -645,41 +669,58 @@ std::vector<recast::FitLight> recast::fitLightsFromScene(const SceneFile& scene)
 	return lights;
 }
 
-// One main light plus ambient: the directional light (sun, window) from a 96-direction grid, and when that isn't a clear
-// win, the best single point light (lamp) too, each refined locally on at most ~6000 samples. Well under a second where
-// the full multi-light search takes 15 s (2 min in a debug build). Keeps no light when neither explains the photo at
-// least 2% better than ambient alone (overcast rooms); most of what's left over is colour variation within furniture
+// The lights found in the photo (`lights` on input: windows, lamps) stay where they are and only get their strength.
+// One more light (the directional sun from a 96-direction grid, or a point lamp when that isn't a clear win) is added
+// when it explains the photo at least 2% better, each refined locally on at most ~6000 samples. Well under a second
+// where the full multi-light search takes 15 s (2 min in a debug build); most of what no light explains is colour
+// variation within the furniture
 recast::LightingFit recast::fitMainLight(const SceneFile& scene, const std::vector<LightingSample>& samples,
 										 std::vector<FitLight>& lights) {
+	std::vector<FitLight> found = lights;
+	for (FitLight& light : found) light.fixed = true;
 	lights.clear();
 	if (samples.empty()) return {};
 	std::vector<LightingSample> subset;
 	size_t step = std::max<size_t>(1, samples.size() / 6000);
 	for (size_t s = 0; s < samples.size(); s += step) subset.push_back(samples[s]);
 
-	double ambientOnly = residualFor(scene, subset, {});
-	double bestResidual = ambientOnly * 0.98;
+	// a window or lamp that comes out with no strength isn't lighting anything we can see
+	if (!found.empty()) {
+		LightingFit check = fitLightIntensities(scene, subset, found);
+		std::vector<FitLight> kept;
+		for (size_t l = 0; l < found.size(); l++) {
+			if (std::max({ check.intensities[l].x, check.intensities[l].y, check.intensities[l].z }) > 1e-4f) kept.push_back(found[l]);
+		}
+		found = kept;
+	}
+	lights = found;
+
+	double baseline = residualFor(scene, subset, found);
+	double bestResidual = baseline * 0.98;
 	for (bool directional : { true, false }) {
 		double residual = 0.0;
-		std::vector<FitLight> candidate = { gridSearch(scene, subset, {}, directional, residual) };
+		std::vector<FitLight> candidate = found;
+		candidate.push_back(gridSearch(scene, subset, found, directional, residual));
 		refine(scene, subset, candidate, 0.25f);
 		residual = refine(scene, subset, candidate, 0.03f);
 		if (residual < bestResidual && allIntensitiesPositive(fitLightIntensities(scene, subset, candidate))) {
 			bestResidual = residual;
 			lights = candidate;
 		}
-		if (!lights.empty() && bestResidual < ambientOnly * 0.8) break; // a clear sun: no need to look for a lamp
+		if (lights.size() > found.size() && bestResidual < baseline * 0.8) break; // a clear sun: no need to look for a lamp
 	}
 	if (lights.empty()) return fitLightIntensities(scene, samples, lights);
 	fitLightSizes(scene, subset, lights);
 	LightingFit fit = fitLightIntensities(scene, samples, lights);
 
 	// When the per-surface solves can't separate ambient from the light (colour changes within a piece of furniture
-	// look like shading), the ambient collapses to zero and every shadow would be black. Then measure it where the
-	// light doesn't reach (shadows, surfaces facing away) and refit the light's strength with that ambient
+	// look like shading), the ambient collapses to zero and every shadow would be black. Then measure it where no
+	// light reaches (shadows, surfaces facing away), and with a single light refit its strength against that ambient
 	Occluders occluders(scene.proxies);
-	std::vector<double> terms(subset.size());
-	for (size_t i = 0; i < subset.size(); i++) terms[i] = lightTerm(occluders, subset[i], lights[0]);
+	std::vector<double> terms(subset.size(), 0.0);
+	for (size_t i = 0; i < subset.size(); i++) {
+		for (const FitLight& light : lights) terms[i] += lightTerm(occluders, subset[i], light);
+	}
 	for (int c = 0; c < 3; c++) {
 		if (fit.ambient[c] > 1e-3f) continue;
 		std::vector<double> unlit;
@@ -690,6 +731,8 @@ recast::LightingFit recast::fitMainLight(const SceneFile& scene, const std::vect
 		if (unlit.size() < 20) continue;
 		std::nth_element(unlit.begin(), unlit.begin() + unlit.size() / 2, unlit.end());
 		double ambient = unlit[unlit.size() / 2];
+		fit.ambient[c] = static_cast<float>(ambient);
+		if (lights.size() != 1) continue;
 		double numerator = 0.0, denominator = 0.0;
 		for (size_t i = 0; i < subset.size(); i++) {
 			if (terms[i] <= 0.0) continue;
@@ -697,8 +740,48 @@ recast::LightingFit recast::fitMainLight(const SceneFile& scene, const std::vect
 			numerator += terms[i] * (irradiance - ambient);
 			denominator += terms[i] * terms[i];
 		}
-		fit.ambient[c] = static_cast<float>(ambient);
 		if (denominator > 0.0) fit.intensities[0][c] = static_cast<float>(std::max(0.0, numerator / denominator));
 	}
 	return fit;
+}
+
+std::vector<recast::FitLight> recast::emittersToFit(const SceneFile& scene) {
+	std::vector<FitLight> found;
+	for (const SceneLight& light : scene.lights) {
+		if (light.type == "area") {
+			Vec3 c[4];
+			for (int k = 0; k < 4; k++) c[k] = Vec3(light.corners[k][0], light.corners[k][1], light.corners[k][2]);
+			FitLight window;
+			window.area = true;
+			window.position = (c[0] + c[1] + c[2] + c[3]) * 0.25f;
+			window.halfWidth = (c[1] - c[0]) * 0.5f;
+			window.halfHeight = 0.5f * (c[3].y - c[0].y);
+			window.fixed = true;
+			found.push_back(window);
+		}
+		else if (light.type == "point" && light.intensity == Vec3f{ 0.0f, 0.0f, 0.0f }) {
+			found.push_back({ .position = Vec3(light.position[0], light.position[1], light.position[2]), .size = light.radius, .fixed = true });
+		}
+	}
+	return found;
+}
+
+recast::SceneLight recast::sceneLightFrom(const FitLight& light, const Vec3& strength) {
+	SceneLight out;
+	if (light.area) {
+		out.type = "area";
+		Vec3 up(0.0f, light.halfHeight, 0.0f);
+		Vec3 corners[4] = { light.position - light.halfWidth - up, light.position + light.halfWidth - up,
+							light.position + light.halfWidth + up, light.position - light.halfWidth + up };
+		for (int k = 0; k < 4; k++) out.corners[k] = { corners[k].x, corners[k].y, corners[k].z };
+		out.radiance = { strength.x, strength.y, strength.z };
+		return out;
+	}
+	out.type = light.directional ? "directional" : "point";
+	out.position = { light.position.x, light.position.y, light.position.z };
+	out.direction = { light.direction.x, light.direction.y, light.direction.z };
+	out.intensity = { strength.x, strength.y, strength.z };
+	if (light.directional) out.angular_radius_deg = light.size * 180.0f / enginemath::PI;
+	else out.radius = light.size;
+	return out;
 }
