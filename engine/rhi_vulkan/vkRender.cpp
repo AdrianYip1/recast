@@ -50,7 +50,7 @@ foto::Render::Render(Device& device, Swapchain& swapchain, Pipeline& pipeline, P
 			geometryBuffers.push_back(std::make_unique<Buffer>(device, sizeof(GpuGeometry) * MAX_TRACE_GEOMETRIES, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
 															   VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT));
 		}
-		createTraceImages();
+		createTraceImages(swapchain.getExtent());
 	}
 
 	createSyncObjects(_device, swapchain.getImages().size());
@@ -196,7 +196,7 @@ void foto::Render::onSwapchainRecreated() {
 	depthImage = createDepthImage(device, swapchain.getExtent());
 	hdrImage = createHdrImage(device, swapchain.getExtent());
 	writeTextureSlot(hdrTextureSlot, *hdrImage, *hdrSampler);
-	if (pathTracePipeline) createTraceImages();
+	if (pathTracePipeline) createTraceImages(swapchain.getExtent());
 }
 
 void foto::Render::setPathTracing(bool enabled, u32 photoTexture) {
@@ -204,9 +204,8 @@ void foto::Render::setPathTracing(bool enabled, u32 photoTexture) {
 	tracePhotoTexture = photoTexture;
 }
 
-void foto::Render::createTraceImages() {
-	accumulationImage = std::make_unique<Image>(device, swapchain.getExtent(), VK_FORMAT_R32G32B32A32_SFLOAT, VK_IMAGE_USAGE_STORAGE_BIT);
-	VkExtent2D extent = swapchain.getExtent();
+void foto::Render::createTraceImages(VkExtent2D extent) {
+	accumulationImage = std::make_unique<Image>(device, extent, VK_FORMAT_R32G32B32A32_SFLOAT, VK_IMAGE_USAGE_STORAGE_BIT);
 	causticImage = std::make_unique<Image>(device, VkExtent2D{ extent.width * 3, extent.height }, VK_FORMAT_R32_UINT,
 										   VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
 	illuminationImage = std::make_unique<Image>(device, extent, VK_FORMAT_R32G32B32A32_SFLOAT, VK_IMAGE_USAGE_STORAGE_BIT);
@@ -219,6 +218,10 @@ void foto::Render::createTraceImages() {
 		}
 	});
 
+	writeTraceSets();
+}
+
+void foto::Render::writeTraceSets() {
 	for (size i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
 		DescriptorWriter()
 			.writeAccelerationStructure(0, topLevels[i]->getHandle())
@@ -713,6 +716,7 @@ void foto::Render::recordRasterScene(VkCommandBuffer commandBuffer, std::span<co
 }
 
 VkRect2D foto::Render::getSceneRect() {
+	if (exportExtent) return { {0, 0}, *exportExtent };
 	VkExtent2D extent = swapchain.getExtent();
 	if (viewportAspect <= 0.0f || extent.height == 0) return { {0, 0}, extent };
 
@@ -908,6 +912,118 @@ std::vector<std::unique_ptr<foto::Buffer>> foto::Render::createMaterialBuffers(D
 	return buffers;
 }
 
+namespace {
+	float halfToFloat(foto::u16 half) {
+		foto::u32 sign = (half >> 15) & 1u, exponent = (half >> 10) & 31u, mantissa = half & 1023u;
+		float value = exponent == 0 ? std::ldexp(static_cast<float>(mantissa), -24)
+			: exponent == 31 ? (mantissa ? 0.0f : 65504.0f)
+			: std::ldexp(static_cast<float>(mantissa | 1024u), static_cast<int>(exponent) - 25);
+		return sign ? -value : value;
+	}
+}
+
+bool foto::Render::exportImage(std::span<const DrawItem> items, FrameUbo frameUbo, VkExtent2D extent, u32 samples,
+							   const std::string& pngPath, const std::string& hdrPath) {
+	vkDeviceWaitIdle(_device);
+
+	// Swap in targets of the export size, the window's come back at the end
+	std::unique_ptr<Image> windowHdr = std::move(hdrImage), windowDepth = std::move(depthImage);
+	std::unique_ptr<Image> windowTrace[] = { std::move(accumulationImage), std::move(causticImage), std::move(illuminationImage),
+											 std::move(guideImage), std::move(denoiseImages[0]), std::move(denoiseImages[1]) };
+	exportExtent = extent;
+	hdrImage = createHdrImage(device, extent);
+	depthImage = createDepthImage(device, extent);
+	writeTextureSlot(hdrTextureSlot, *hdrImage, *hdrSampler);
+	if (pathTracePipeline) createTraceImages(extent);
+
+	frameUbo.viewport = { 0.0f, 0.0f, static_cast<f32>(extent.width), static_cast<f32>(extent.height) };
+	uniformBuffers[currentFrame]->upload(&frameUbo, sizeof(frameUbo));
+	materialBuffers[currentFrame]->upload(materials.data(), sizeof(Material) * materials.size());
+	uploadedMaterialsVersion[currentFrame] = materialsVersion;
+
+	traceKey.clear();
+	u32 passes = pathTracing ? std::clamp(samples, 1u, MAX_TRACE_SAMPLES) : 1u;
+	for (u32 i = 0; i < passes; i++) {
+		device.immediateSubmit(_commandPool, [&](VkCommandBuffer commandBuffer) {
+			if (pathTracing) recordPathTrace(commandBuffer, items, frameUbo, extent);
+			else recordRasterScene(commandBuffer, items, frameUbo, extent);
+		});
+	}
+
+	Image color(device, extent, swapchain.getFormat(), VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
+	VkDeviceSize pixelCount = static_cast<VkDeviceSize>(extent.width) * extent.height;
+	Buffer pngBuffer(device, pixelCount * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+	Buffer hdrBuffer(device, pixelCount * 8, VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+	device.immediateSubmit(_commandPool, [&](VkCommandBuffer commandBuffer) {
+		Image::transitionLayout(commandBuffer, color.getImage(), VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+		VkRenderingAttachmentInfo attachment = {
+			.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+			.imageView = color.getView(),
+			.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+			.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+			.storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+		};
+		VkRenderingInfo rendering = {
+			.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+			.renderArea = { .offset = {0, 0}, .extent = extent },
+			.layerCount = 1,
+			.colorAttachmentCount = 1,
+			.pColorAttachments = &attachment,
+		};
+		vkCmdBeginRendering(commandBuffer, &rendering);
+		setFullViewport(commandBuffer, extent);
+		vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, presentPipeline.getPipeline());
+		vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, presentPipeline.getPipelineLayout(), 0, 1, &descriptorSets[currentFrame], 0, nullptr);
+		DrawPush tonemapPush = { .model = enginemath::Mat4::identity(), .materialIndex = tonemapMaterial };
+		vkCmdPushConstants(commandBuffer, presentPipeline.getPipelineLayout(), DRAW_PUSH_RANGE.stageFlags, 0, sizeof(DrawPush), &tonemapPush);
+		vkCmdDraw(commandBuffer, 3, 1, 0, 0);
+		vkCmdEndRendering(commandBuffer);
+
+		VkBufferImageCopy region = { .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {extent.width, extent.height, 1} };
+		Image::transitionLayout(commandBuffer, color.getImage(), VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+		vkCmdCopyImageToBuffer(commandBuffer, color.getImage(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, pngBuffer.getBuffer(), 1, &region);
+		Image::transitionLayout(commandBuffer, hdrImage->getImage(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+		vkCmdCopyImageToBuffer(commandBuffer, hdrImage->getImage(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, hdrBuffer.getBuffer(), 1, &region);
+	});
+
+	std::vector<u8> pixels(pixelCount * 4);
+	pngBuffer.download(pixels.data(), pixels.size());
+	VkFormat format = swapchain.getFormat();
+	bool bgra = format == VK_FORMAT_B8G8R8A8_SRGB || format == VK_FORMAT_B8G8R8A8_UNORM;
+	for (size i = 0; i < pixels.size(); i += 4) {
+		if (bgra) std::swap(pixels[i], pixels[i + 2]);
+		pixels[i + 3] = 255;
+	}
+	std::vector<u16> halves(pixelCount * 4);
+	hdrBuffer.download(halves.data(), hdrBuffer.getSize());
+	std::vector<float> linear(pixelCount * 3);
+	for (size i = 0; i < pixelCount; i++) {
+		for (int c = 0; c < 3; c++) linear[i * 3 + c] = std::max(halfToFloat(halves[i * 4 + c]), 0.0f);
+	}
+
+	int width = static_cast<int>(extent.width), height = static_cast<int>(extent.height);
+	bool written = stbi_write_png(pngPath.c_str(), width, height, 4, pixels.data(), width * 4) != 0;
+	written = stbi_write_hdr(hdrPath.c_str(), width, height, 3, linear.data()) != 0 && written;
+
+	// Back to the window's targets
+	vkDeviceWaitIdle(_device);
+	exportExtent.reset();
+	hdrImage = std::move(windowHdr);
+	depthImage = std::move(windowDepth);
+	writeTextureSlot(hdrTextureSlot, *hdrImage, *hdrSampler);
+	if (pathTracePipeline) {
+		accumulationImage = std::move(windowTrace[0]);
+		causticImage = std::move(windowTrace[1]);
+		illuminationImage = std::move(windowTrace[2]);
+		guideImage = std::move(windowTrace[3]);
+		denoiseImages[0] = std::move(windowTrace[4]);
+		denoiseImages[1] = std::move(windowTrace[5]);
+		writeTraceSets();
+	}
+	traceKey.clear();
+	return written;
+}
+
 bool foto::Render::prepareScreenshot() {
 	if (screenshotPath.empty()) return false;
 
@@ -949,7 +1065,8 @@ void foto::Render::saveScreenshot() {
 }
 
 std::unique_ptr<foto::Image> foto::Render::createHdrImage(Device& device, VkExtent2D extent) {
-	return std::make_unique<Image>(device, extent, HDR_FORMAT, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT);
+	return std::make_unique<Image>(device, extent, HDR_FORMAT, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+								   VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
 }
 
 std::unique_ptr<foto::Image> foto::Render::createShadowAtlas(Device& device) {

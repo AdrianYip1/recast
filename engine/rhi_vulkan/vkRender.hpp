@@ -50,6 +50,11 @@ namespace foto {
 		// Saves the next presented frame (including the overlay) as a PNG
 		void requestScreenshot(const std::string& filePath) { screenshotPath = filePath; };
 
+		// Renders the scene offscreen at `extent` (with `samples` path traced samples when path tracing is on), then writes the
+		// tonemapped image as a PNG and the linear one as a Radiance .hdr. Blocks until done, false if a file can't be written
+		bool exportImage(std::span<const DrawItem> items, FrameUbo frameUbo, VkExtent2D extent, u32 samples,
+						 const std::string& pngPath, const std::string& hdrPath);
+
 		// Letterboxes the scene pass to this width/height ratio (0 = fill the window)
 		void setViewportAspect(f32 aspect) { viewportAspect = aspect; };
 		VkRect2D getSceneRect();
@@ -106,6 +111,7 @@ namespace foto {
 		u32 hdrTextureSlot = 0;
 		u32 tonemapMaterial = 0;
 		f32 viewportAspect = 0.0f;
+		std::optional<VkExtent2D> exportExtent; // set while exportImage() renders offscreen
 
 		std::unique_ptr<Image> staticShadowAtlas;
 		std::unique_ptr<Image> dynamicShadowAtlas;
@@ -141,7 +147,8 @@ namespace foto {
 		void recordRasterScene(VkCommandBuffer commandBuffer, std::span<const DrawItem> items, const FrameUbo& frameUbo, VkExtent2D extent);
 		void recordPathTrace(VkCommandBuffer commandBuffer, std::span<const DrawItem> items, const FrameUbo& frameUbo, VkExtent2D extent);
 		void updateTraceSamples(std::span<const DrawItem> items, const FrameUbo& frameUbo);
-		void createTraceImages();
+		void createTraceImages(VkExtent2D extent);
+		void writeTraceSets();
 		void recordShadowPass(VkCommandBuffer commandBuffer, Image& atlas, ShadowCaster group, std::span<const DrawItem> items, const FrameUbo& frameUbo);
 		void setSceneViewport(VkCommandBuffer commandBuffer, VkExtent2D extent);
 		void writeTextureSlot(u32 slot, Image& texture, Sampler& sampler);

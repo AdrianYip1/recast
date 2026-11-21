@@ -73,6 +73,10 @@ namespace foto {
 		void setAmbient(const enginemath::Vec3& irradiance);
 		void screenshot(const std::string& filePath);
 
+		// Renders this frame's draws offscreen at width x height (path traced with `samples` samples when path tracing is on)
+		// and saves the tonemapped PNG and the linear .hdr. Call at the end of onUpdate. Blocks until done
+		bool exportImage(const std::string& pngPath, const std::string& hdrPath, u32 width, u32 height, u32 samples);
+
 		// Ray traced compositing of the dynamic casters into the photo (photoMaterial's texture), with static casters as
 		// the photo's surfaces. Replaces the raster scene: draws without a shadow caster are skipped while it's on
 		// The photo's camera, applied to the path traced object: grain in sqrt(linear) units, blur sigma in framebuffer pixels

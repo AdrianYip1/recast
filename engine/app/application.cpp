@@ -165,6 +165,10 @@ foto::FrameUbo foto::Application::buildFrameUbo() {
 	return frameUbo;
 }
 
+bool foto::Application::exportImage(const std::string& pngPath, const std::string& hdrPath, u32 width, u32 height, u32 samples) {
+	return render->exportImage(drawList, buildFrameUbo(), { width, height }, samples, pngPath, hdrPath);
+}
+
 foto::Mesh* foto::Application::createMesh(std::span<const Vertex> vertices, std::span<const u32> indices, std::vector<Submesh> submeshes) {
 	meshes.push_back(std::make_unique<Mesh>(*device, render->getCommandPool(), vertices, indices, std::move(submeshes)));
 	return meshes.back().get();
