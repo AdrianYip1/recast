@@ -117,35 +117,7 @@ void foto::Application::run() {
 		onImGui();
 		imgui->endFrame();
 
-		FrameUbo frameUbo = {
-			.view = camera.getView(),
-			.proj = camera.getProjection(getAspectRatio()),
-			.cameraPos = { camera.position.x, camera.position.y, camera.position.z, 1.0f },
-			.lightDir = { lightDirection.x, lightDirection.y, lightDirection.z, 0.0f },
-			.exposure = { std::exp2(exposureEV), cameraGrain, cameraBlur, render->isPathTracing() ? 1.0f : 0.0f },
-			.whiteBalance = { whiteBalance.x, whiteBalance.y, whiteBalance.z, static_cast<f32>(render->getPathTracePhoto()) },
-			.ambient = { ambient.x, ambient.y, ambient.z, 0.0f },
-		};
-
-		VkRect2D sceneRect = render->getSceneRect();
-		frameUbo.viewport = { static_cast<f32>(sceneRect.offset.x), static_cast<f32>(sceneRect.offset.y),
-							  static_cast<f32>(sceneRect.extent.width), static_cast<f32>(sceneRect.extent.height) };
-
-		u32 lightCount = static_cast<u32>(std::min<size>(lights.size(), MAX_LIGHTS));
-		frameUbo.lightInfo[0] = lightCount;
-		frameUbo.lightInfo[1] = render->getStaticShadowAtlas();
-		frameUbo.lightInfo[2] = render->getDynamicShadowAtlas();
-		frameUbo.lightInfo[3] = SHADOW_FACE_RESOLUTION;
-		for (u32 i = 0; i < lightCount; i++) {
-			const Light& light = lights[i];
-			bool directional = light.type == LightType::Directional;
-			Vec3 direction = light.direction.normalized();
-			frameUbo.lights[i].position = { light.position.x, light.position.y, light.position.z, light.castsShadows ? 1.0f : 0.0f };
-			frameUbo.lights[i].intensity = { light.intensity.x, light.intensity.y, light.intensity.z, directional ? 1.0f : 0.0f };
-			frameUbo.lights[i].direction = { direction.x, direction.y, direction.z, light.size };
-			if (directional) frameUbo.lights[i].faceViewProj[0] = shadowDirectionalMatrix(direction, shadowCenter, shadowRadius);
-			else shadowFaceMatrices(light.position, frameUbo.lights[i].faceViewProj);
-		}
+		FrameUbo frameUbo = buildFrameUbo();
 
 		bool outOfDate = render->drawFrame(drawList, frameUbo, [this](VkCommandBuffer commandBuffer) {
 			imgui->record(commandBuffer);
@@ -158,6 +130,39 @@ void foto::Application::run() {
 	}
 	vkDeviceWaitIdle(device->getDevice());
 	onShutdown();
+}
+
+foto::FrameUbo foto::Application::buildFrameUbo() {
+	FrameUbo frameUbo = {
+		.view = camera.getView(),
+		.proj = camera.getProjection(getAspectRatio()),
+		.cameraPos = { camera.position.x, camera.position.y, camera.position.z, 1.0f },
+		.lightDir = { lightDirection.x, lightDirection.y, lightDirection.z, 0.0f },
+		.exposure = { std::exp2(exposureEV), cameraGrain, cameraBlur, render->isPathTracing() ? 1.0f : 0.0f },
+		.whiteBalance = { whiteBalance.x, whiteBalance.y, whiteBalance.z, static_cast<f32>(render->getPathTracePhoto()) },
+		.ambient = { ambient.x, ambient.y, ambient.z, 0.0f },
+	};
+
+	VkRect2D sceneRect = render->getSceneRect();
+	frameUbo.viewport = { static_cast<f32>(sceneRect.offset.x), static_cast<f32>(sceneRect.offset.y),
+						  static_cast<f32>(sceneRect.extent.width), static_cast<f32>(sceneRect.extent.height) };
+
+	u32 lightCount = static_cast<u32>(std::min<size>(lights.size(), MAX_LIGHTS));
+	frameUbo.lightInfo[0] = lightCount;
+	frameUbo.lightInfo[1] = render->getStaticShadowAtlas();
+	frameUbo.lightInfo[2] = render->getDynamicShadowAtlas();
+	frameUbo.lightInfo[3] = SHADOW_FACE_RESOLUTION;
+	for (u32 i = 0; i < lightCount; i++) {
+		const Light& light = lights[i];
+		bool directional = light.type == LightType::Directional;
+		Vec3 direction = light.direction.normalized();
+		frameUbo.lights[i].position = { light.position.x, light.position.y, light.position.z, light.castsShadows ? 1.0f : 0.0f };
+		frameUbo.lights[i].intensity = { light.intensity.x, light.intensity.y, light.intensity.z, directional ? 1.0f : 0.0f };
+		frameUbo.lights[i].direction = { direction.x, direction.y, direction.z, light.size };
+		if (directional) frameUbo.lights[i].faceViewProj[0] = shadowDirectionalMatrix(direction, shadowCenter, shadowRadius);
+		else shadowFaceMatrices(light.position, frameUbo.lights[i].faceViewProj);
+	}
+	return frameUbo;
 }
 
 foto::Mesh* foto::Application::createMesh(std::span<const Vertex> vertices, std::span<const u32> indices, std::vector<Submesh> submeshes) {

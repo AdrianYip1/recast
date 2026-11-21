@@ -131,5 +131,6 @@ namespace foto {
 		enginemath::Vec3 whiteBalance = enginemath::Vec3(1.0f, 1.0f, 1.0f);
 
 		u32 addTexture(std::unique_ptr<Image> image);
+		FrameUbo buildFrameUbo();
 	};
 } // namespace foto
