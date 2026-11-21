@@ -193,13 +193,14 @@ bool foto::Device::extensionsSuitable(VkPhysicalDevice device) {
 VkDevice foto::Device::selectLogicalDevice(VkPhysicalDevice physicalDevice) {
 	VkDevice logicalDevice = VK_NULL_HANDLE;
 
+	QueueInfos queues = *findQueueFamilies(physicalDevice);
+
+
+
 	VkDeviceCreateInfo createInfo = {
 		.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
-		.enabledLayerCount = 0,
-		.ppEnabledLayerNames = nullptr,
-		.enabledExtensionCount = 0,
-		.ppEnabledExtensionNames = nullptr,
-		.pEnabledFeatures = nullptr
+		
+
 	};
 
 	if (vkCreateDevice(physicalDevice, &createInfo, nullptr, &logicalDevice) != VK_SUCCESS) {
