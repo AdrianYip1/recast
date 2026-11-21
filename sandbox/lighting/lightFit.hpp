@@ -55,6 +55,10 @@ namespace recast {
 	// Finds lights from scratch: tries point lights (bright spot seeds + grid search) and directional lights, keeps the
 	// better model, and adds more lights (up to maxLights) only while each one lowers the residual by at least 5%.
 	// Each light's size is then picked to match how soft the photo's shadow edges are
+	// One main light plus ambient: directional (sun, window), or a point light (lamp) when that fits clearly better,
+	// or ambient alone when neither helps. Under a second, where autoFitLighting's multi-light search takes much longer
+	LightingFit fitMainLight(const SceneFile& scene, const std::vector<LightingSample>& samples, std::vector<FitLight>& lights);
+
 	LightingFit autoFitLighting(const SceneFile& scene, const LinearImage& photo, const std::vector<LightingSample>& samples,
 								std::vector<FitLight>& lights, int maxLights = 3);
 

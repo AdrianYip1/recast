@@ -515,49 +515,9 @@ std::vector<Vec3> recast::detectBrightSpots(const SceneFile& scene, const Linear
 	return seeds;
 }
 
-recast::LightingFit recast::autoFitLighting(const SceneFile& scene, const LinearImage& photo, const std::vector<LightingSample>& samples,
-											std::vector<FitLight>& lights, int maxLights) {
-	lights.clear();
-	if (samples.empty()) return {};
-
-	std::vector<LightingSample> coarse;
-	for (size_t s = 0; s < samples.size(); s += 4) coarse.push_back(samples[s]);
-
-	std::vector<Vec3> seeds = detectBrightSpots(scene, photo);
-	double current = 1e300;
-
-	while (static_cast<int>(lights.size()) < maxLights) {
-		std::vector<std::vector<FitLight>> candidates;
-
-		for (const Vec3& seed : seeds) {
-			std::vector<FitLight> candidate = lights;
-			candidate.push_back({ .directional = false, .position = seed });
-			candidates.push_back(candidate);
-		}
-		for (bool directional : { false, true }) {
-			double residual = 0.0;
-			std::vector<FitLight> candidate = lights;
-			candidate.push_back(gridSearch(scene, coarse, lights, directional, residual));
-			candidates.push_back(candidate);
-		}
-
-		double bestResidual = 1e300;
-		std::vector<FitLight> best;
-		for (std::vector<FitLight>& candidate : candidates) {
-			double residual = refine(scene, coarse, candidate, 0.25f);
-			if (residual < bestResidual && allIntensitiesPositive(fitLightIntensities(scene, coarse, candidate))) {
-				bestResidual = residual;
-				best = candidate;
-			}
-		}
-
-		if (best.empty() || bestResidual > current * 0.95) break;
-		current = bestResidual;
-		lights = best;
-	}
-
-	refine(scene, samples, lights, 0.03f);
-
+namespace recast {
+// Each light's size (bulb radius / sun angular radius) from how soft the photo's shadow edges are
+static void fitLightSizes(const SceneFile& scene, const std::vector<LightingSample>& samples, std::vector<FitLight>& lights) {
 	// Light sizes only change samples near shadow edges, so search on those plus a thin spread of the rest
 	// (which keeps every surface's least squares solve stable)
 	Occluders occluders(scene.proxies);
@@ -622,6 +582,52 @@ recast::LightingFit recast::autoFitLighting(const SceneFile& scene, const Linear
 		float chosen = light.size;
 		light.size = residualAt(0.0f) <= bestResidual * 1.002 ? 0.0f : chosen;
 	}
+}
+} // namespace recast
+
+recast::LightingFit recast::autoFitLighting(const SceneFile& scene, const LinearImage& photo, const std::vector<LightingSample>& samples,
+											std::vector<FitLight>& lights, int maxLights) {
+	lights.clear();
+	if (samples.empty()) return {};
+
+	std::vector<LightingSample> coarse;
+	for (size_t s = 0; s < samples.size(); s += 4) coarse.push_back(samples[s]);
+
+	std::vector<Vec3> seeds = detectBrightSpots(scene, photo);
+	double current = 1e300;
+
+	while (static_cast<int>(lights.size()) < maxLights) {
+		std::vector<std::vector<FitLight>> candidates;
+
+		for (const Vec3& seed : seeds) {
+			std::vector<FitLight> candidate = lights;
+			candidate.push_back({ .directional = false, .position = seed });
+			candidates.push_back(candidate);
+		}
+		for (bool directional : { false, true }) {
+			double residual = 0.0;
+			std::vector<FitLight> candidate = lights;
+			candidate.push_back(gridSearch(scene, coarse, lights, directional, residual));
+			candidates.push_back(candidate);
+		}
+
+		double bestResidual = 1e300;
+		std::vector<FitLight> best;
+		for (std::vector<FitLight>& candidate : candidates) {
+			double residual = refine(scene, coarse, candidate, 0.25f);
+			if (residual < bestResidual && allIntensitiesPositive(fitLightIntensities(scene, coarse, candidate))) {
+				bestResidual = residual;
+				best = candidate;
+			}
+		}
+
+		if (best.empty() || bestResidual > current * 0.95) break;
+		current = bestResidual;
+		lights = best;
+	}
+
+	refine(scene, samples, lights, 0.03f);
+	fitLightSizes(scene, samples, lights);
 	return fitLightIntensities(scene, samples, lights);
 }
 
@@ -637,4 +643,62 @@ std::vector<recast::FitLight> recast::fitLightsFromScene(const SceneFile& scene)
 		}
 	}
 	return lights;
+}
+
+// One main light plus ambient: the directional light (sun, window) from a 96-direction grid, and when that isn't a clear
+// win, the best single point light (lamp) too, each refined locally on at most ~6000 samples. Well under a second where
+// the full multi-light search takes 15 s (2 min in a debug build). Keeps no light when neither explains the photo at
+// least 2% better than ambient alone (overcast rooms); most of what's left over is colour variation within furniture
+recast::LightingFit recast::fitMainLight(const SceneFile& scene, const std::vector<LightingSample>& samples,
+										 std::vector<FitLight>& lights) {
+	lights.clear();
+	if (samples.empty()) return {};
+	std::vector<LightingSample> subset;
+	size_t step = std::max<size_t>(1, samples.size() / 6000);
+	for (size_t s = 0; s < samples.size(); s += step) subset.push_back(samples[s]);
+
+	double ambientOnly = residualFor(scene, subset, {});
+	double bestResidual = ambientOnly * 0.98;
+	for (bool directional : { true, false }) {
+		double residual = 0.0;
+		std::vector<FitLight> candidate = { gridSearch(scene, subset, {}, directional, residual) };
+		refine(scene, subset, candidate, 0.25f);
+		residual = refine(scene, subset, candidate, 0.03f);
+		if (residual < bestResidual && allIntensitiesPositive(fitLightIntensities(scene, subset, candidate))) {
+			bestResidual = residual;
+			lights = candidate;
+		}
+		if (!lights.empty() && bestResidual < ambientOnly * 0.8) break; // a clear sun: no need to look for a lamp
+	}
+	if (lights.empty()) return fitLightIntensities(scene, samples, lights);
+	fitLightSizes(scene, subset, lights);
+	LightingFit fit = fitLightIntensities(scene, samples, lights);
+
+	// When the per-surface solves can't separate ambient from the light (colour changes within a piece of furniture
+	// look like shading), the ambient collapses to zero and every shadow would be black. Then measure it where the
+	// light doesn't reach (shadows, surfaces facing away) and refit the light's strength with that ambient
+	Occluders occluders(scene.proxies);
+	std::vector<double> terms(subset.size());
+	for (size_t i = 0; i < subset.size(); i++) terms[i] = lightTerm(occluders, subset[i], lights[0]);
+	for (int c = 0; c < 3; c++) {
+		if (fit.ambient[c] > 1e-3f) continue;
+		std::vector<double> unlit;
+		for (size_t i = 0; i < subset.size(); i++) {
+			const LightingSample& sample = subset[i];
+			if (terms[i] <= 0.0) unlit.push_back(sample.color[c] / std::max(scene.proxies[sample.proxy].material.albedo[c], 1e-3f));
+		}
+		if (unlit.size() < 20) continue;
+		std::nth_element(unlit.begin(), unlit.begin() + unlit.size() / 2, unlit.end());
+		double ambient = unlit[unlit.size() / 2];
+		double numerator = 0.0, denominator = 0.0;
+		for (size_t i = 0; i < subset.size(); i++) {
+			if (terms[i] <= 0.0) continue;
+			double irradiance = subset[i].color[c] / std::max(scene.proxies[subset[i].proxy].material.albedo[c], 1e-3f);
+			numerator += terms[i] * (irradiance - ambient);
+			denominator += terms[i] * terms[i];
+		}
+		fit.ambient[c] = static_cast<float>(ambient);
+		if (denominator > 0.0) fit.intensities[0][c] = static_cast<float>(std::max(0.0, numerator / denominator));
+	}
+	return fit;
 }

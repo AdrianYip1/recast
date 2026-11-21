@@ -269,7 +269,7 @@ void Visualizer::detectLighting() {
 		DetectJob job;
 		try {
 			std::vector<recast::LightingSample> samples = recast::collectLightingSamples(sceneCopy, photo, stride);
-			job.fit = recast::autoFitLighting(sceneCopy, photo, samples, job.lights);
+			job.fit = recast::fitMainLight(sceneCopy, samples, job.lights);
 		}
 		catch (const std::exception& e) {
 			job.error = e.what();
@@ -306,6 +306,7 @@ void Visualizer::finishLightingDetection() {
 	if (detectGaveUp && !scene.lights.empty()) return; // too late: lights were placed by hand meanwhile
 	if (!job.error.empty()) {
 		lightingStatus = "lighting detection failed: " + job.error;
+		std::cerr << "[recast] " << lightingStatus << std::endl;
 		return;
 	}
 
