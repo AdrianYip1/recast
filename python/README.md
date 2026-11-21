@@ -106,7 +106,7 @@ python -m recast eval   --name living_room --truth with_real_mug.jpg        # D
 **A2. Walls and objects, automatically** (`detect`). The only step with
 pretrained models, both run offline on the CPU (~30 s, downloaded once):
 OneFormer ADE20K swin-tiny (MIT) outlines and names everything (floor, wall,
-ceiling, sofa, table, vase, ...), Depth Anything V2 Small (Apache-2.0) gives
+ceiling, sofa, table, vase, ...), Depth Anything V2 Base (CC-BY-NC-4.0, non-commercial; Small is Apache-2.0) gives
 relative depth. The rest is ours:
 1. Depth in metres: fit `disparity = a / z + b` on the floor pixels, whose true
    depth the solved camera gives exactly.
@@ -117,7 +117,16 @@ relative depth. The rest is ours:
    of the top by the camera, fixes the far side that depth sees edge-on.
 3. Each box rests on the floor or on the box under it (vase on table); boxes
    inside bigger ones (cushions in a sofa) are dropped.
-4. Wall and ceiling pixels -> axis-aligned planes, pushed behind every object.
+4. Pixels where the depth jumps (outlines) are skipped: the model blurs depth across them, which
+   stretches boxes. An object touching the floor has its depth scaled so its feet land where the
+   camera puts them.
+5. Scale: the camera height is a guess, so tables, desks, coffee tables and counters (whose height
+   hardly varies) rescale the whole scene, camera height included, to their usual height.
+6. Labels miss things, so geometry adds them: "wall" pixels standing over 0.3 m in front of every wall
+   plane (pillars, shelving), "floor" pixels rising over 6 cm (steps, ledges, platforms) and unlabelled
+   pixels standing in the room become objects too, boxed the same way.
+7. Wall and ceiling pixels -> axis-aligned planes, pushed behind every object. Things seen through
+   windows (trees, street lamps, cars, ...) and boxes floating over 2.2 m up get no box.
    These also keep the engine's shadow map sized to the room: without them the
    floor reaches the horizon and the object's shadow is too small to show.
 

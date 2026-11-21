@@ -116,3 +116,26 @@ def test_detect_command_keeps_hand_made_proxies_and_reseats_the_object(tmp_path,
     table = next(p for p in scene.proxies if p.id in next(o for o in info["objects"] if o["label"] == "table")["proxy_ids"])
     assert pos[1] == pytest.approx(table.max[1] + 0.002, abs=1e-3)
     np.testing.assert_allclose(cam.project(pos), cam.project(np.array(centre)), atol=1.5)
+
+
+def test_depth_edges_mark_jumps_only():
+    from recast.detect import depth_edges
+    d = np.full((200, 300), 1.0)
+    d[:, 150:] = 3.0                                  # a depth jump down the middle
+    d += np.linspace(0.0, 0.2, 200)[:, None]          # and a gentle slope like a floor
+    edges = depth_edges(d, model_px=100)
+    assert edges[:, 145:155].any(axis=1).all()
+    assert not edges[:, :120].any() and not edges[:, 180:].any()
+
+
+def test_scale_from_a_table():
+    from recast.detect import Detection, scale_from_known_heights, scaled
+    from recast.scene import BoxProxy, PlaneProxy
+    table = BoxProxy(1, (0.0, 0.0, -3.0), (0.8, 0.9, -2.2))      # 0.90 m tall: the room came out too big
+    wall = PlaneProxy(2, (0.0, 0.0, -5.0), (0.0, 0.0, 1.0))
+    det = Detection([table, wall], [{"label": "table", "score": 1.0, "proxy_ids": [1]}], [], {})
+    k, used = scale_from_known_heights(det)
+    assert np.isclose(k, 0.74 / 0.9) and used
+    small = scaled(det, k)
+    assert np.isclose(small.proxies[0].max[1], 0.74)
+    assert np.isclose(small.proxies[1].point[2], -5.0 * k)

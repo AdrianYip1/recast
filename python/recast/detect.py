@@ -28,16 +28,24 @@ from .camera import Camera
 from .scene import BoxProxy, Material, PlaneProxy
 
 SEG_MODEL = "shi-labs/oneformer_ade20k_swin_tiny"
-DEPTH_MODEL = "depth-anything/Depth-Anything-V2-Small-hf"
+# Base is CC-BY-NC-4.0 (non-commercial); Small (Apache-2.0) is the drop-in fallback for a commercial build
+DEPTH_MODEL = "depth-anything/Depth-Anything-V2-Base-hf"
 
 FLOOR = {"floor", "rug", "earth"}
+# pillars stand on the floor and things go behind them, so they get boxes like furniture
 WALL = {"wall", "window", "door", "curtain", "painting", "mirror", "blind", "screen door", "poster",
-        "bulletin board", "radiator", "sconce", "column", "clock", "flag"}
+        "bulletin board", "radiator", "sconce", "clock", "flag"}
 CEILING = {"ceiling"}
 IGNORE = {"sky", "light", "chandelier", "fan", "person", "animal"}  # hanging or moving things
+# seen through windows: not part of the room
+OUTDOOR = {"tree", "grass", "plant life", "palm", "street lamp", "streetlight", "car", "bus", "truck", "van",
+           "bicycle", "minibike", "building", "skyscraper", "house", "tower", "hovel", "road", "sidewalk", "path",
+           "dirt track", "field", "land", "mountain", "hill", "rock", "sand", "sea", "river", "lake",
+           "water", "bridge", "fence", "railing", "pole", "traffic light", "awning", "boat", "ship", "airplane"}
 
 FLOOR_SNAP = 0.12        # m: a bottom this close to the floor rests on it
 SUPPORT_SNAP = 0.15      # m: a bottom this close to a box top rests on that box
+FLOATING = 2.2           # m: an unsupported bottom this high is a depth error or something outside
 MAX_DEPTH = 40.0         # m: anything farther counts as unknown
 LEVEL_GAP = 0.2          # m: seat vs back height difference that splits an object in two
 
@@ -120,6 +128,21 @@ def _erode(mask: np.ndarray, px: int) -> np.ndarray:
         return mask
     k = np.ones((2 * px + 1, 2 * px + 1), np.uint8)
     return cv2.erode(mask.astype(np.uint8), k) > 0
+
+
+def depth_edges(disparity: np.ndarray, model_px: int = 518, jump: float = 0.06) -> np.ndarray:
+    """Pixels where the depth jumps (object outlines). The model blurs depth across those, so their
+    points float between the object and what's behind it and stretch the boxes. `jump` is the relative
+    change across one model pixel that counts as an edge."""
+    h, w = disparity.shape
+    step = max(1, int(round(max(h, w) / model_px)))
+    d = np.maximum(disparity, 1e-6)
+    gx = np.zeros_like(d)
+    gy = np.zeros_like(d)
+    gx[:, step:-step] = np.abs(d[:, 2 * step:] - d[:, :-2 * step])
+    gy[step:-step, :] = np.abs(d[2 * step:, :] - d[:-2 * step, :])
+    edges = (np.maximum(gx, gy) / d) > jump
+    return cv2.dilate(edges.astype(np.uint8), np.ones((2 * step + 1, 2 * step + 1), np.uint8)) > 0
 
 
 def depth_to_metres(cam: Camera, disparity: np.ndarray, floor_mask: np.ndarray):
@@ -303,6 +326,51 @@ def _albedo(photo_linear, mask, floor_ref):
     return tuple(float(v) for v in np.clip(0.5 * c / np.maximum(floor_ref, 1e-4), 0.03, 0.9))
 
 
+STANDS_UP = 0.06         # m above the floor that counts as standing on it, not part of it
+OFF_WALL = 0.3           # m in front of every wall plane that counts as standing in the room
+
+
+def geometry_segments(cam: Camera, P: np.ndarray, segments: list[Segment], kind: list[str], floor_mask: np.ndarray,
+                      edges: np.ndarray, min_area: float = 0.003) -> list[Segment]:
+    """Things the labels missed, found by where their pixels are in 3D rather than what they're called:
+    "wall" that stands well in front of every wall plane (pillars, shelving, recesses), "floor" that rises
+    off the floor (steps, ledges, platforms), and unlabelled pixels standing in the room. Each connected
+    region becomes an object and gets a box like any recognised furniture."""
+    h, w = floor_mask.shape
+    finite = np.isfinite(P).all(axis=2) & ~edges
+    y = np.where(finite, P[..., 1], np.nan)
+    covered = np.zeros((h, w), bool)
+    wall_mask = np.zeros((h, w), bool)
+    for s, k in zip(segments, kind):
+        covered |= s.mask
+        if k == "wall":
+            wall_mask |= s.mask
+    walls = fit_walls(P[_erode(wall_mask, 2)], cam)
+    on_a_wall = np.zeros((h, w), bool)
+    in_room = finite.copy()
+    for wall in walls:
+        a, side = wall["axis"], wall["side"]
+        dist = (P[..., a] - wall["value"]) * side          # > 0 on the camera's side of the wall
+        on_a_wall |= np.abs(dist) < OFF_WALL
+        in_room &= dist > -OFF_WALL
+    with np.errstate(invalid="ignore"):
+        standing = in_room & ~on_a_wall & (y > STANDS_UP) & (y < 3.0)
+        candidates = {
+            "pillar": wall_mask & standing,
+            "step": floor_mask & in_room & (y > STANDS_UP) & (y < 1.2),
+            "object": ~covered & standing,
+        }
+    out = []
+    kernel = np.ones((5, 5), np.uint8)
+    for label, mask in candidates.items():
+        mask = cv2.morphologyEx(mask.astype(np.uint8), cv2.MORPH_OPEN, kernel)
+        n, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+        for i in range(1, n):
+            if stats[i, cv2.CC_STAT_AREA] >= min_area * h * w:
+                out.append(Segment(label, 0.0, labels == i))
+    return out
+
+
 def build_proxies(cam: Camera, segments: list[Segment], disparity: np.ndarray, first_id: int,
                   photo_linear: np.ndarray | None = None, min_area: float = 0.001) -> Detection:
     h, w = cam.height, cam.width
@@ -312,14 +380,17 @@ def build_proxies(cam: Camera, segments: list[Segment], disparity: np.ndarray, f
     for s in segments:
         name = short_label(s.label)
         kind.append("floor" if name in FLOOR else "wall" if name in WALL else "ceiling" if name in CEILING
-                    else "ignore" if name in IGNORE else "object")
+                    else "ignore" if name in IGNORE or name in OUTDOOR else "object")
     floor_mask = np.zeros((h, w), bool)
     for s, k in zip(segments, kind):
         if k == "floor":
             floor_mask |= s.mask
     P, fit = depth_to_metres(cam, disparity, floor_mask)
+    edges = depth_edges(disparity)
     floor_ref = (np.median(photo_linear[floor_mask], axis=0)
                  if photo_linear is not None else np.full(3, 0.5))
+    extra = geometry_segments(cam, P, segments, kind, floor_mask, edges)
+    segments, kind = list(segments) + extra, list(kind) + ["object"] * len(extra)
 
     # objects -> boxes
     found = []
@@ -329,16 +400,14 @@ def build_proxies(cam: Camera, segments: list[Segment], disparity: np.ndarray, f
         m = _erode(s.mask, 2 if s.mask.sum() > 4000 else 1)
         if m.sum() < 0.4 * s.mask.sum():          # thin parts (legs) would vanish
             m = _erode(s.mask, 1)
+        clean = m & ~edges
+        if clean.sum() >= 0.4 * m.sum():
+            m = clean
         pts = P[m]
         pts = pts[np.isfinite(pts).all(axis=1)]
         if len(pts) < 40:
             continue
-        # drop the depth "halo" where an outline meets the background
-        d = np.linalg.norm(pts - cam.position, axis=1)
-        med = np.median(d)
-        pts = pts[np.abs(d - med) < max(4.0 * 1.4826 * np.median(np.abs(d - med)), 0.05)]
-        boxes = [(lo, hi) for lo, hi in _boxes_for(pts, cam) if np.all(hi - lo > 0.02)]
-        # standing on the floor? then its feet are exact; let them set the footprint
+        # standing on the floor? then its feet are exact
         contacts = floor_contacts(s.mask, floor_mask)
         if len(contacts):
             # an overhanging edge (a table top) also has floor below it in the photo; a real
@@ -348,6 +417,22 @@ def build_proxies(cam: Camera, segments: list[Segment], disparity: np.ndarray, f
             y_at = P[v, u, 1]
             dist = np.linalg.norm(P[v, u] - cam.position, axis=1)
             contacts = contacts[np.isfinite(y_at) & (y_at < np.maximum(0.08, 0.04 * dist))]
+        if len(contacts) >= 3:
+            # the floor fit can be off at this object's distance (narrow strip of floor, depth model bias):
+            # scale the object's depth about the camera so its feet land where the camera says they are
+            u = contacts[:, 0].astype(int)
+            v = np.maximum(contacts[:, 1].astype(int) - 3, 0)
+            true = np.linalg.norm(cam.pixel_on_floor(contacts) - cam.position, axis=1)
+            model = np.linalg.norm(P[v, u] - cam.position, axis=1)
+            ok = np.isfinite(true) & np.isfinite(model) & (model > 1e-3)
+            if ok.sum() >= 3:
+                k = float(np.clip(np.median(true[ok] / model[ok]), 0.5, 2.0))
+                pts = cam.position + (pts - cam.position) * k
+        # drop the depth "halo" where an outline meets the background
+        d = np.linalg.norm(pts - cam.position, axis=1)
+        med = np.median(d)
+        pts = pts[np.abs(d - med) < max(4.0 * 1.4826 * np.median(np.abs(d - med)), 0.05)]
+        boxes = [(lo, hi) for lo, hi in _boxes_for(pts, cam) if np.all(hi - lo > 0.02)]
         feet = np.zeros((0, 3))
         if len(contacts) and boxes:
             feet = cam.pixel_on_floor(contacts)
@@ -408,6 +493,8 @@ def build_proxies(cam: Camera, segments: list[Segment], disparity: np.ndarray, f
                     if owner != i and abs(b_hi[1] - lo[1]) < SUPPORT_SNAP and _overlap_xz(lo, hi, b_lo, b_hi) > 0.3]
             if tops:
                 lo[1] = max(tops)
+        if lo[1] > FLOATING:
+            continue
         if hi[1] - lo[1] < 0.02:
             hi[1] = lo[1] + 0.02
         f = found[i]
@@ -475,6 +562,45 @@ def build_proxies(cam: Camera, segments: list[Segment], disparity: np.ndarray, f
                                       Material(_albedo(photo_linear, ceil_mask, floor_ref), 0.9)))
             next_id += 1
     return Detection(proxies, objects, walls, fit, P)
+
+
+# --- scale ----------------------------------------------------------------------------
+
+# Furniture whose height hardly varies (m, top above the floor). A single photo can't tell a big room
+# from a small one; the camera height is only a guess, and these fix it
+KNOWN_TOP = {"table": 0.74, "desk": 0.75, "coffee table": 0.43, "counter": 0.91, "kitchen island": 0.91,
+             "countertop": 0.91, "pool table": 0.80, "work surface": 0.91}
+
+
+def scale_from_known_heights(det: Detection) -> tuple[float, list[str]]:
+    """World scale factor that brings the known furniture to its usual height (1.0 = none found)."""
+    boxes = {p.id: p for p in det.proxies if isinstance(p, BoxProxy)}
+    ratios, used = [], []
+    for o in det.objects:
+        known = KNOWN_TOP.get(o["label"])
+        parts = [boxes[i] for i in o["proxy_ids"] if i in boxes]
+        if known is None or not parts or min(b.min[1] for b in parts) > 1e-6:
+            continue
+        top = max(b.max[1] for b in parts)
+        if top > 0.05:
+            ratios.append(known / top)
+            used.append(f"{o['label']} {top:.2f} m (usually {known:.2f})")
+    if not ratios:
+        return 1.0, used
+    return float(np.clip(np.median(ratios), 0.6, 1.6)), used
+
+
+def scaled(det: Detection, k: float) -> Detection:
+    """The whole detection scaled about the world origin (the floor below the camera stays put)."""
+    from dataclasses import replace
+    proxies = []
+    for p in det.proxies:
+        if isinstance(p, BoxProxy):
+            proxies.append(replace(p, min=tuple(float(v) * k for v in p.min), max=tuple(float(v) * k for v in p.max)))
+        else:
+            proxies.append(replace(p, point=tuple(float(v) * k for v in p.point)))
+    walls = [{**w, "value": w["value"] * k} for w in det.walls]
+    return replace(det, proxies=proxies, walls=walls, points=None if det.points is None else det.points * k)
 
 
 # --- check image -------------------------------------------------------------------

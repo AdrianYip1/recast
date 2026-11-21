@@ -21,7 +21,7 @@ import numpy as np
 from PIL import Image
 
 from . import evaluate, lens
-from .camera import solve_camera
+from .camera import Camera, solve_camera
 from .gbuffer import load_gbuffer, save_gbuffer
 from .io import Photo, linear_to_srgb, load_image_linear, load_photo, save_jpg
 from .lighting import fit_scene_lighting
@@ -144,6 +144,19 @@ def cmd_detect(args) -> None:
     rgb8 = np.asarray(Image.open(out / scene.photo).convert("RGB"))
     if rgb8.shape[:2] != (cam.height, cam.width):
         sys.exit(f"{scene.photo} is {rgb8.shape[1]}x{rgb8.shape[0]} but the camera is {cam.width}x{cam.height}")
+    photo_linear = load_image_linear(out / scene.photo)
+
+    # the models see ~512 px anyway: everything runs on a smaller copy with the same camera, scaled.
+    # Boxes come out in metres, so they don't depend on the working size
+    shrink = min(1.0, args.max_size / max(cam.width, cam.height)) if args.max_size else 1.0
+    full_cam = cam
+    if shrink < 1.0:
+        size = (round(cam.width * shrink), round(cam.height * shrink))
+        rgb8 = cv2.resize(rgb8, size, interpolation=cv2.INTER_AREA)
+        photo_linear = cv2.resize(photo_linear.astype(np.float32), size, interpolation=cv2.INTER_AREA)
+        cam = Camera(size[0], size[1], full_cam.fx * size[0] / full_cam.width, full_cam.R, full_cam.position.copy(),
+                     (full_cam.principal + 0.5) * np.array(size) / [full_cam.width, full_cam.height] - 0.5,
+                     full_cam.fy * size[1] / full_cam.height)
 
     print("running the segmentation and depth models on the CPU")
     segments, disparity = detect.run_models(rgb8, min_score=args.min_score)
@@ -158,13 +171,30 @@ def cmd_detect(args) -> None:
     first_id = max((p["id"] for p in kept), default=-1) + 1
 
     try:
-        det = detect.build_proxies(cam, segments, disparity, first_id, load_image_linear(out / scene.photo),
-                                   min_area=args.min_area)
+        det = detect.build_proxies(cam, segments, disparity, first_id, photo_linear, min_area=args.min_area)
     except ValueError as e:
         sys.exit(f"detect failed: {e}")
     fit = det.depth_fit
     print(f"depth in metres from {fit['floor_pixels']} floor pixels "
           f"(typical error {100 * fit['floor_depth_error']:.0f}%)")
+
+    # the camera height was a guess: tables and counters say how big the room really is
+    k, used = detect.scale_from_known_heights(det)
+    rescaled = abs(k - 1.0) > 0.03
+    if rescaled:
+        det = detect.scaled(det, k)
+        cam.position = cam.position * k
+        full_cam.position = full_cam.position * k
+        print(f"scale from {', '.join(used)}: camera height {cam.position[1] / k:.2f} -> {cam.position[1]:.2f} m")
+        for p in kept:
+            for key in ("point", "min", "max"):
+                if key in p:
+                    p[key] = [float(v) * k for v in p[key]]
+        for light in data.get("lights", []):
+            if "position" in light:
+                light["position"] = [float(v) * k for v in light["position"]]
+        if data.get("object", {}) and data["object"].get("transform"):
+            data["object"]["transform"]["position"] = [float(v) * k for v in data["object"]["transform"]["position"]]
 
     mdir = out / "masks"
     mdir.mkdir(exist_ok=True)
@@ -189,6 +219,11 @@ def cmd_detect(args) -> None:
 
     proxies = kept + [p.to_dict() for p in det.proxies]
     sections = {"proxies": proxies}
+    if rescaled:
+        sections.update(camera=full_cam.to_dict(), lights=data.get("lights", []),
+                        scale_reference={"kind": "camera_height", "metres": float(cam.position[1]), "from": used})
+        if data.get("object"):
+            sections["object"] = data["object"]
     obj = data.get("object")
     if obj and obj.get("transform"):
         # the surfaces changed under the object: keep it at the same spot in the photo and stand it
@@ -328,6 +363,7 @@ def main(argv=None) -> None:
     a2.add_argument("--min-score", type=float, default=0.5, help="drop detections less certain than this")
     a2.add_argument("--min-area", type=float, default=0.001, help="ignore objects smaller than this share of the photo")
     a2.add_argument("--clear", action="store_true", help="also remove boxes/walls made by hand (keeps the floor)")
+    a2.add_argument("--max-size", type=int, default=1280, help="work on the photo shrunk to this many pixels (0 = full size)")
     a2.set_defaults(func=cmd_detect)
 
     c = sub.add_parser("light", help="stage C: fit lighting from photo + gbuffer")
