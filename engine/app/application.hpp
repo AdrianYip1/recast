@@ -83,6 +83,8 @@ namespace foto {
 		void setCameraMatch(f32 grain, f32 blurPixels);
 		// Size of the letterboxed 3D view in framebuffer pixels
 		enginemath::Vec2 getViewportSize();
+		// Top-left of the letterboxed 3D view in framebuffer pixels
+		enginemath::Vec2 getViewportOffset();
 
 		bool supportsPathTracing();
 		void setPathTracing(bool enabled, u32 photoMaterial);

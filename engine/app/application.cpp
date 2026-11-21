@@ -249,6 +249,11 @@ void foto::Application::setCameraMatch(f32 grain, f32 blurPixels) {
 	cameraBlur = blurPixels;
 }
 
+enginemath::Vec2 foto::Application::getViewportOffset() {
+	VkRect2D rect = render->getSceneRect();
+	return enginemath::Vec2(static_cast<f32>(rect.offset.x), static_cast<f32>(rect.offset.y));
+}
+
 enginemath::Vec2 foto::Application::getViewportSize() {
 	VkRect2D rect = render->getSceneRect();
 	return enginemath::Vec2(static_cast<f32>(rect.extent.width), static_cast<f32>(rect.extent.height));

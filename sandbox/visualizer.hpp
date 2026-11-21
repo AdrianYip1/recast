@@ -1,6 +1,10 @@
 #pragma once
 
+#include <array>
 #include <chrono>
+#include <map>
+
+#include <imgui.h>
 #include <future>
 
 #include <engine/app/application.hpp>
@@ -78,7 +82,34 @@ private:
 	enginemath::Vec3 lightPlanePoint;
 	enginemath::Vec3 lightPlaneNormal;
 
-	bool showProxies = false;
+	// room editing: boxes and walls from detect (or added) can be dragged, resized, deleted and reset
+	bool editRoom = false;
+	foto::Mesh* unitBoxMesh = nullptr;
+	foto::u32 selectedProxyMaterial = foto::DEFAULT_MATERIAL;
+	std::vector<recast::Vec3f> proxyMeshOrigins;
+	std::vector<recast::Proxy> detectedProxies; // what "reset room" goes back to
+	int selectedProxy = -1;
+	bool draggingProxy = false;
+	bool roomMouseWasDown = false;
+	bool proxyMeshesDirty = false;
+	int hoveredProxy = -1;
+	int hoveredHandle = -1;   // 0-5: faces of the selected box (x-, x+, y-, y+, z-, z+), 6: the selected wall
+	int draggingHandle = -1;  // -1 while dragging a whole box
+	std::map<foto::u32, std::string> proxyLabels;
+	void loadProxyLabels();
+	std::string proxyName(size_t index) const;
+	bool projectToScreen(const enginemath::Vec3& point, ImVec2& out);
+	void drawSegment(ImDrawList* list, enginemath::Vec3 a, enginemath::Vec3 b, ImU32 color, float thickness);
+	std::array<enginemath::Vec3, 6> boxHandles(const recast::Proxy& box) const;
+	bool wallHandle(const recast::Proxy& wall, enginemath::Vec3& handle) const;
+	int boxUnderCursor(const enginemath::Vec3& origin, const enginemath::Vec3& direction) const;
+	void drawRoomOverlay();
+	enginemath::Vec3 proxyGrab;
+	recast::Proxy proxyAtGrab;
+	void rebuildProxyMeshes();
+	enginemath::Mat4 proxyMatrix(size_t index) const;
+	bool updateRoomEditing();
+	void drawRoomEditor();
 	bool showLights = false;
 	bool showOriginal = false;
 	bool pathTrace = true;

@@ -9,6 +9,13 @@
 #include "scene/raycast.hpp"
 #include "scene/placement.hpp"
 
+#include <nlohmann/json.hpp>
+
+#include <array>
+#include <cctype>
+#include <fstream>
+#include <map>
+#include <cstdio>
 #include <cstdlib>
 #include <ctime>
 
@@ -56,6 +63,14 @@ void Visualizer::onInit() {
 	markerBox.max = { 0.5f, 0.5f, 0.5f };
 	recast::MeshData markerData = recast::buildProxyMesh(markerBox);
 	lightMarker = createMesh(markerData.vertices, markerData.indices);
+
+	recast::Proxy unitBox;
+	unitBox.type = "box";
+	unitBox.min = { 0.0f, 0.0f, 0.0f };
+	unitBox.max = { 1.0f, 1.0f, 1.0f };
+	recast::MeshData unitBoxData = recast::buildProxyMesh(unitBox);
+	unitBoxMesh = createMesh(unitBoxData.vertices, unitBoxData.indices);
+	selectedProxyMaterial = createMaterial({ .baseColor = { 1.0f, 0.55f, 0.1f, 0.35f } });
 	lightMarkerMaterial = createMaterial({ .baseColor = { 0.0f, 0.0f, 0.0f, 1.0f }, .emissive = { 4.0f, 3.6f, 1.2f, 0.0f } });
 	selectedMarkerMaterial = createMaterial({ .baseColor = { 0.0f, 0.0f, 0.0f, 1.0f }, .emissive = { 0.8f, 3.0f, 4.0f, 0.0f } });
 
@@ -89,17 +104,6 @@ void Visualizer::loadScene() {
 		}
 	}
 
-	for (foto::Mesh* mesh : proxyMeshes) destroyMesh(mesh);
-	proxyMeshes.clear();
-	proxyAlbedoMaterials.clear();
-	for (const recast::Proxy& proxy : loaded.proxies) {
-		recast::MeshData data = recast::buildProxyMesh(proxy);
-		if (data.indices.empty()) continue;
-		proxyMeshes.push_back(createMesh(data.vertices, data.indices));
-		const recast::Vec3f& albedo = proxy.material.albedo;
-		proxyAlbedoMaterials.push_back(createMaterial({ .baseColor = { albedo[0], albedo[1], albedo[2], 1.0f } }));
-	}
-
 	std::string objectPath = loaded.object.path.empty() ? "" : loaded.resolve(loaded.object.path);
 	if (objectPath != loadedObjectPath) {
 		if (objectMesh) destroyMesh(objectMesh);
@@ -118,6 +122,12 @@ void Visualizer::loadScene() {
 
 	scene = std::move(loaded);
 	sceneLoaded = true;
+	detectedProxies = scene.proxies;
+	selectedProxy = -1;
+	hoveredProxy = -1;
+	loadProxyLabels();
+	draggingProxy = false;
+	rebuildProxyMeshes();
 	unsavedChanges = false;
 	draggingObject = false;
 	applySceneCamera();
@@ -288,8 +298,9 @@ void Visualizer::onUpdate(foto::f32 deltaTime) {
 	applySceneCamera();
 	finishLightingDetection();
 	applySceneLighting();
-	if (!(showLights && updateLightEditing())) updateObjectInteraction();
-	setPathTracing(pathTrace && !showOriginal && !showProxies && !showLights && supportsPathTracing(), photoMaterial);
+	if (editRoom) updateRoomEditing();
+	else if (!(showLights && updateLightEditing())) updateObjectInteraction();
+	setPathTracing(pathTrace && !showOriginal && !editRoom && !showLights && supportsPathTracing(), photoMaterial);
 	float pixelsPerPhotoPixel = getViewportSize().x / std::max(static_cast<float>(scene.image_size[0]), 1.0f);
 	setCameraMatch(cameraMatch.grain, cameraMatch.blur * pixelsPerPhotoPixel);
 	drawScene();
@@ -495,9 +506,11 @@ void Visualizer::drawScene() {
 	if (!loadedPhotoPath.empty()) drawFullscreen(backgroundPipeline, photoMaterial);
 
 	for (size_t i = 0; i < proxyMeshes.size(); i++) {
-		if (showOriginal) draw(proxyMeshes[i], Mat4::identity(), overlayMaterial, proxyDepthPipeline, foto::ShadowCaster::Static);
-		else if (isPathTracing()) draw(proxyMeshes[i], Mat4::identity(), proxyAlbedoMaterials[i], nullptr, foto::ShadowCaster::Static);
-		else draw(proxyMeshes[i], Mat4::identity(), photoMaterial, compositePipeline, foto::ShadowCaster::Static);
+		if (!proxyMeshes[i]) continue;
+		Mat4 matrix = proxyMatrix(i);
+		if (showOriginal) draw(proxyMeshes[i], matrix, overlayMaterial, proxyDepthPipeline, foto::ShadowCaster::Static);
+		else if (isPathTracing()) draw(proxyMeshes[i], matrix, proxyAlbedoMaterials[i], nullptr, foto::ShadowCaster::Static);
+		else draw(proxyMeshes[i], matrix, photoMaterial, compositePipeline, foto::ShadowCaster::Static);
 	}
 
 	if (objectMesh && !showOriginal) draw(objectMesh, objectTransform(), foto::NO_MATERIAL_OVERRIDE, nullptr, foto::ShadowCaster::Dynamic);
@@ -513,9 +526,6 @@ void Visualizer::drawScene() {
 		}
 	}
 
-	if (showProxies) {
-		for (foto::Mesh* mesh : proxyMeshes) draw(mesh, Mat4::identity(), overlayMaterial, proxyOverlayPipeline);
-	}
 }
 
 void Visualizer::onImGui() {
@@ -551,6 +561,15 @@ void Visualizer::onImGui() {
 	float exposure = getExposure();
 	if (ImGui::SliderFloat("exposure", &exposure, -4.0f, 4.0f, "%.1f EV")) setExposure(exposure);
 
+	if (ImGui::Checkbox("edit room", &editRoom) && !editRoom) {
+		selectedProxy = -1;
+		draggingProxy = false;
+	}
+	if (editRoom) {
+		drawRoomEditor();
+		drawRoomOverlay();
+	}
+
 	if (openLightEditor) {
 		ImGui::SetNextItemOpen(true);
 		openLightEditor = false;
@@ -568,11 +587,349 @@ void Visualizer::onImGui() {
 			ImGui::TextDisabled("path tracing: this GPU has no ray queries");
 		}
 		ImGui::Checkbox("original photo", &showOriginal);
-		ImGui::Checkbox("show room proxies", &showProxies);
 		ImGui::Checkbox("show and edit lights", &showLights);
 		if (showLights) drawLightEditor();
 		ImGui::TextDisabled("%.0f fps, F12 saves a screenshot", ImGui::GetIO().Framerate);
 	}
 
 	ImGui::End();
+}
+
+// Boxes share one unit cube placed by a matrix, so dragging and resizing never rebuild a mesh.
+// Planes keep the mesh they were built with and move by the offset from where it was built
+void Visualizer::rebuildProxyMeshes() {
+	for (foto::Mesh* mesh : proxyMeshes) {
+		if (mesh && mesh != unitBoxMesh) destroyMesh(mesh);
+	}
+	proxyMeshes.clear();
+	proxyAlbedoMaterials.clear();
+	proxyMeshOrigins.clear();
+	for (const recast::Proxy& proxy : scene.proxies) {
+		foto::Mesh* mesh = nullptr;
+		if (proxy.type == "box") mesh = unitBoxMesh;
+		else {
+			recast::MeshData data = recast::buildProxyMesh(proxy);
+			if (!data.indices.empty()) mesh = createMesh(data.vertices, data.indices);
+		}
+		proxyMeshes.push_back(mesh);
+		proxyMeshOrigins.push_back(proxy.point);
+		const recast::Vec3f& albedo = proxy.material.albedo;
+		proxyAlbedoMaterials.push_back(createMaterial({ .baseColor = { albedo[0], albedo[1], albedo[2], 1.0f } }));
+	}
+}
+
+Mat4 Visualizer::proxyMatrix(size_t index) const {
+	const recast::Proxy& proxy = scene.proxies[index];
+	if (proxy.type == "box") {
+		Vec3 size(std::max(proxy.max[0] - proxy.min[0], 1e-3f), std::max(proxy.max[1] - proxy.min[1], 1e-3f),
+				  std::max(proxy.max[2] - proxy.min[2], 1e-3f));
+		return Mat4::translationM(proxy.min[0], proxy.min[1], proxy.min[2]) * Mat4::scaleM(size.x, size.y, size.z);
+	}
+	const recast::Vec3f& built = proxyMeshOrigins[index];
+	return Mat4::translationM(proxy.point[0] - built[0], proxy.point[1] - built[1], proxy.point[2] - built[2]);
+}
+
+namespace {
+	bool isWall(const recast::Proxy& proxy) {
+		return proxy.type == "plane" && std::abs(proxy.normal[1]) < 0.5f;
+	}
+
+	// Closest point on the line p + u*s to the ray o + d*t: returns s
+	float closestOnLine(const Vec3& p, const Vec3& u, const Vec3& o, const Vec3& d) {
+		Vec3 w = p - o;
+		float b = u.dot(d), denom = 1.0f - b * b;
+		if (std::abs(denom) < 1e-6f) return 0.0f;
+		return (b * d.dot(w) - u.dot(w)) / denom;
+	}
+
+	constexpr ImU32 EDGE_COLOR = IM_COL32(255, 255, 255, 170);
+	constexpr ImU32 HOVER_COLOR = IM_COL32(255, 230, 90, 255);
+	constexpr ImU32 SELECTED_COLOR = IM_COL32(255, 150, 40, 255);
+	constexpr ImU32 WALL_COLOR = IM_COL32(110, 200, 255, 200);
+	constexpr float HANDLE_RADIUS = 7.0f;
+}
+
+// Names from detect.json ("chair", "table"...), so the room list and the labels say what each box is
+void Visualizer::loadProxyLabels() {
+	proxyLabels.clear();
+	std::ifstream file(scene.directory / "detect.json");
+	if (!file) return;
+	try {
+		nlohmann::json detect = nlohmann::json::parse(file);
+		for (const auto& object : detect.value("objects", nlohmann::json::array())) {
+			std::string label = object.value("label", "object");
+			const auto& ids = object.value("proxy_ids", nlohmann::json::array());
+			for (size_t k = 0; k < ids.size(); k++) {
+				proxyLabels[ids[k].get<foto::u32>()] = ids.size() == 1 ? label : label + (k == 0 ? " (seat)" : " (back)");
+			}
+		}
+	}
+	catch (const std::exception& e) {
+		std::cerr << "[recast] detect.json: " << e.what() << std::endl;
+	}
+}
+
+std::string Visualizer::proxyName(size_t index) const {
+	const recast::Proxy& proxy = scene.proxies[index];
+	auto label = proxyLabels.find(proxy.id);
+	if (label != proxyLabels.end()) return label->second;
+	if (proxy.type == "box") return "box";
+	if (isWall(proxy)) return "wall";
+	return proxy.normal[1] > 0.0f ? "floor" : "ceiling";
+}
+
+// World point -> ImGui screen position through the photo's camera. False when it's behind the camera
+bool Visualizer::projectToScreen(const Vec3& point, ImVec2& out) {
+	const recast::SceneCamera& c = scene.camera;
+	Vec3 d = point - Vec3(c.position[0], c.position[1], c.position[2]);
+	Vec3 local;
+	for (int j = 0; j < 3; j++) local[j] = c.rotation[0][j] * d.x + c.rotation[1][j] * d.y + c.rotation[2][j] * d.z;
+	if (local.z > -0.05f) return false;
+	float u = c.cx + c.fx * local.x / -local.z;
+	float v = c.cy - c.fy * local.y / -local.z;
+	enginemath::Vec2 offset = getViewportOffset(), size = getViewportSize();
+	ImVec2 scale = ImGui::GetIO().DisplayFramebufferScale;
+	out = ImVec2((offset.x + u / std::max(1.0f, static_cast<float>(scene.image_size[0])) * size.x) / scale.x,
+				 (offset.y + v / std::max(1.0f, static_cast<float>(scene.image_size[1])) * size.y) / scale.y);
+	return true;
+}
+
+void Visualizer::drawSegment(ImDrawList* list, Vec3 a, Vec3 b, ImU32 color, float thickness) {
+	// clip against a plane just in front of the camera, so lines that pass behind it still draw
+	const recast::SceneCamera& c = scene.camera;
+	Vec3 eye(c.position[0], c.position[1], c.position[2]);
+	Vec3 forward(-c.rotation[0][2], -c.rotation[1][2], -c.rotation[2][2]);
+	float da = (a - eye).dot(forward) - 0.06f, db = (b - eye).dot(forward) - 0.06f;
+	if (da < 0.0f && db < 0.0f) return;
+	if (da < 0.0f) a = a + (b - a) * (da / (da - db));
+	if (db < 0.0f) b = b + (a - b) * (db / (db - da));
+	ImVec2 sa, sb;
+	if (projectToScreen(a, sa) && projectToScreen(b, sb)) list->AddLine(sa, sb, color, thickness);
+}
+
+// Face centres of the selected box: x-, x+, y-, y+, z-, z+
+std::array<Vec3, 6> Visualizer::boxHandles(const recast::Proxy& box) const {
+	Vec3 lo(box.min[0], box.min[1], box.min[2]), hi(box.max[0], box.max[1], box.max[2]), mid = (lo + hi) * 0.5f;
+	std::array<Vec3, 6> handles;
+	for (int a = 0; a < 3; a++) {
+		handles[a * 2] = mid;
+		handles[a * 2][a] = lo[a];
+		handles[a * 2 + 1] = mid;
+		handles[a * 2 + 1][a] = hi[a];
+	}
+	return handles;
+}
+
+// Where a wall's handle sits: on the floor, straight ahead of the camera
+bool Visualizer::wallHandle(const recast::Proxy& wall, Vec3& handle) const {
+	const recast::SceneCamera& c = scene.camera;
+	Vec3 eye(c.position[0], c.position[1], c.position[2]);
+	Vec3 forward(-c.rotation[0][2], 0.0f, -c.rotation[2][2]);
+	Vec3 normal(wall.normal[0], wall.normal[1], wall.normal[2]), point(wall.point[0], wall.point[1], wall.point[2]);
+	float facing = forward.dot(normal);
+	if (std::abs(facing) < 1e-3f) return false;
+	float t = (point - eye).dot(normal) / facing;
+	if (t <= 0.0f) return false;
+	handle = eye + forward * t;
+	handle.y = 0.0f;
+	return true;
+}
+
+int Visualizer::boxUnderCursor(const Vec3& origin, const Vec3& direction) const {
+	int best = -1;
+	float bestT = 1e30f;
+	for (size_t i = 0; i < scene.proxies.size(); i++) {
+		const recast::Proxy& proxy = scene.proxies[i];
+		if (proxy.type != "box") continue;
+		float t = 0.0f;
+		Vec3 lo(proxy.min[0], proxy.min[1], proxy.min[2]), hi(proxy.max[0], proxy.max[1], proxy.max[2]);
+		if (recast::rayAabb(origin, direction, lo, hi, t) && t < bestT) {
+			bestT = t;
+			best = static_cast<int>(i);
+		}
+	}
+	return best;
+}
+
+// Click a box to select it and drag to slide it across the floor; drag the dots on the selected box to
+// resize it, or the dot on a selected wall (pick walls in the list) to move the wall in or out
+bool Visualizer::updateRoomEditing() {
+	bool leftDown = getWindow().isMouseButtonDown(GLFW_MOUSE_BUTTON_LEFT);
+	bool pressed = leftDown && !roomMouseWasDown && !ImGui::GetIO().WantCaptureMouse;
+	roomMouseWasDown = leftDown;
+	Vec3 origin, direction;
+	bool haveRay = getCursorRay(origin, direction);
+	ImVec2 mouse = ImGui::GetIO().MousePos;
+	auto nearMouse = [&](const Vec3& point) {
+		ImVec2 screen;
+		if (!projectToScreen(point, screen)) return false;
+		float dx = screen.x - mouse.x, dy = screen.y - mouse.y;
+		return dx * dx + dy * dy <= (HANDLE_RADIUS + 4.0f) * (HANDLE_RADIUS + 4.0f);
+	};
+	bool haveSelection = selectedProxy >= 0 && selectedProxy < static_cast<int>(scene.proxies.size());
+
+	hoveredHandle = -1;
+	if (haveSelection && !draggingProxy) {
+		const recast::Proxy& selected = scene.proxies[selectedProxy];
+		Vec3 handle;
+		if (selected.type == "box") {
+			std::array<Vec3, 6> handles = boxHandles(selected);
+			for (int h = 0; h < 6 && hoveredHandle < 0; h++) {
+				if (nearMouse(handles[h])) hoveredHandle = h;
+			}
+		}
+		else if (isWall(selected) && wallHandle(selected, handle) && nearMouse(handle)) hoveredHandle = 6;
+	}
+	if (!draggingProxy) hoveredProxy = haveRay ? boxUnderCursor(origin, direction) : -1;
+
+	if (pressed && haveRay) {
+		if (hoveredHandle >= 0) {
+			draggingProxy = true;
+			draggingHandle = hoveredHandle;
+			proxyAtGrab = scene.proxies[selectedProxy];
+			if (hoveredHandle == 6) wallHandle(proxyAtGrab, proxyGrab);
+			else proxyGrab = boxHandles(proxyAtGrab)[hoveredHandle];
+		}
+		else if (hoveredProxy >= 0) {
+			selectedProxy = hoveredProxy;
+			draggingProxy = true;
+			draggingHandle = -1;
+			proxyAtGrab = scene.proxies[selectedProxy];
+			float t = 0.0f;
+			recast::rayAabb(origin, direction, Vec3(proxyAtGrab.min[0], proxyAtGrab.min[1], proxyAtGrab.min[2]),
+							Vec3(proxyAtGrab.max[0], proxyAtGrab.max[1], proxyAtGrab.max[2]), t);
+			proxyGrab = origin + direction * t;
+		}
+		else {
+			selectedProxy = -1;
+		}
+	}
+	if (!leftDown) draggingProxy = false;
+	if (!draggingProxy || !haveRay || selectedProxy < 0) return draggingProxy;
+
+	recast::Proxy& proxy = scene.proxies[selectedProxy];
+	if (draggingHandle == 6) {
+		Vec3 normal(proxy.normal[0], proxy.normal[1], proxy.normal[2]);
+		float s = closestOnLine(proxyGrab, normal, origin, direction);
+		for (int a = 0; a < 3; a++) proxy.point[a] = proxyAtGrab.point[a] + normal[a] * s;
+	}
+	else if (draggingHandle >= 0) {
+		int axis = draggingHandle / 2;
+		bool high = draggingHandle % 2 == 1;
+		Vec3 along(0.0f);
+		along[axis] = 1.0f;
+		float value = proxyGrab[axis] + closestOnLine(proxyGrab, along, origin, direction);
+		if (high) proxy.max[axis] = std::max(value, proxy.min[axis] + 0.02f);
+		else proxy.min[axis] = std::min(axis == 1 ? std::max(value, 0.0f) : value, proxy.max[axis] - 0.02f);
+	}
+	else if (std::abs(direction.y) > 1e-4f) {
+		float t = (proxyGrab.y - origin.y) / direction.y;
+		if (t > 0.0f) {
+			Vec3 delta = origin + direction * t - proxyGrab;
+			for (int a : { 0, 2 }) {
+				proxy.min[a] = proxyAtGrab.min[a] + delta[a];
+				proxy.max[a] = proxyAtGrab.max[a] + delta[a];
+			}
+		}
+	}
+	unsavedChanges = true;
+	return true;
+}
+
+// Outlines, names and resize dots drawn over the photo (nothing is filled, so the photo stays readable)
+void Visualizer::drawRoomOverlay() {
+	ImDrawList* list = ImGui::GetForegroundDrawList();
+	for (size_t i = 0; i < scene.proxies.size(); i++) {
+		const recast::Proxy& proxy = scene.proxies[i];
+		bool selected = static_cast<int>(i) == selectedProxy, hovered = static_cast<int>(i) == hoveredProxy;
+		if (proxy.type == "box") {
+			ImU32 color = selected ? SELECTED_COLOR : hovered ? HOVER_COLOR : EDGE_COLOR;
+			float thickness = selected ? 2.5f : hovered ? 2.0f : 1.2f;
+			Vec3 lo(proxy.min[0], proxy.min[1], proxy.min[2]), hi(proxy.max[0], proxy.max[1], proxy.max[2]);
+			auto corner = [&](int k) { return Vec3((k & 1) ? hi.x : lo.x, (k & 2) ? hi.y : lo.y, (k & 4) ? hi.z : lo.z); };
+			for (int k = 0; k < 8; k++) {
+				for (int bit : { 1, 2, 4 }) {
+					if (!(k & bit)) drawSegment(list, corner(k), corner(k | bit), color, thickness);
+				}
+			}
+			ImVec2 at;
+			if (projectToScreen(Vec3((lo.x + hi.x) * 0.5f, hi.y, (lo.z + hi.z) * 0.5f), at)) {
+				std::string name = proxyName(i);
+				ImVec2 size = ImGui::CalcTextSize(name.c_str());
+				ImVec2 corner0(at.x - size.x * 0.5f - 3.0f, at.y - size.y - 8.0f);
+				list->AddRectFilled(corner0, ImVec2(corner0.x + size.x + 6.0f, corner0.y + size.y + 2.0f), IM_COL32(0, 0, 0, 150), 3.0f);
+				list->AddText(ImVec2(corner0.x + 3.0f, corner0.y + 1.0f), color, name.c_str());
+			}
+			if (selected) {
+				std::array<Vec3, 6> handles = boxHandles(proxy);
+				for (int h = 0; h < 6; h++) {
+					ImVec2 screen;
+					if (!projectToScreen(handles[h], screen)) continue;
+					bool active = h == hoveredHandle || (draggingProxy && h == draggingHandle);
+					list->AddCircleFilled(screen, active ? HANDLE_RADIUS + 2.0f : HANDLE_RADIUS, active ? HOVER_COLOR : SELECTED_COLOR);
+					list->AddCircle(screen, active ? HANDLE_RADIUS + 2.0f : HANDLE_RADIUS, IM_COL32(0, 0, 0, 200), 0, 1.5f);
+				}
+			}
+		}
+		else if (isWall(proxy)) {
+			// the wall's line on the floor, far enough either side to cross the photo
+			Vec3 normal(proxy.normal[0], 0.0f, proxy.normal[2]), point(proxy.point[0], 0.0f, proxy.point[2]);
+			Vec3 tangent(-normal.z, 0.0f, normal.x);
+			ImU32 color = selected ? SELECTED_COLOR : WALL_COLOR;
+			for (float height : { 0.0f, 2.5f }) {
+				Vec3 up(0.0f, height, 0.0f);
+				drawSegment(list, point + up - tangent * 30.0f, point + up + tangent * 30.0f, color, selected ? 2.5f : 1.2f);
+			}
+			Vec3 handle;
+			if (selected && wallHandle(proxy, handle)) {
+				ImVec2 screen;
+				if (projectToScreen(handle, screen)) {
+					bool active = hoveredHandle == 6 || (draggingProxy && draggingHandle == 6);
+					list->AddCircleFilled(screen, active ? HANDLE_RADIUS + 2.0f : HANDLE_RADIUS, active ? HOVER_COLOR : SELECTED_COLOR);
+				}
+			}
+		}
+	}
+}
+
+void Visualizer::drawRoomEditor() {
+	ImGui::TextDisabled("click a piece to select it, drag to move, drag its dots to resize");
+	if (ImGui::BeginListBox("##room", ImVec2(-FLT_MIN, 6.5f * ImGui::GetTextLineHeightWithSpacing()))) {
+		for (size_t i = 0; i < scene.proxies.size(); i++) {
+			const recast::Proxy& proxy = scene.proxies[i];
+			if (proxy.type != "box" && !isWall(proxy)) continue;
+			std::string label = proxyName(i) + "##" + std::to_string(i);
+			if (ImGui::Selectable(label.c_str(), static_cast<int>(i) == selectedProxy)) selectedProxy = static_cast<int>(i);
+			if (ImGui::IsItemHovered()) hoveredProxy = static_cast<int>(i);
+		}
+		ImGui::EndListBox();
+	}
+	if (ImGui::Button("add box")) {
+		recast::Proxy box;
+		box.type = "box";
+		box.min = { shadowCenter.x - 0.25f, 0.0f, shadowCenter.z - 0.25f };
+		box.max = { shadowCenter.x + 0.25f, 0.5f, shadowCenter.z + 0.25f };
+		for (const recast::Proxy& proxy : scene.proxies) box.id = std::max(box.id, proxy.id + 1);
+		scene.proxies.push_back(box);
+		selectedProxy = static_cast<int>(scene.proxies.size()) - 1;
+		proxyMeshesDirty = true; // rebuilt before the next frame's draws: this frame's are already queued
+		unsavedChanges = true;
+	}
+	ImGui::SameLine();
+	bool haveSelection = selectedProxy >= 0 && selectedProxy < static_cast<int>(scene.proxies.size());
+	ImGui::BeginDisabled(!haveSelection);
+	if (ImGui::Button("delete") && haveSelection) {
+		scene.proxies.erase(scene.proxies.begin() + selectedProxy);
+		selectedProxy = -1;
+		proxyMeshesDirty = true;
+		unsavedChanges = true;
+	}
+	ImGui::EndDisabled();
+	ImGui::SameLine();
+	if (ImGui::Button("reset room")) {
+		scene.proxies = detectedProxies;
+		selectedProxy = -1;
+		proxyMeshesDirty = true;
+		unsavedChanges = true;
+	}
 }
