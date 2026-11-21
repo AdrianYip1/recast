@@ -12,15 +12,15 @@
 #include "../rhi_vulkan/vkImage.hpp"
 #include "../rhi_vulkan/vkDescriptorHelper.hpp"
 
-// pos, color, uv. +Y is up (proj flips Y), uv (0,0) is the texture's top-left
+// pos, normal, uv. +Y is up (proj flips Y), uv (0,0) is the texture's top-left
 static const std::vector<foto::Vertex> vertices = {
-	{{-0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}, {0.0f, 1.0f}},
-	{{0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}, {1.0f, 1.0f}},
-	{{0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}, {1.0f, 0.0f}},
-	{{-0.5f, 0.5f}, {1.0f, 1.0f, 1.0f}, {0.0f, 0.0f}}
+	{{-0.5f, -0.5f, 0.0f}, {0.0f, 0.0f, 1.0f}, {0.0f, 1.0f}},
+	{{0.5f, -0.5f, 0.0f}, {0.0f, 0.0f, 1.0f}, {1.0f, 1.0f}},
+	{{0.5f, 0.5f, 0.0f}, {0.0f, 0.0f, 1.0f}, {1.0f, 0.0f}},
+	{{-0.5f, 0.5f, 0.0f}, {0.0f, 0.0f, 1.0f}, {0.0f, 0.0f}}
 };
 
-static const std::vector<foto::u16> indices = {
+static const std::vector<foto::u32> indices = {
 	0, 1, 2, 2, 3, 0
 };
 
@@ -46,7 +46,7 @@ foto::Application::Application(const ApplicationConfig& config) :
 	vertexBuffers.push_back(Buffer::createDeviceLocal(*device, render->getCommandPool(),
 		vertices.data(), vertexBytes, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT));
 
-	VkDeviceSize indexBytes = sizeof(u16) * indices.size();
+	VkDeviceSize indexBytes = sizeof(u32) * indices.size();
 	indexBuffer = Buffer::createDeviceLocal(*device, render->getCommandPool(),
 		indices.data(), indexBytes, VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
 

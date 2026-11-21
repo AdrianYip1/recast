@@ -248,9 +248,9 @@ void foto::Render::recordCommandBuffer(VkCommandBuffer commandBuffer, u32 imageI
 		VkDeviceSize offsets[] = { 0 };
 
 		vkCmdBindVertexBuffers(commandBuffer, 0, 1, buffers, offsets);
-		vkCmdBindIndexBuffer(commandBuffer, indexBuffer.getBuffer(), 0, VK_INDEX_TYPE_UINT16);
+		vkCmdBindIndexBuffer(commandBuffer, indexBuffer.getBuffer(), 0, VK_INDEX_TYPE_UINT32);
 
-		vkCmdDrawIndexed(commandBuffer, static_cast<u32>(indexBuffer.getSize() / sizeof(u16)), 1, 0, 0, 0);
+		vkCmdDrawIndexed(commandBuffer, static_cast<u32>(indexBuffer.getSize() / sizeof(u32)), 1, 0, 0, 0);
 	}
 
 	vkCmdEndRendering(commandBuffer);

@@ -1,10 +1,10 @@
 #version 450
 
-layout(location=0) in vec2 inPos;
-layout(location=1) in vec3 inColor;
+layout(location=0) in vec3 inPos;
+layout(location=1) in vec3 inNormal;
 layout(location=2) in vec2 inUV;
 
-layout(location=0) out vec3 fragColor;
+layout(location=0) out vec3 fragNormal;
 layout(location=1) out vec2 fragUV;
 
 layout(binding=0) uniform Ubo {
@@ -14,7 +14,7 @@ layout(binding=0) uniform Ubo {
 } ubo;
 
 void main() {
-	gl_Position = ubo.proj * ubo.view * ubo.model * vec4(inPos, 1.0, 1.0);
-	fragColor = inColor;
+	gl_Position = ubo.proj * ubo.view * ubo.model * vec4(inPos, 1.0);
+	fragNormal = mat3(ubo.model) * inNormal;
 	fragUV = inUV;
 }

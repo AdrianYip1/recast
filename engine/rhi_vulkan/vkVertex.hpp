@@ -7,9 +7,10 @@
 #include <engine/core/stdIncludes.hpp>
 
 namespace foto {
+	// Indices are always 32-bit (u32 / VK_INDEX_TYPE_UINT32): loaded meshes easily pass 65k vertices
 	struct Vertex {
-		enginemath::Vec2 pos;
-		enginemath::Vec3 color;
+		enginemath::Vec3 pos;
+		enginemath::Vec3 normal;
 		enginemath::Vec2 uv; // (0,0) = top-left of the texture
 
 		static VkVertexInputBindingDescription getBindingDescription() {
@@ -27,14 +28,14 @@ namespace foto {
 				{
 					.location = 0,
 					.binding = 0,
-					.format = VK_FORMAT_R32G32_SFLOAT,
+					.format = VK_FORMAT_R32G32B32_SFLOAT,
 					.offset = offsetof(Vertex, pos)
 				},
 				{
 					.location = 1,
 					.binding = 0,
 					.format = VK_FORMAT_R32G32B32_SFLOAT,
-					.offset = offsetof(Vertex, color)
+					.offset = offsetof(Vertex, normal)
 				},
 				{
 					.location = 2,
