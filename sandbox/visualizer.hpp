@@ -41,8 +41,20 @@ private:
 	float proxyOpacity = 0.25f;
 	bool freeCamera = false;
 
+	foto::Mesh* objectMesh = nullptr;
+	std::string loadedObjectPath;
+	bool draggingObject = false;
+	enginemath::Vec3 dragOffset;
+	bool leftMouseWasDown = false;
+	bool unsavedChanges = false;
+
 	void loadScene();
 	void applySceneCamera();
 	void drawPhotoView();
 	void drawDemo();
+	void updateObjectInteraction();
+	bool cursorHitsObject(const enginemath::Vec3& origin, const enginemath::Vec3& direction);
+	enginemath::Mat4 objectTransform() const;
+	void saveScene();
+	void resolveCollisions();
 };

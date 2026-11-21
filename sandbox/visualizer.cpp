@@ -6,6 +6,8 @@
 #include <engine/rhi_vulkan/vkPipeline.hpp>
 
 #include "scene/proxyMesh.hpp"
+#include "scene/raycast.hpp"
+#include "scene/placement.hpp"
 
 using enginemath::Vec3;
 using enginemath::Mat4;
@@ -105,8 +107,26 @@ void Visualizer::loadScene() {
 		if (!data.indices.empty()) proxyMeshes.push_back(createMesh(data.vertices, data.indices));
 	}
 
+	std::string objectPath = loaded.object.path.empty() ? "" : loaded.resolve(loaded.object.path);
+	if (objectPath != loadedObjectPath) {
+		if (objectMesh) destroyMesh(objectMesh);
+		objectMesh = nullptr;
+		loadedObjectPath.clear();
+		if (!objectPath.empty()) {
+			try {
+				objectMesh = loadModel(objectPath);
+				loadedObjectPath = objectPath;
+			}
+			catch (const std::exception& e) {
+				std::cerr << "[recast] " << e.what() << std::endl;
+			}
+		}
+	}
+
 	scene = std::move(loaded);
 	sceneLoaded = true;
+	unsavedChanges = false;
+	draggingObject = false;
 	applySceneCamera();
 
 	std::cout << "[recast] loaded " << scenePath << ": " << scene.image_size[0] << "x" << scene.image_size[1]
@@ -143,6 +163,7 @@ void Visualizer::onUpdate(foto::f32 deltaTime) {
 	if (sceneLoaded) {
 		if (freeCamera) flyCamera(deltaTime);
 		else applySceneCamera();
+		updateObjectInteraction();
 		drawPhotoView();
 	}
 	else {
@@ -155,9 +176,76 @@ void Visualizer::onUpdate(foto::f32 deltaTime) {
 void Visualizer::drawPhotoView() {
 	if (!loadedPhotoPath.empty()) drawFullscreen(backgroundPipeline, photoMaterial);
 
+	for (foto::Mesh* mesh : proxyMeshes) draw(mesh, Mat4::identity(), proxyMaterial, proxyDepthPipeline);
+	if (objectMesh) draw(objectMesh, objectTransform());
 	if (showProxies) {
-		for (foto::Mesh* mesh : proxyMeshes) draw(mesh, Mat4::identity(), proxyMaterial, proxyDepthPipeline);
 		for (foto::Mesh* mesh : proxyMeshes) draw(mesh, Mat4::identity(), proxyMaterial, proxyPipeline);
+	}
+}
+
+Mat4 Visualizer::objectTransform() const {
+	return recast::objectMatrix(scene.object.transform);
+}
+
+bool Visualizer::cursorHitsObject(const Vec3& origin, const Vec3& direction) {
+	Vec3 worldMin, worldMax;
+	recast::objectWorldBounds(scene.object.transform, objectMesh->getBoundsMin(), objectMesh->getBoundsMax(), worldMin, worldMax);
+	float t = 0.0f;
+	return recast::rayAabb(origin, direction, worldMin, worldMax, t);
+}
+
+void Visualizer::resolveCollisions() {
+	recast::resolveCollisions(scene.proxies, scene.object.transform, objectMesh->getBoundsMin(), objectMesh->getBoundsMax());
+}
+
+void Visualizer::updateObjectInteraction() {
+	if (!objectMesh) return;
+
+	foto::Window& window = getWindow();
+	bool leftDown = window.isMouseButtonDown(GLFW_MOUSE_BUTTON_LEFT);
+	Vec3 origin, direction;
+	bool haveRay = getCursorRay(origin, direction);
+	recast::ObjectTransform& transform = scene.object.transform;
+	constexpr float supportNormalY = 0.7f;
+
+	if (leftDown && !leftMouseWasDown && haveRay && cursorHitsObject(origin, direction)) {
+		recast::RayHit hit = recast::raycastProxies(scene.proxies, origin, direction, supportNormalY);
+		if (hit.valid()) {
+			draggingObject = true;
+			dragOffset = Vec3(transform.position[0] - hit.point.x, 0.0f, transform.position[2] - hit.point.z);
+		}
+	}
+	if (!leftDown) draggingObject = false;
+
+	if (draggingObject && haveRay) {
+		recast::RayHit hit = recast::raycastProxies(scene.proxies, origin, direction, supportNormalY);
+		if (hit.valid()) {
+			transform.position = { hit.point.x + dragOffset.x, hit.point.y, hit.point.z + dragOffset.z };
+			resolveCollisions();
+			unsavedChanges = true;
+		}
+	}
+
+	float scroll = window.getScrollDelta();
+	if (scroll != 0.0f && haveRay) {
+		if (window.isKeyDown(GLFW_KEY_LEFT_SHIFT)) transform.scale *= std::pow(1.1f, scroll);
+		else transform.rotation_y_deg = std::fmod(transform.rotation_y_deg + scroll * 15.0f + 360.0f, 360.0f);
+		resolveCollisions();
+		unsavedChanges = true;
+	}
+
+	leftMouseWasDown = leftDown;
+}
+
+void Visualizer::saveScene() {
+	try {
+		recast::saveSceneFile(scene, scenePath);
+		sceneWatcher = foto::FileWatcher(scenePath);
+		unsavedChanges = false;
+		std::cout << "[recast] saved " << scenePath << std::endl;
+	}
+	catch (const std::exception& e) {
+		std::cerr << "[recast] " << e.what() << std::endl;
 	}
 }
 
@@ -181,6 +269,16 @@ void Visualizer::onImGui() {
 			updateMaterial(proxyMaterial, material);
 		}
 		ImGui::Checkbox("free camera", &freeCamera);
+
+		if (objectMesh) {
+			ImGui::SeparatorText("object");
+			recast::ObjectTransform& transform = scene.object.transform;
+			unsavedChanges |= ImGui::DragFloat3("position", transform.position.data(), 0.01f);
+			unsavedChanges |= ImGui::SliderFloat("rotation", &transform.rotation_y_deg, 0.0f, 360.0f, "%.0f deg");
+			unsavedChanges |= ImGui::DragFloat("scale", &transform.scale, 0.01f, 0.01f, 100.0f);
+			ImGui::TextDisabled("drag with left mouse, scroll to rotate, shift+scroll to scale");
+		}
+		if (ImGui::Button(unsavedChanges ? "save scene *" : "save scene")) saveScene();
 	}
 	else {
 		ImGui::SliderFloat("cube spin", &spinSpeed, 0.0f, 3.0f);
