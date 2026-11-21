@@ -64,6 +64,7 @@ private:
 	bool showLights = false;
 	bool showOriginal = false;
 	bool pathTrace = true;
+	bool denoise = true;
 
 	void loadScene();
 	void saveScene();

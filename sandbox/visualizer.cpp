@@ -371,6 +371,7 @@ void Visualizer::onImGui() {
 			if (isPathTracing()) {
 				ImGui::SameLine();
 				ImGui::TextDisabled("%u samples", getPathTraceSamples());
+				if (ImGui::Checkbox("denoise", &denoise)) setDenoise(denoise);
 			}
 		}
 		else {
