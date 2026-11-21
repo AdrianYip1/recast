@@ -155,7 +155,9 @@ VkPipeline foto::Pipeline::createGraphicsPipeline(Device& device, const Graphics
 		.polygonMode = config.polygonMode,
 		.cullMode = config.cullMode,
 		.frontFace = config.frontFace,
-		.depthBiasEnable = VK_FALSE,
+		.depthBiasEnable = (config.depthBiasConstant != 0.0f || config.depthBiasSlope != 0.0f) ? VK_TRUE : VK_FALSE,
+		.depthBiasConstantFactor = config.depthBiasConstant,
+		.depthBiasSlopeFactor = config.depthBiasSlope,
 		.lineWidth = 1.0f
 	};
 
@@ -168,6 +170,7 @@ VkPipeline foto::Pipeline::createGraphicsPipeline(Device& device, const Graphics
 
 	// Depth (stencil unused)
 	bool hasDepth = config.depthFormat != VK_FORMAT_UNDEFINED;
+	bool hasColor = config.colorFormat != VK_FORMAT_UNDEFINED;
 
 	VkPipelineDepthStencilStateCreateInfo depthStencilCreateInfo = {
 		.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
@@ -195,15 +198,15 @@ VkPipeline foto::Pipeline::createGraphicsPipeline(Device& device, const Graphics
 	VkPipelineColorBlendStateCreateInfo colorBlendStateCreateInfo = {
 		.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
 		.logicOpEnable = VK_FALSE,
-		.attachmentCount = 1,
-		.pAttachments = &colorBlendAttachment,
+		.attachmentCount = hasColor ? 1u : 0u,
+		.pAttachments = hasColor ? &colorBlendAttachment : nullptr,
 	};
 	
 	// Dynamic Rendering
 	VkPipelineRenderingCreateInfo renderingCreateInfo = {
 		.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
-		.colorAttachmentCount = 1,
-		.pColorAttachmentFormats = &config.colorFormat,
+		.colorAttachmentCount = hasColor ? 1u : 0u,
+		.pColorAttachmentFormats = hasColor ? &config.colorFormat : nullptr,
 		.depthAttachmentFormat = config.depthFormat,
 	};
 	// Pipeline Creation

@@ -2,6 +2,10 @@
 
 #include <cstdlib>
 
+#ifndef RECAST_SAMPLE_SCENE
+#define RECAST_SAMPLE_SCENE ""
+#endif
+
 int main(int argc, char** argv) {
 	foto::ApplicationConfig config = {
 		.title = "foto",
@@ -10,7 +14,10 @@ int main(int argc, char** argv) {
 	};
 
 	try {
-		Visualizer app(config, argc > 1 ? argv[1] : "");
+		std::string scenePath = argc > 1 ? argv[1] : RECAST_SAMPLE_SCENE;
+		if (scenePath == "--demo") scenePath.clear();
+
+		Visualizer app(config, scenePath);
 		app.run();
 	}
 	catch (const std::exception& e) {

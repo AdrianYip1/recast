@@ -64,6 +64,23 @@ Mat4 foto::Camera::getProjection(f32 aspect) const {
 	return projection;
 }
 
+Vec3 foto::Camera::rayDirection(f32 ndcX, f32 ndcY, f32 aspect) const {
+	f32 x, y;
+	if (intrinsics) {
+		const CameraIntrinsics& k = *intrinsics;
+		f32 u = (ndcX + 1.0f) * 0.5f * k.width;
+		f32 v = (ndcY + 1.0f) * 0.5f * k.height;
+		x = (u - k.cx) / k.fx;
+		y = -(v - k.cy) / k.fy;
+	}
+	else {
+		f32 tanHalf = std::tan(fovY * 0.5f);
+		x = ndcX * tanHalf * aspect;
+		y = -ndcY * tanHalf;
+	}
+	return (getRight() * x + getUp() * y + getForward()).normalized();
+}
+
 void foto::Camera::lookAt(const Vec3& target) {
 	orientation.reset();
 	Vec3 direction = (target - position).normalized();

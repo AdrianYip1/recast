@@ -50,7 +50,8 @@ namespace foto {
 		const Material& getMaterial(u32 index);
 
 		// Queues a draw for the current frame; call from onUpdate
-		void draw(Mesh* mesh, const enginemath::Mat4& transform, u32 materialOverride = NO_MATERIAL_OVERRIDE, Pipeline* pipeline = nullptr);
+		void draw(Mesh* mesh, const enginemath::Mat4& transform, u32 materialOverride = NO_MATERIAL_OVERRIDE, Pipeline* pipeline = nullptr,
+				  ShadowCaster shadowCaster = ShadowCaster::None);
 		void drawFullscreen(Pipeline* pipeline, u32 material);
 
 		// Scene pipeline with the engine's formats, descriptor layout and push constants filled in
@@ -64,6 +65,10 @@ namespace foto {
 		Window& getWindow() { return *window; };
 		f32 getAspectRatio();
 		void setLightDirection(const enginemath::Vec3& direction);
+
+		// Up to MAX_LIGHTS point lights with shadows; with none, the light direction above is used instead
+		void setLights(std::span<const PointLight> lights);
+		void setAmbient(const enginemath::Vec3& irradiance);
 		void screenshot(const std::string& filePath);
 
 		void setExposure(f32 ev);
@@ -74,12 +79,17 @@ namespace foto {
 		// Hold right mouse to look, WASD to move, E/Q up/down, shift to go faster
 		void flyCamera(f32 deltaTime, f32 speed = 3.0f, f32 sensitivity = 0.003f);
 
+		// World ray under the mouse; false if the cursor is outside the 3D view or over the UI
+		bool getCursorRay(enginemath::Vec3& origin, enginemath::Vec3& direction);
+		bool isUiUsingMouse();
+
 	private:
 		std::unique_ptr<Window> window;
 		std::unique_ptr<Device> device;
 		std::unique_ptr<Swapchain> swapchain;
 		std::unique_ptr<Pipeline> pipeline;
 		std::unique_ptr<Pipeline> presentPipeline;
+		std::unique_ptr<Pipeline> shadowPipeline;
 		std::unique_ptr<Render> render;
 		std::unique_ptr<ImGuiLayer> imgui;
 
@@ -92,6 +102,8 @@ namespace foto {
 		std::vector<DrawItem> drawList;
 		Camera camera;
 		enginemath::Vec3 lightDirection = enginemath::Vec3(-0.3f, -0.8f, -0.5f).normalized();
+		std::vector<PointLight> lights;
+		enginemath::Vec3 ambient = enginemath::Vec3(0.35f, 0.35f, 0.35f);
 		f32 exposureEV = 0.0f;
 		enginemath::Vec3 whiteBalance = enginemath::Vec3(1.0f, 1.0f, 1.0f);
 

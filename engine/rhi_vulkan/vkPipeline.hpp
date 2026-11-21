@@ -14,7 +14,7 @@ namespace foto {
 	struct GraphicsPipelineConfig {
 		std::string vertexShaderFilePath;
 		std::string fragmentShaderFilePath;
-		VkFormat colorFormat = VK_FORMAT_UNDEFINED;
+		VkFormat colorFormat = VK_FORMAT_UNDEFINED; // UNDEFINED = no color attachment (depth-only passes)
 		// UNDEFINED = no depth attachment (depth test/write are then ignored)
 		VkFormat depthFormat = VK_FORMAT_UNDEFINED;
 
@@ -29,6 +29,8 @@ namespace foto {
 		VkCullModeFlags cullMode = VK_CULL_MODE_BACK_BIT;
 		VkFrontFace frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
 		VkPolygonMode polygonMode = VK_POLYGON_MODE_FILL; // LINE = wireframe (needs Device::supportsWireframe())
+		f32 depthBiasConstant = 0.0f;
+		f32 depthBiasSlope = 0.0f;
 
 		// Depth
 		bool depthTest = true;

@@ -30,6 +30,7 @@ namespace foto {
 		bool isKeyDown(int key);
 		bool isMouseButtonDown(int button);
 		enginemath::Vec2 getCursorPos();     // window pixels, (0,0) = top-left
+		enginemath::Vec2 getFramebufferCursorPos(); // framebuffer pixels (differs from window pixels with display scaling)
 
 		// Input: change since the previous pollEvents()
 		enginemath::Vec2 getCursorDelta() { return cursorDelta; };

@@ -4,8 +4,8 @@
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include <stb_image_write.h>
 
-foto::Render::Render(Device& device, Swapchain& swapchain, Pipeline& pipeline, Pipeline& presentPipeline) :
-	device(device), swapchain(swapchain), pipeline(pipeline), presentPipeline(presentPipeline),
+foto::Render::Render(Device& device, Swapchain& swapchain, Pipeline& pipeline, Pipeline& presentPipeline, Pipeline& shadowPipeline) :
+	device(device), swapchain(swapchain), pipeline(pipeline), presentPipeline(presentPipeline), shadowPipeline(shadowPipeline),
 	_device(device.getDevice()), _commandPool(createCommandPool(device)),
 	commandBuffers(createCommandBuffers(device, _commandPool)),
 	uniformBuffers(createUniformBuffers(device)),
@@ -39,6 +39,11 @@ foto::Render::Render(Device& device, Swapchain& swapchain, Pipeline& pipeline, P
 	hdrImage = createHdrImage(device, swapchain.getExtent());
 	hdrTextureSlot = addTexture(*hdrImage, *hdrSampler);
 	tonemapMaterial = addMaterial({ .baseColorTexture = hdrTextureSlot });
+
+	staticShadowAtlas = createShadowAtlas(device);
+	dynamicShadowAtlas = createShadowAtlas(device);
+	staticShadowSlot = addTexture(*staticShadowAtlas, *hdrSampler);
+	dynamicShadowSlot = addTexture(*dynamicShadowAtlas, *hdrSampler);
 
 	createSyncObjects(_device, swapchain.getImages().size());
 };
@@ -114,7 +119,7 @@ bool foto::Render::drawFrame(std::span<const DrawItem> items, const FrameUbo& fr
 	VkCommandBuffer commandBuffer = commandBuffers[currentFrame];
 	vkResetCommandBuffer(commandBuffer, 0);
 	bool capture = prepareScreenshot();
-	recordCommandBuffer(commandBuffer, imageIdx, items, overlay, capture);
+	recordCommandBuffer(commandBuffer, imageIdx, items, frameUbo, overlay, capture);
 
 	// Submit info
 	VkSemaphore waitSemaphore[] = { imageAvailableSem[currentFrame] };
@@ -225,7 +230,7 @@ void foto::Render::createRenderFinishedSems(VkDevice device, size swapchainImage
 }
 
 void foto::Render::recordCommandBuffer(VkCommandBuffer commandBuffer, u32 imageIdx, std::span<const DrawItem> items,
-									   const std::function<void(VkCommandBuffer)>& overlay, bool capture) {
+									   const FrameUbo& frameUbo, const std::function<void(VkCommandBuffer)>& overlay, bool capture) {
 	VkCommandBufferBeginInfo beginInfo = {
 		.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
 	};
@@ -236,6 +241,9 @@ void foto::Render::recordCommandBuffer(VkCommandBuffer commandBuffer, u32 imageI
 
 	VkExtent2D extent = swapchain.getExtent();
 	VkImage swapchainImage = swapchain.getImages()[imageIdx];
+
+	recordShadowPass(commandBuffer, *staticShadowAtlas, ShadowCaster::Static, items, frameUbo);
+	recordShadowPass(commandBuffer, *dynamicShadowAtlas, ShadowCaster::Dynamic, items, frameUbo);
 
 	VkImageMemoryBarrier2 beginBarriers[] = {
 		{
@@ -479,6 +487,99 @@ void foto::Render::setSceneViewport(VkCommandBuffer commandBuffer, VkExtent2D ex
 	vkCmdSetScissor(commandBuffer, 0, 1, &rect);
 }
 
+void foto::Render::recordShadowPass(VkCommandBuffer commandBuffer, Image& atlas, ShadowCaster group,
+									std::span<const DrawItem> items, const FrameUbo& frameUbo) {
+	VkImageMemoryBarrier2 toDepth = {
+		.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+		.srcStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+		.srcAccessMask = VK_ACCESS_2_NONE,
+		.dstStageMask = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+		.dstAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+		.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+		.newLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+		.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+		.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+		.image = atlas.getImage(),
+		.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1},
+	};
+	VkDependencyInfo toDepthDependency = { .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &toDepth };
+	vkCmdPipelineBarrier2(commandBuffer, &toDepthDependency);
+
+	VkRenderingAttachmentInfo depthAttachment = {
+		.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+		.imageView = atlas.getView(),
+		.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+		.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+		.storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+		.clearValue = { .depthStencil = {1.0f, 0} }
+	};
+	VkRenderingInfo rendering = {
+		.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+		.renderArea = { .offset = {0, 0}, .extent = atlas.getExtent() },
+		.layerCount = 1,
+		.pDepthAttachment = &depthAttachment,
+	};
+	vkCmdBeginRendering(commandBuffer, &rendering);
+
+	vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowPipeline.getPipeline());
+	vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowPipeline.getPipelineLayout(),
+							0, 1, &descriptorSets[currentFrame], 0, nullptr);
+
+	u32 lightCount = std::min(frameUbo.lightInfo[0], MAX_LIGHTS);
+	for (u32 light = 0; light < lightCount; light++) {
+		if (frameUbo.lights[light].position.w < 0.5f) continue;
+
+		for (u32 face = 0; face < 6; face++) {
+			VkViewport viewport = {
+				.x = static_cast<f32>(face * SHADOW_FACE_RESOLUTION),
+				.y = static_cast<f32>(light * SHADOW_FACE_RESOLUTION),
+				.width = static_cast<f32>(SHADOW_FACE_RESOLUTION),
+				.height = static_cast<f32>(SHADOW_FACE_RESOLUTION),
+				.minDepth = 0.0f,
+				.maxDepth = 1.0f,
+			};
+			VkRect2D scissor = {
+				.offset = { static_cast<i32>(face * SHADOW_FACE_RESOLUTION), static_cast<i32>(light * SHADOW_FACE_RESOLUTION) },
+				.extent = { SHADOW_FACE_RESOLUTION, SHADOW_FACE_RESOLUTION }
+			};
+			vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
+			vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
+
+			Mesh* boundMesh = nullptr;
+			for (const DrawItem& item : items) {
+				if (!item.mesh || item.shadowCaster != group) continue;
+				if (item.mesh != boundMesh) {
+					item.mesh->bind(commandBuffer);
+					boundMesh = item.mesh;
+				}
+				DrawPush push = { .model = item.transform, .materialIndex = light * 6 + face };
+				vkCmdPushConstants(commandBuffer, shadowPipeline.getPipelineLayout(), DRAW_PUSH_RANGE.stageFlags, 0, sizeof(DrawPush), &push);
+				for (const Submesh& submesh : item.mesh->getSubmeshes()) {
+					vkCmdDrawIndexed(commandBuffer, submesh.indexCount, 1, submesh.firstIndex, 0, 0);
+				}
+			}
+		}
+	}
+
+	vkCmdEndRendering(commandBuffer);
+
+	VkImageMemoryBarrier2 toSampled = {
+		.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+		.srcStageMask = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+		.srcAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+		.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+		.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+		.oldLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+		.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+		.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+		.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+		.image = atlas.getImage(),
+		.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1},
+	};
+	VkDependencyInfo toSampledDependency = { .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &toSampled };
+	vkCmdPipelineBarrier2(commandBuffer, &toSampledDependency);
+}
+
 void foto::Render::setFullViewport(VkCommandBuffer commandBuffer, VkExtent2D extent) {
 	VkViewport viewport = {
 		.x = 0.0f,
@@ -596,6 +697,23 @@ void foto::Render::saveScreenshot() {
 
 std::unique_ptr<foto::Image> foto::Render::createHdrImage(Device& device, VkExtent2D extent) {
 	return std::make_unique<Image>(device, extent, HDR_FORMAT, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
+}
+
+std::unique_ptr<foto::Image> foto::Render::createShadowAtlas(Device& device) {
+	return std::make_unique<Image>(device, VkExtent2D{ 6 * SHADOW_FACE_RESOLUTION, MAX_LIGHTS * SHADOW_FACE_RESOLUTION }, DEPTH_FORMAT,
+								   VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_IMAGE_ASPECT_DEPTH_BIT);
+}
+
+void foto::shadowFaceMatrices(const enginemath::Vec3& position, enginemath::Mat4 out[6]) {
+	using enginemath::Vec3;
+	using enginemath::Mat4;
+	const Vec3 directions[6] = { Vec3(1, 0, 0), Vec3(-1, 0, 0), Vec3(0, 1, 0), Vec3(0, -1, 0), Vec3(0, 0, 1), Vec3(0, 0, -1) };
+	const Vec3 ups[6] = { Vec3(0, 1, 0), Vec3(0, 1, 0), Vec3(0, 0, 1), Vec3(0, 0, 1), Vec3(0, 1, 0), Vec3(0, 1, 0) };
+
+	Mat4 projection = Mat4::projectionM(enginemath::toRad(90.0f), 1.0f, 0.02f, 50.0f);
+	for (int face = 0; face < 6; face++) {
+		out[face] = projection * Mat4::lookAtM(position, position + directions[face], ups[face]);
+	}
 }
 
 std::unique_ptr<foto::Image> foto::Render::createDepthImage(Device& device, VkExtent2D extent) {

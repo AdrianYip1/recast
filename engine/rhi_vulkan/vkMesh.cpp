@@ -11,6 +11,14 @@ foto::Mesh::Mesh(Device& device, VkCommandPool commandPool, std::span<const Vert
 										  VK_BUFFER_USAGE_INDEX_BUFFER_BIT)),
 	submeshes(std::move(submeshes))
 {
+	boundsMin = boundsMax = vertices[0].pos;
+	for (const Vertex& vertex : vertices) {
+		for (int a = 0; a < 3; a++) {
+			boundsMin[a] = std::min(boundsMin[a], vertex.pos[a]);
+			boundsMax[a] = std::max(boundsMax[a], vertex.pos[a]);
+		}
+	}
+
 	if (this->submeshes.empty()) {
 		this->submeshes.push_back({ .firstIndex = 0, .indexCount = indexCount, .materialIndex = 0 });
 	}

@@ -48,7 +48,17 @@ foto::Application::Application(const ApplicationConfig& config) :
 				.depthTest = false,
 				.depthWrite = false,
 			})),
-	render(std::make_unique<Render>(*device, *swapchain, *pipeline, *presentPipeline)),
+	shadowPipeline(std::make_unique<Pipeline>(*device, GraphicsPipelineConfig{
+				.vertexShaderFilePath = "shaders/shadow.vert.spv",
+				.fragmentShaderFilePath = "shaders/shadow.frag.spv",
+				.depthFormat = Render::DEPTH_FORMAT,
+				.descriptorSetLayouts = { sceneSetLayout() },
+				.pushConstants = { DRAW_PUSH_RANGE },
+				.cullMode = VK_CULL_MODE_NONE,
+				.depthBiasConstant = 1.25f,
+				.depthBiasSlope = 1.75f,
+			})),
+	render(std::make_unique<Render>(*device, *swapchain, *pipeline, *presentPipeline, *shadowPipeline)),
 	imgui(std::make_unique<ImGuiLayer>(*window, *device, *swapchain, VK_FORMAT_UNDEFINED)),
 	sampler(std::make_unique<Sampler>(*device))
 {
@@ -84,8 +94,25 @@ void foto::Application::run() {
 			.cameraPos = { camera.position.x, camera.position.y, camera.position.z, 1.0f },
 			.lightDir = { lightDirection.x, lightDirection.y, lightDirection.z, 0.0f },
 			.exposure = { std::exp2(exposureEV), 0.0f, 0.0f, 0.0f },
-			.whiteBalance = { whiteBalance.x, whiteBalance.y, whiteBalance.z, 1.0f }
+			.whiteBalance = { whiteBalance.x, whiteBalance.y, whiteBalance.z, 1.0f },
+			.ambient = { ambient.x, ambient.y, ambient.z, 0.0f },
 		};
+
+		VkRect2D sceneRect = render->getSceneRect();
+		frameUbo.viewport = { static_cast<f32>(sceneRect.offset.x), static_cast<f32>(sceneRect.offset.y),
+							  static_cast<f32>(sceneRect.extent.width), static_cast<f32>(sceneRect.extent.height) };
+
+		u32 lightCount = static_cast<u32>(std::min<size>(lights.size(), MAX_LIGHTS));
+		frameUbo.lightInfo[0] = lightCount;
+		frameUbo.lightInfo[1] = render->getStaticShadowAtlas();
+		frameUbo.lightInfo[2] = render->getDynamicShadowAtlas();
+		frameUbo.lightInfo[3] = SHADOW_FACE_RESOLUTION;
+		for (u32 i = 0; i < lightCount; i++) {
+			const PointLight& light = lights[i];
+			frameUbo.lights[i].position = { light.position.x, light.position.y, light.position.z, light.castsShadows ? 1.0f : 0.0f };
+			frameUbo.lights[i].intensity = { light.intensity.x, light.intensity.y, light.intensity.z, 0.0f };
+			shadowFaceMatrices(light.position, frameUbo.lights[i].faceViewProj);
+		}
 
 		bool outOfDate = render->drawFrame(drawList, frameUbo, [this](VkCommandBuffer commandBuffer) {
 			imgui->record(commandBuffer);
@@ -156,8 +183,17 @@ const foto::Material& foto::Application::getMaterial(u32 index) {
 	return render->getMaterial(index);
 }
 
-void foto::Application::draw(Mesh* mesh, const Mat4& transform, u32 materialOverride, Pipeline* pipeline) {
-	drawList.push_back({ .mesh = mesh, .transform = transform, .materialOverride = materialOverride, .pipeline = pipeline });
+void foto::Application::draw(Mesh* mesh, const Mat4& transform, u32 materialOverride, Pipeline* pipeline, ShadowCaster shadowCaster) {
+	drawList.push_back({ .mesh = mesh, .transform = transform, .materialOverride = materialOverride, .pipeline = pipeline,
+						 .shadowCaster = shadowCaster });
+}
+
+void foto::Application::setLights(std::span<const PointLight> newLights) {
+	lights.assign(newLights.begin(), newLights.end());
+}
+
+void foto::Application::setAmbient(const Vec3& irradiance) {
+	ambient = irradiance;
 }
 
 void foto::Application::drawFullscreen(Pipeline* pipeline, u32 material) {
@@ -201,6 +237,26 @@ void foto::Application::setExposure(f32 ev) {
 
 void foto::Application::setWhiteBalance(const Vec3& gains) {
 	whiteBalance = gains;
+}
+
+bool foto::Application::getCursorRay(Vec3& origin, Vec3& direction) {
+	if (imgui->wantsMouse()) return false;
+
+	VkRect2D rect = render->getSceneRect();
+	enginemath::Vec2 cursor = window->getFramebufferCursorPos();
+	f32 localX = cursor.x - static_cast<f32>(rect.offset.x);
+	f32 localY = cursor.y - static_cast<f32>(rect.offset.y);
+	if (localX < 0.0f || localY < 0.0f || localX > rect.extent.width || localY > rect.extent.height) return false;
+
+	f32 ndcX = localX / rect.extent.width * 2.0f - 1.0f;
+	f32 ndcY = localY / rect.extent.height * 2.0f - 1.0f;
+	origin = camera.position;
+	direction = camera.rayDirection(ndcX, ndcY, getAspectRatio());
+	return true;
+}
+
+bool foto::Application::isUiUsingMouse() {
+	return imgui->wantsMouse();
 }
 
 void foto::Application::screenshot(const std::string& filePath) {
