@@ -26,9 +26,9 @@ namespace foto {
 		// Scene pipelines render into this; presentPipeline tonemaps it to the swapchain
 		static constexpr VkFormat HDR_FORMAT = VK_FORMAT_R16G16B16A16_SFLOAT;
 
-		// pathTracePipeline: nullptr when the GPU can't ray trace
+		// pathTracePipeline / causticsPipeline / denoisePipeline: nullptr when the GPU can't ray trace
 		Render(Device& device, Swapchain& swapchain, Pipeline& pipeline, Pipeline& presentPipeline, Pipeline& shadowPipeline,
-			   Pipeline* pathTracePipeline);
+			   Pipeline* pathTracePipeline, Pipeline* causticsPipeline, Pipeline* denoisePipeline);
 		~Render();
 		Render(const Render& other) = delete;
 		Render& operator=(const Render& other) = delete;
@@ -50,6 +50,11 @@ namespace foto {
 		// Saves the next presented frame (including the overlay) as a PNG
 		void requestScreenshot(const std::string& filePath) { screenshotPath = filePath; };
 
+		// Renders the scene offscreen at `extent` (with `samples` path traced samples when path tracing is on), then writes the
+		// tonemapped image as a PNG and the linear one as a Radiance .hdr. Blocks until done, false if a file can't be written
+		bool exportImage(std::span<const DrawItem> items, FrameUbo frameUbo, VkExtent2D extent, u32 samples,
+						 const std::string& pngPath, const std::string& hdrPath);
+
 		// Letterboxes the scene pass to this width/height ratio (0 = fill the window)
 		void setViewportAspect(f32 aspect) { viewportAspect = aspect; };
 		VkRect2D getSceneRect();
@@ -62,6 +67,7 @@ namespace foto {
 		// Samples accumulate over frames and restart whenever the casters, lights or camera change
 		void setPathTracing(bool enabled, u32 photoTexture);
 		bool isPathTracing() { return pathTracing; };
+		void setDenoise(bool enabled) { denoise = enabled; };
 		bool supportsPathTracing() { return pathTracePipeline != nullptr; };
 		u32 getPathTraceSamples() { return traceSamples; };
 		u32 getPathTracePhoto() { return tracePhotoTexture; };
@@ -74,6 +80,8 @@ namespace foto {
 		Pipeline& presentPipeline;
 		Pipeline& shadowPipeline;
 		Pipeline* pathTracePipeline = nullptr;
+		Pipeline* causticsPipeline = nullptr;
+		Pipeline* denoisePipeline = nullptr;
 
 		VkDevice _device = VK_NULL_HANDLE;
 		VkCommandPool _commandPool = VK_NULL_HANDLE;
@@ -103,6 +111,7 @@ namespace foto {
 		u32 hdrTextureSlot = 0;
 		u32 tonemapMaterial = 0;
 		f32 viewportAspect = 0.0f;
+		std::optional<VkExtent2D> exportExtent; // set while exportImage() renders offscreen
 
 		std::unique_ptr<Image> staticShadowAtlas;
 		std::unique_ptr<Image> dynamicShadowAtlas;
@@ -118,6 +127,11 @@ namespace foto {
 		std::vector<std::unique_ptr<TopLevelAccelerationStructure>> topLevels;
 		std::vector<std::unique_ptr<Buffer>> geometryBuffers;
 		std::unique_ptr<Image> accumulationImage;
+		std::unique_ptr<Image> causticImage; // R32_UINT, 3 columns (rgb) per framebuffer pixel
+		std::unique_ptr<Image> illuminationImage;
+		std::unique_ptr<Image> guideImage;
+		std::unique_ptr<Image> denoiseImages[2];
+		bool denoise = true;
 
 		std::vector<VkSemaphore> imageAvailableSem;
 		std::vector<VkSemaphore> renderFinishedSem;
@@ -133,7 +147,8 @@ namespace foto {
 		void recordRasterScene(VkCommandBuffer commandBuffer, std::span<const DrawItem> items, const FrameUbo& frameUbo, VkExtent2D extent);
 		void recordPathTrace(VkCommandBuffer commandBuffer, std::span<const DrawItem> items, const FrameUbo& frameUbo, VkExtent2D extent);
 		void updateTraceSamples(std::span<const DrawItem> items, const FrameUbo& frameUbo);
-		void createTraceImages();
+		void createTraceImages(VkExtent2D extent);
+		void writeTraceSets();
 		void recordShadowPass(VkCommandBuffer commandBuffer, Image& atlas, ShadowCaster group, std::span<const DrawItem> items, const FrameUbo& frameUbo);
 		void setSceneViewport(VkCommandBuffer commandBuffer, VkExtent2D extent);
 		void writeTextureSlot(u32 slot, Image& texture, Sampler& sampler);

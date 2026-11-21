@@ -72,8 +72,11 @@ namespace foto {
 		f32 metallic = 0.0f;
 		u32 baseColorTexture = DEFAULT_TEXTURE;
 		f32 specular = 1.0f; // KHR_materials_specular factor: 0 = no gloss at all (a purely diffuse surface)
+		f32 transmission = 0.0f; // KHR_materials_transmission: 1 = clear glass (path tracing only)
+		f32 ior = 1.5f;          // KHR_materials_ior
+		f32 _pad[2] = {};
 	};
-	static_assert(sizeof(Material) == 48);
+	static_assert(sizeof(Material) == 64);
 
 	// One mesh drawn with one transform. Every submesh uses its own material unless overridden.
 	// pipeline = nullptr uses the default scene pipeline. mesh = nullptr draws a fullscreen triangle (needs a pipeline).
@@ -106,17 +109,36 @@ namespace foto {
 	};
 	static_assert(sizeof(GpuGeometry) == 32);
 
+	inline constexpr u32 CAUSTIC_PHOTONS = 65536; // per frame
+
 	struct TracePush {
 		u32 sampleIndex;
 		u32 photoTexture;
 		u32 trace; // 0 = only show the accumulated result
-		u32 _pad = 0;
+		u32 photonCount = CAUSTIC_PHOTONS;
+		enginemath::Vec4 objectSphere; // bounding sphere of the dynamic casters, w = radius (0 = none)
 	};
+	static_assert(sizeof(TracePush) == 32);
 
 	inline constexpr VkPushConstantRange TRACE_PUSH_RANGE = {
 		.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
 		.offset = 0,
 		.size = sizeof(TracePush)
+	};
+
+	inline constexpr u32 DENOISE_PASSES = 4;
+
+	struct DenoisePush {
+		u32 pass;
+		u32 passCount = DENOISE_PASSES;
+		u32 samples;
+		u32 _pad = 0;
+	};
+
+	inline constexpr VkPushConstantRange DENOISE_PUSH_RANGE = {
+		.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+		.offset = 0,
+		.size = sizeof(DenoisePush)
 	};
 
 	enum class LightType : u32 { Point, Directional };

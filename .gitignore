@@ -28,3 +28,6 @@ data/*
 # large image data (regenerate the sample with tools/make_test_scene.py)
 *.hdr
 !data/example/gbuffer/*.hdr
+
+# exported renders
+renders/

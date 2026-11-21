@@ -73,6 +73,10 @@ namespace foto {
 		void setAmbient(const enginemath::Vec3& irradiance);
 		void screenshot(const std::string& filePath);
 
+		// Renders this frame's draws offscreen at width x height (path traced with `samples` samples when path tracing is on)
+		// and saves the tonemapped PNG and the linear .hdr. Call at the end of onUpdate. Blocks until done
+		bool exportImage(const std::string& pngPath, const std::string& hdrPath, u32 width, u32 height, u32 samples);
+
 		// Ray traced compositing of the dynamic casters into the photo (photoMaterial's texture), with static casters as
 		// the photo's surfaces. Replaces the raster scene: draws without a shadow caster are skipped while it's on
 		// The photo's camera, applied to the path traced object: grain in sqrt(linear) units, blur sigma in framebuffer pixels
@@ -83,6 +87,8 @@ namespace foto {
 		bool supportsPathTracing();
 		void setPathTracing(bool enabled, u32 photoMaterial);
 		bool isPathTracing();
+		// Edge-aware filtering of the path traced noise, strongest right after a change (on by default)
+		void setDenoise(bool enabled);
 		u32 getPathTraceSamples();
 
 		void setExposure(f32 ev);
@@ -105,6 +111,8 @@ namespace foto {
 		std::unique_ptr<Pipeline> presentPipeline;
 		std::unique_ptr<Pipeline> shadowPipeline;
 		std::unique_ptr<Pipeline> pathTracePipeline;
+		std::unique_ptr<Pipeline> causticsPipeline;
+		std::unique_ptr<Pipeline> denoisePipeline;
 		std::unique_ptr<Render> render;
 		std::unique_ptr<ImGuiLayer> imgui;
 
@@ -127,5 +135,6 @@ namespace foto {
 		enginemath::Vec3 whiteBalance = enginemath::Vec3(1.0f, 1.0f, 1.0f);
 
 		u32 addTexture(std::unique_ptr<Image> image);
+		FrameUbo buildFrameUbo();
 	};
 } // namespace foto

@@ -34,6 +34,7 @@ private:
 	foto::u32 photoMaterial = foto::DEFAULT_MATERIAL;
 	foto::u32 overlayMaterial = foto::DEFAULT_MATERIAL;
 	foto::u32 lightMarkerMaterial = foto::DEFAULT_MATERIAL;
+	foto::u32 selectedMarkerMaterial = foto::DEFAULT_MATERIAL;
 	foto::Mesh* lightMarker = nullptr;
 	std::vector<foto::Mesh*> proxyMeshes;
 	std::vector<foto::u32> proxyAlbedoMaterials;
@@ -60,10 +61,21 @@ private:
 	enginemath::Vec3 shadowCenter;
 	foto::f32 shadowRadius = 5.0f;
 
+	bool exportRequested = false;
+
+	std::vector<recast::SceneLight> detectedLights; // what "reset lights" goes back to
+	recast::Vec3f detectedAmbient = { 0.0f, 0.0f, 0.0f };
+	int selectedLight = -1;
+	bool draggingLight = false;
+	bool lightMouseWasDown = false;
+	enginemath::Vec3 lightPlanePoint;
+	enginemath::Vec3 lightPlaneNormal;
+
 	bool showProxies = false;
 	bool showLights = false;
 	bool showOriginal = false;
 	bool pathTrace = true;
+	bool denoise = true;
 
 	void loadScene();
 	void saveScene();
@@ -72,7 +84,12 @@ private:
 	void detectLighting();
 	void finishLightingDetection();
 	void updateObjectInteraction();
+	bool updateLightEditing();
+	void addLight();
+	void drawLightEditor();
+	enginemath::Vec3 markerPosition(const recast::SceneLight& light) const;
 	recast::RayHit supportUnderCursor(const enginemath::Vec3& origin, const enginemath::Vec3& direction);
 	void drawScene();
+	void exportRender();
 	enginemath::Mat4 objectTransform() const;
 };

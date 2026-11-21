@@ -29,6 +29,10 @@ struct Material {
 	float metallic;
 	uint baseColorTexture;
 	float specular;
+	float transmission;
+	float ior;
+	float pad0;
+	float pad1;
 };
 
 layout(std430, set = 0, binding = 1) readonly buffer Materials {

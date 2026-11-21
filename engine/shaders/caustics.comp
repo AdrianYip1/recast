@@ -1,0 +1,87 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_ray_query : require
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_buffer_reference_uvec2 : require
+#extension GL_EXT_nonuniform_qualifier : require
+
+#define CUSTOM_PUSH
+#include "common.glsl"
+#include "trace.glsl"
+
+// Caustic photons: light that reaches the room only after refracting through glass or reflecting off a mirror-like
+// object. Light that reaches the room directly is already in the direct lighting, so those photons are dropped.
+
+layout(local_size_x = 64) in;
+
+void deposit(Hit hit, vec3 flux) {
+	vec4 clip = frame.proj * frame.view * vec4(hit.position, 1.0);
+	if (clip.w <= 0.0) return;
+	vec2 viewportUV = clip.xy / clip.w * 0.5 + 0.5;
+	if (any(lessThan(viewportUV, vec2(0.0))) || any(greaterThanEqual(viewportUV, vec2(1.0)))) return;
+
+	vec3 toPoint = hit.position - frame.cameraPos.xyz;
+	float distance = length(toPoint);
+	if (occluded(frame.cameraPos.xyz, toPoint / distance, distance - 1e-2, MASK_STATIC)) return;
+
+	ivec2 pixel = ivec2(frame.viewport.xy + viewportUV * frame.viewport.zw);
+	uvec3 units = uvec3(round(flux / photonUnit()));
+	for (int c = 0; c < 3; c++) {
+		if (units[c] > 0u) imageAtomicAdd(caustics, ivec2(pixel.x * 3 + c, pixel.y), units[c]);
+	}
+}
+
+void main() {
+	uint id = gl_GlobalInvocationID.x;
+	uint lightCount = frame.lightInfo.x;
+	if (id >= push.photonCount || push.trace == 0u || push.objectSphere.w <= 0.0 || lightCount == 0u) return;
+
+	uint state = hash(id ^ hash(push.sampleIndex * 7919u + 17u));
+	Light light = frame.lights[id % lightCount];
+	vec3 center = push.objectSphere.xyz;
+	float radius = push.objectSphere.w;
+	float perLight = float(push.photonCount) / float(lightCount);
+
+	vec3 origin, direction, flux;
+	if (light.intensity.w > 0.5) {
+		direction = sampleCone(light.direction.xyz, light.direction.w, state);
+		float r = radius * sqrt(random(state));
+		float phi = 2.0 * PI * random(state);
+		origin = center + basis(direction) * vec3(r * cos(phi), r * sin(phi), 0.0) - direction * (radius * 2.0);
+		flux = light.intensity.rgb * PI * radius * radius / perLight;
+	}
+	else {
+		origin = light.position.xyz + sampleSphere(state) * light.direction.w;
+		vec3 toCenter = center - origin;
+		float distance = length(toCenter);
+		if (distance <= radius) return;
+		float sinMax = radius / distance;
+		float coneAngle = asin(sinMax);
+		direction = sampleCone(toCenter / distance, coneAngle, state);
+		flux = light.intensity.rgb * (2.0 * PI * (1.0 - cos(coneAngle))) / perLight;
+	}
+
+	bool specularPath = false;
+	for (int bounce = 0; bounce < 8; bounce++) {
+		Hit hit = traceClosest(origin, direction, MASK_ALL);
+		if (!hit.found) return;
+		if (!hit.dynamic) {
+			if (specularPath && dot(hit.normal, -direction) > 0.0) deposit(hit, flux);
+			return;
+		}
+
+		Material material = materials[hit.material];
+		if (material.transmission > 0.0 && random(state) < material.transmission) {
+			origin = glassBounce(hit, direction, flux, state);
+		}
+		else if (mirrorLike(material)) {
+			flux *= albedoOf(hit);
+			direction = reflect(direction, hit.normal);
+			origin = hit.position + hit.normal * SURFACE_OFFSET;
+		}
+		else {
+			return;
+		}
+		specularPath = true;
+	}
+}

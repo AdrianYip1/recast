@@ -28,19 +28,25 @@ static foto::DescriptorLayoutBuilder sceneSetLayout(foto::Device& device) {
 		.addBinding(2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, stages, textures.capacity, textureFlags);
 }
 
-static std::unique_ptr<foto::Pipeline> createPathTracePipeline(foto::Device& device) {
+static std::unique_ptr<foto::Pipeline> createTracePipeline(foto::Device& device, const char* shaderFilePath,
+															 VkPushConstantRange pushConstants = foto::TRACE_PUSH_RANGE) {
 	if (!device.supportsRayTracing()) return nullptr;
 	return std::make_unique<foto::Pipeline>(device, foto::ComputePipelineConfig{
-		.shaderFilePath = "shaders/pathtrace.comp.spv",
+		.shaderFilePath = shaderFilePath,
 		.descriptorSetLayouts = {
 			sceneSetLayout(device),
 			foto::DescriptorLayoutBuilder()
 				.addBinding(0, VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, VK_SHADER_STAGE_COMPUTE_BIT)
 				.addBinding(1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_SHADER_STAGE_COMPUTE_BIT)
 				.addBinding(2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_SHADER_STAGE_COMPUTE_BIT)
-				.addBinding(3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT),
+				.addBinding(3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT)
+				.addBinding(4, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_SHADER_STAGE_COMPUTE_BIT)
+				.addBinding(5, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_SHADER_STAGE_COMPUTE_BIT)
+				.addBinding(6, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_SHADER_STAGE_COMPUTE_BIT)
+				.addBinding(7, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_SHADER_STAGE_COMPUTE_BIT)
+				.addBinding(8, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_SHADER_STAGE_COMPUTE_BIT),
 		},
-		.pushConstants = { foto::TRACE_PUSH_RANGE },
+		.pushConstants = { pushConstants },
 	});
 }
 
@@ -77,8 +83,11 @@ foto::Application::Application(const ApplicationConfig& config) :
 				.depthBiasConstant = 1.25f,
 				.depthBiasSlope = 1.75f,
 			})),
-	pathTracePipeline(createPathTracePipeline(*device)),
-	render(std::make_unique<Render>(*device, *swapchain, *pipeline, *presentPipeline, *shadowPipeline, pathTracePipeline.get())),
+	pathTracePipeline(createTracePipeline(*device, "shaders/pathtrace.comp.spv")),
+	causticsPipeline(createTracePipeline(*device, "shaders/caustics.comp.spv")),
+	denoisePipeline(createTracePipeline(*device, "shaders/denoise.comp.spv", DENOISE_PUSH_RANGE)),
+	render(std::make_unique<Render>(*device, *swapchain, *pipeline, *presentPipeline, *shadowPipeline, pathTracePipeline.get(),
+									causticsPipeline.get(), denoisePipeline.get())),
 	imgui(std::make_unique<ImGuiLayer>(*window, *device, *swapchain, VK_FORMAT_UNDEFINED)),
 	sampler(std::make_unique<Sampler>(*device))
 {
@@ -108,35 +117,7 @@ void foto::Application::run() {
 		onImGui();
 		imgui->endFrame();
 
-		FrameUbo frameUbo = {
-			.view = camera.getView(),
-			.proj = camera.getProjection(getAspectRatio()),
-			.cameraPos = { camera.position.x, camera.position.y, camera.position.z, 1.0f },
-			.lightDir = { lightDirection.x, lightDirection.y, lightDirection.z, 0.0f },
-			.exposure = { std::exp2(exposureEV), cameraGrain, cameraBlur, render->isPathTracing() ? 1.0f : 0.0f },
-			.whiteBalance = { whiteBalance.x, whiteBalance.y, whiteBalance.z, static_cast<f32>(render->getPathTracePhoto()) },
-			.ambient = { ambient.x, ambient.y, ambient.z, 0.0f },
-		};
-
-		VkRect2D sceneRect = render->getSceneRect();
-		frameUbo.viewport = { static_cast<f32>(sceneRect.offset.x), static_cast<f32>(sceneRect.offset.y),
-							  static_cast<f32>(sceneRect.extent.width), static_cast<f32>(sceneRect.extent.height) };
-
-		u32 lightCount = static_cast<u32>(std::min<size>(lights.size(), MAX_LIGHTS));
-		frameUbo.lightInfo[0] = lightCount;
-		frameUbo.lightInfo[1] = render->getStaticShadowAtlas();
-		frameUbo.lightInfo[2] = render->getDynamicShadowAtlas();
-		frameUbo.lightInfo[3] = SHADOW_FACE_RESOLUTION;
-		for (u32 i = 0; i < lightCount; i++) {
-			const Light& light = lights[i];
-			bool directional = light.type == LightType::Directional;
-			Vec3 direction = light.direction.normalized();
-			frameUbo.lights[i].position = { light.position.x, light.position.y, light.position.z, light.castsShadows ? 1.0f : 0.0f };
-			frameUbo.lights[i].intensity = { light.intensity.x, light.intensity.y, light.intensity.z, directional ? 1.0f : 0.0f };
-			frameUbo.lights[i].direction = { direction.x, direction.y, direction.z, light.size };
-			if (directional) frameUbo.lights[i].faceViewProj[0] = shadowDirectionalMatrix(direction, shadowCenter, shadowRadius);
-			else shadowFaceMatrices(light.position, frameUbo.lights[i].faceViewProj);
-		}
+		FrameUbo frameUbo = buildFrameUbo();
 
 		bool outOfDate = render->drawFrame(drawList, frameUbo, [this](VkCommandBuffer commandBuffer) {
 			imgui->record(commandBuffer);
@@ -149,6 +130,43 @@ void foto::Application::run() {
 	}
 	vkDeviceWaitIdle(device->getDevice());
 	onShutdown();
+}
+
+foto::FrameUbo foto::Application::buildFrameUbo() {
+	FrameUbo frameUbo = {
+		.view = camera.getView(),
+		.proj = camera.getProjection(getAspectRatio()),
+		.cameraPos = { camera.position.x, camera.position.y, camera.position.z, 1.0f },
+		.lightDir = { lightDirection.x, lightDirection.y, lightDirection.z, 0.0f },
+		.exposure = { std::exp2(exposureEV), cameraGrain, cameraBlur, render->isPathTracing() ? 1.0f : 0.0f },
+		.whiteBalance = { whiteBalance.x, whiteBalance.y, whiteBalance.z, static_cast<f32>(render->getPathTracePhoto()) },
+		.ambient = { ambient.x, ambient.y, ambient.z, 0.0f },
+	};
+
+	VkRect2D sceneRect = render->getSceneRect();
+	frameUbo.viewport = { static_cast<f32>(sceneRect.offset.x), static_cast<f32>(sceneRect.offset.y),
+						  static_cast<f32>(sceneRect.extent.width), static_cast<f32>(sceneRect.extent.height) };
+
+	u32 lightCount = static_cast<u32>(std::min<size>(lights.size(), MAX_LIGHTS));
+	frameUbo.lightInfo[0] = lightCount;
+	frameUbo.lightInfo[1] = render->getStaticShadowAtlas();
+	frameUbo.lightInfo[2] = render->getDynamicShadowAtlas();
+	frameUbo.lightInfo[3] = SHADOW_FACE_RESOLUTION;
+	for (u32 i = 0; i < lightCount; i++) {
+		const Light& light = lights[i];
+		bool directional = light.type == LightType::Directional;
+		Vec3 direction = light.direction.normalized();
+		frameUbo.lights[i].position = { light.position.x, light.position.y, light.position.z, light.castsShadows ? 1.0f : 0.0f };
+		frameUbo.lights[i].intensity = { light.intensity.x, light.intensity.y, light.intensity.z, directional ? 1.0f : 0.0f };
+		frameUbo.lights[i].direction = { direction.x, direction.y, direction.z, light.size };
+		if (directional) frameUbo.lights[i].faceViewProj[0] = shadowDirectionalMatrix(direction, shadowCenter, shadowRadius);
+		else shadowFaceMatrices(light.position, frameUbo.lights[i].faceViewProj);
+	}
+	return frameUbo;
+}
+
+bool foto::Application::exportImage(const std::string& pngPath, const std::string& hdrPath, u32 width, u32 height, u32 samples) {
+	return render->exportImage(drawList, buildFrameUbo(), { width, height }, samples, pngPath, hdrPath);
 }
 
 foto::Mesh* foto::Application::createMesh(std::span<const Vertex> vertices, std::span<const u32> indices, std::vector<Submesh> submeshes) {
@@ -242,6 +260,10 @@ bool foto::Application::supportsPathTracing() {
 
 void foto::Application::setPathTracing(bool enabled, u32 photoMaterial) {
 	render->setPathTracing(enabled, render->getMaterial(photoMaterial).baseColorTexture);
+}
+
+void foto::Application::setDenoise(bool enabled) {
+	render->setDenoise(enabled);
 }
 
 bool foto::Application::isPathTracing() {
