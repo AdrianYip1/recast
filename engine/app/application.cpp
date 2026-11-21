@@ -12,6 +12,7 @@
 #include "../rhi_vulkan/vkImage.hpp"
 #include "../rhi_vulkan/vkDescriptorHelper.hpp"
 #include "../assets/gltfLoader.hpp"
+#include "../ui/imguiLayer.hpp"
 
 using enginemath::Vec3;
 using enginemath::Mat4;
@@ -35,6 +36,7 @@ foto::Application::Application(const ApplicationConfig& config) :
 				.pushConstants = { DRAW_PUSH_RANGE },
 			})),
 	render(std::make_unique<Render>(*device, *swapchain, *pipeline)),
+	imgui(std::make_unique<ImGuiLayer>(*window, *device, *swapchain, Render::DEPTH_FORMAT)),
 	sampler(std::make_unique<Sampler>(*device))
 {
 
@@ -58,7 +60,10 @@ void foto::Application::run() {
 		lastFrame = now;
 
 		drawList.clear();
+		imgui->beginFrame();
 		onUpdate(deltaTime);
+		onImGui();
+		imgui->endFrame();
 
 		FrameUbo frameUbo = {
 			.view = camera.getView(),
@@ -67,7 +72,9 @@ void foto::Application::run() {
 			.lightDir = { lightDirection.x, lightDirection.y, lightDirection.z, 0.0f }
 		};
 
-		bool outOfDate = render->drawFrame(drawList, frameUbo);
+		bool outOfDate = render->drawFrame(drawList, frameUbo, [this](VkCommandBuffer commandBuffer) {
+			imgui->record(commandBuffer);
+		});
 		if (outOfDate || window->getFramebufferResized()) {
 			window->setFramebufferResized(false);
 			swapchain->recreate();
@@ -144,7 +151,7 @@ void foto::Application::setLightDirection(const Vec3& direction) {
 }
 
 void foto::Application::flyCamera(f32 deltaTime, f32 speed, f32 sensitivity) {
-	bool looking = window->isMouseButtonDown(GLFW_MOUSE_BUTTON_RIGHT);
+	bool looking = window->isMouseButtonDown(GLFW_MOUSE_BUTTON_RIGHT) && (window->isCursorCaptured() || !imgui->wantsMouse());
 	window->setCursorCaptured(looking);
 
 	if (looking) {
@@ -153,6 +160,8 @@ void foto::Application::flyCamera(f32 deltaTime, f32 speed, f32 sensitivity) {
 		camera.pitch -= delta.y * sensitivity;
 		camera.clampPitch();
 	}
+
+	if (imgui->wantsKeyboard()) return;
 
 	Vec3 move;
 	if (window->isKeyDown(GLFW_KEY_W)) move += camera.getForward();

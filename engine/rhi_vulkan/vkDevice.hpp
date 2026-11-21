@@ -28,10 +28,12 @@ namespace foto {
 		Device(const Device& other) = delete;
 		Device& operator=(const Device& other) = delete;
 
+		VkInstance getInstance() { return instance; };
 		VkSurfaceKHR getSurface() { return surface; };
 		VkPhysicalDevice getPhysicalDevice() { return physicalDevice; };
 		VkDevice getDevice() { return logicalDevice; };
 
+		u32 getGraphicsQueueFamily() { return queueInfos.graphicsQueueIdx.value(); };
 		VkQueue getGraphicsQ() { return graphicsQueue; };
 		VkQueue getPresentQ() { return presentQueue; };
 		VkQueue getComputeQ() { return computeQueue; };

@@ -78,7 +78,8 @@ void foto::Render::updateMaterial(u32 index, const Material& material) {
 
 // CPU -> recording command buffer
 // GPU -> submitting/executing command buffer
-bool foto::Render::drawFrame(std::span<const DrawItem> items, const FrameUbo& frameUbo) {
+bool foto::Render::drawFrame(std::span<const DrawItem> items, const FrameUbo& frameUbo,
+							 const std::function<void(VkCommandBuffer)>& overlay) {
 	vkWaitForFences(device.getDevice(), 1, &inFlightFence[currentFrame], VK_TRUE, UINT64_MAX);
 
 	u32 imageIdx;
@@ -102,7 +103,7 @@ bool foto::Render::drawFrame(std::span<const DrawItem> items, const FrameUbo& fr
 
 	VkCommandBuffer commandBuffer = commandBuffers[currentFrame];
 	vkResetCommandBuffer(commandBuffer, 0);
-	recordCommandBuffer(commandBuffer, imageIdx, items);
+	recordCommandBuffer(commandBuffer, imageIdx, items, overlay);
 
 	// Submit info
 	VkSemaphore waitSemaphore[] = { imageAvailableSem[currentFrame] };
@@ -205,7 +206,8 @@ void foto::Render::createRenderFinishedSems(VkDevice device, size swapchainImage
 	}
 }
 
-void foto::Render::recordCommandBuffer(VkCommandBuffer commandBuffer, u32 imageIdx, std::span<const DrawItem> items) {
+void foto::Render::recordCommandBuffer(VkCommandBuffer commandBuffer, u32 imageIdx, std::span<const DrawItem> items,
+									   const std::function<void(VkCommandBuffer)>& overlay) {
 	VkCommandBufferBeginInfo beginInfo = {
 		.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
 	};
@@ -337,6 +339,8 @@ void foto::Render::recordCommandBuffer(VkCommandBuffer commandBuffer, u32 imageI
 			vkCmdDrawIndexed(commandBuffer, submesh.indexCount, 1, submesh.firstIndex, 0, 0);
 		}
 	}
+
+	if (overlay) overlay(commandBuffer);
 
 	vkCmdEndRendering(commandBuffer);
 

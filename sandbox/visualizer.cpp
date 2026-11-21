@@ -1,5 +1,7 @@
 #include "visualizer.hpp"
 
+#include <imgui.h>
+
 using enginemath::Vec3;
 using enginemath::Mat4;
 
@@ -41,12 +43,27 @@ void Visualizer::onInit() {
 }
 
 void Visualizer::onUpdate(foto::f32 deltaTime) {
-	time += deltaTime;
+	cubeAngle += spinSpeed * deltaTime;
 	flyCamera(deltaTime);
 
 	draw(ground, Mat4::translationM(0.0f, -0.5f, 0.0f), groundMaterial);
 	draw(quad, Mat4::translationM(0.9f, 0.1f, -0.6f), checkerMaterial);
-	draw(cube, Mat4::translationM(-0.3f, 0.0f, 0.2f) * Mat4::rotateY(time * 0.8f));
+	draw(cube, Mat4::translationM(-0.3f, 0.0f, 0.2f) * Mat4::rotateY(cubeAngle));
+}
+
+void Visualizer::onImGui() {
+	ImGui::SetNextWindowPos({ 12.0f, 12.0f }, ImGuiCond_FirstUseEver);
+	ImGui::Begin("foto");
+	ImGui::Text("%.1f fps", ImGui::GetIO().Framerate);
+	ImGui::SliderFloat("cube spin", &spinSpeed, 0.0f, 3.0f);
+
+	foto::Material groundTint = getMaterial(groundMaterial);
+	if (ImGui::ColorEdit3("ground tint", &groundTint.baseColor.x)) {
+		updateMaterial(groundMaterial, groundTint);
+	}
+
+	ImGui::TextDisabled("hold right mouse + WASD / QE to fly");
+	ImGui::End();
 }
 
 void Visualizer::onShutdown() {

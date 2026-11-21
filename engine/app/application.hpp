@@ -15,6 +15,7 @@ namespace foto {
 	class Render;
 	class Image;
 	class Sampler;
+	class ImGuiLayer;
 
 	struct ApplicationConfig {
 		const char* title = "foto";
@@ -35,6 +36,7 @@ namespace foto {
 		virtual void onInit() {}
 		virtual void onUpdate(f32 deltaTime) {}
 		virtual void onShutdown() {}
+		virtual void onImGui() {}
 
 		// Resources live until the application shuts down
 		Mesh* createMesh(std::span<const Vertex> vertices, std::span<const u32> indices, std::vector<Submesh> submeshes = {});
@@ -62,6 +64,7 @@ namespace foto {
 		std::unique_ptr<Swapchain> swapchain;
 		std::unique_ptr<Pipeline> pipeline;
 		std::unique_ptr<Render> render;
+		std::unique_ptr<ImGuiLayer> imgui;
 
 		std::unique_ptr<Sampler> sampler;
 		std::vector<std::unique_ptr<Image>> textures;
