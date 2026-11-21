@@ -83,13 +83,6 @@ target_link_libraries(foto_engine
     PUBLIC enginemath::enginemath imgui
     PRIVATE glfw Vulkan::Vulkan stb)
 
-# Textures: copied next to the shaders so they load with the same relative paths
-add_custom_target(assets
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-        ${CMAKE_CURRENT_SOURCE_DIR}/assets/textures ${CMAKE_BINARY_DIR}/textures
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-        ${CMAKE_CURRENT_SOURCE_DIR}/assets/models ${CMAKE_BINARY_DIR}/models
-    COMMENT "copying assets")
 
 add_executable(foto sandbox/main.cpp 
 "sandbox/visualizer.cpp"
@@ -103,4 +96,4 @@ target_compile_definitions(foto PRIVATE RECAST_SAMPLE_SCENE="${CMAKE_CURRENT_SOU
 
 target_link_libraries(foto PRIVATE foto_engine glfw Vulkan::Vulkan stb)
 
-add_dependencies(foto shaders assets)
+add_dependencies(foto shaders)

@@ -58,11 +58,6 @@ namespace recast {
 	LightingFit autoFitLighting(const SceneFile& scene, const LinearImage& photo, const std::vector<LightingSample>& samples,
 								std::vector<FitLight>& lights, int maxLights = 3);
 
-	// Photo brightness divided by the lighting model's prediction on the supporting surface around `center`
-	// (a disk of `radius` at center.y), per channel. 1 = the model already matches the photo there.
-	// Returns 1 if too little of the surface is visible
-	enginemath::Vec3 localLightingCalibration(const SceneFile& scene, const LinearImage& photo, const enginemath::Vec3& center, float radius);
-
 	// Scene lights (point and directional) in fitting form
 	std::vector<FitLight> fitLightsFromScene(const SceneFile& scene);
 } // namespace recast
