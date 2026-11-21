@@ -57,6 +57,7 @@ void Visualizer::onInit() {
 	recast::MeshData markerData = recast::buildProxyMesh(markerBox);
 	lightMarker = createMesh(markerData.vertices, markerData.indices);
 	lightMarkerMaterial = createMaterial({ .baseColor = { 0.0f, 0.0f, 0.0f, 1.0f }, .emissive = { 4.0f, 3.6f, 1.2f, 0.0f } });
+	selectedMarkerMaterial = createMaterial({ .baseColor = { 0.0f, 0.0f, 0.0f, 1.0f }, .emissive = { 0.8f, 3.0f, 4.0f, 0.0f } });
 
 	if (!scenePath.empty()) {
 		loadScene();
@@ -256,7 +257,7 @@ void Visualizer::onUpdate(foto::f32 deltaTime) {
 	applySceneCamera();
 	finishLightingDetection();
 	applySceneLighting();
-	updateObjectInteraction();
+	if (!(showLights && updateLightEditing())) updateObjectInteraction();
 	setPathTracing(pathTrace && !showOriginal && !showProxies && !showLights && supportsPathTracing(), photoMaterial);
 	float pixelsPerPhotoPixel = getViewportSize().x / std::max(static_cast<float>(scene.image_size[0]), 1.0f);
 	setCameraMatch(cameraMatch.grain, cameraMatch.blur * pixelsPerPhotoPixel);
@@ -275,6 +276,63 @@ recast::RayHit Visualizer::supportUnderCursor(const Vec3& origin, const Vec3& di
 	recast::RayHit hit = recast::raycastProxies(scene.proxies, origin, direction);
 	if (!hit.valid() || hit.normal.y >= supportNormalY) return hit;
 	return recast::raycastProxies(scene.proxies, hit.point + hit.normal * 0.02f, Vec3(0.0f, -1.0f, 0.0f), supportNormalY);
+}
+
+// Light markers sit at point lights, and 2 m back along a directional light from the middle of the room
+Vec3 Visualizer::markerPosition(const recast::SceneLight& light) const {
+	if (light.type == "directional") return shadowCenter - Vec3(light.direction[0], light.direction[1], light.direction[2]).normalized() * 2.0f;
+	return Vec3(light.position[0], light.position[1], light.position[2]);
+}
+
+// Click a light marker to select it, drag to move it in the plane facing the camera. True while a light is being dragged
+bool Visualizer::updateLightEditing() {
+	bool leftDown = getWindow().isMouseButtonDown(GLFW_MOUSE_BUTTON_LEFT);
+	bool pressed = leftDown && !lightMouseWasDown;
+	lightMouseWasDown = leftDown;
+	Vec3 origin, direction;
+	bool haveRay = getCursorRay(origin, direction);
+
+	if (pressed && haveRay) {
+		constexpr float pickRadius = 0.12f;
+		float closest = 1e30f;
+		int picked = -1;
+		for (size_t i = 0; i < scene.lights.size(); i++) {
+			if (scene.lights[i].type != "point" && scene.lights[i].type != "directional") continue;
+			Vec3 toMarker = markerPosition(scene.lights[i]) - origin;
+			float t = toMarker.dot(direction);
+			if (t <= 0.0f || toMarker.dot(toMarker) - t * t > pickRadius * pickRadius || t >= closest) continue;
+			closest = t;
+			picked = static_cast<int>(i);
+		}
+		if (picked >= 0) {
+			selectedLight = picked;
+			draggingLight = true;
+			lightPlanePoint = markerPosition(scene.lights[picked]);
+			lightPlaneNormal = direction;
+		}
+	}
+	if (!leftDown) draggingLight = false;
+
+	if (draggingLight && haveRay && selectedLight >= 0 && selectedLight < static_cast<int>(scene.lights.size())) {
+		float facing = direction.dot(lightPlaneNormal);
+		float t = std::abs(facing) > 1e-4f ? (lightPlanePoint - origin).dot(lightPlaneNormal) / facing : -1.0f;
+		if (t > 0.0f) {
+			Vec3 at = origin + direction * t;
+			recast::SceneLight& light = scene.lights[selectedLight];
+			if (light.type == "directional") {
+				Vec3 toCenter = shadowCenter - at;
+				if (toCenter.dot(toCenter) > 1e-6f) {
+					toCenter.normalize();
+					light.direction = { toCenter.x, toCenter.y, toCenter.z };
+				}
+			}
+			else {
+				light.position = { at.x, at.y, at.z };
+			}
+			unsavedChanges = true;
+		}
+	}
+	return draggingLight;
 }
 
 void Visualizer::updateObjectInteraction() {
@@ -364,12 +422,13 @@ void Visualizer::drawScene() {
 	if (objectMesh && !showOriginal) draw(objectMesh, objectTransform(), foto::NO_MATERIAL_OVERRIDE, nullptr, foto::ShadowCaster::Dynamic);
 
 	if (showLights) {
-		for (const recast::SceneLight& light : scene.lights) {
-			Vec3 at;
-			if (light.type == "point") at = Vec3(light.position[0], light.position[1], light.position[2]);
-			else if (light.type == "directional") at = shadowCenter - Vec3(light.direction[0], light.direction[1], light.direction[2]).normalized() * 2.0f;
-			else continue;
-			draw(lightMarker, Mat4::translationM(at.x, at.y, at.z) * Mat4::scaleM(0.06f, 0.06f, 0.06f), lightMarkerMaterial);
+		for (size_t i = 0; i < scene.lights.size(); i++) {
+			const recast::SceneLight& light = scene.lights[i];
+			if (light.type != "point" && light.type != "directional") continue;
+			Vec3 at = markerPosition(light);
+			bool selected = static_cast<int>(i) == selectedLight;
+			float size = selected ? 0.08f : 0.06f;
+			draw(lightMarker, Mat4::translationM(at.x, at.y, at.z) * Mat4::scaleM(size, size, size), selected ? selectedMarkerMaterial : lightMarkerMaterial);
 		}
 	}
 
@@ -425,7 +484,8 @@ void Visualizer::onImGui() {
 		}
 		ImGui::Checkbox("original photo", &showOriginal);
 		ImGui::Checkbox("show room proxies", &showProxies);
-		ImGui::Checkbox("show detected lights", &showLights);
+		ImGui::Checkbox("show and edit lights", &showLights);
+		if (showLights) ImGui::TextDisabled("drag a light to move it");
 		ImGui::TextDisabled("%.0f fps, F12 saves a screenshot", ImGui::GetIO().Framerate);
 	}
 

@@ -34,6 +34,7 @@ private:
 	foto::u32 photoMaterial = foto::DEFAULT_MATERIAL;
 	foto::u32 overlayMaterial = foto::DEFAULT_MATERIAL;
 	foto::u32 lightMarkerMaterial = foto::DEFAULT_MATERIAL;
+	foto::u32 selectedMarkerMaterial = foto::DEFAULT_MATERIAL;
 	foto::Mesh* lightMarker = nullptr;
 	std::vector<foto::Mesh*> proxyMeshes;
 	std::vector<foto::u32> proxyAlbedoMaterials;
@@ -62,6 +63,12 @@ private:
 
 	bool exportRequested = false;
 
+	int selectedLight = -1;
+	bool draggingLight = false;
+	bool lightMouseWasDown = false;
+	enginemath::Vec3 lightPlanePoint;
+	enginemath::Vec3 lightPlaneNormal;
+
 	bool showProxies = false;
 	bool showLights = false;
 	bool showOriginal = false;
@@ -75,6 +82,8 @@ private:
 	void detectLighting();
 	void finishLightingDetection();
 	void updateObjectInteraction();
+	bool updateLightEditing();
+	enginemath::Vec3 markerPosition(const recast::SceneLight& light) const;
 	recast::RayHit supportUnderCursor(const enginemath::Vec3& origin, const enginemath::Vec3& direction);
 	void drawScene();
 	void exportRender();
