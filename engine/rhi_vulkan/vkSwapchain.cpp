@@ -27,13 +27,37 @@ VkSwapchainKHR foto::Swapchain::createSwapchain(GLFWwindow* window, Device& devi
 		extent.height = std::clamp(static_cast<u32>(framebufferH), swapchainSupport.capabilities.minImageExtent.height, swapchainSupport.capabilities.maxImageExtent.height);
 	}
 
+	// Find format
+	VkSurfaceFormatKHR format{};
+
+	for (const auto& availableFormat : swapchainSupport.formats) {
+		if (availableFormat.format == VK_FORMAT_B8G8R8A8_SRGB &&
+			availableFormat.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
+			format = availableFormat;
+			break;
+		}
+	}
+
+	// Find present mode
+
+	VkPresentModeKHR presentMode{};
+	bool foundPresentMode = false;
+
+	for (const auto& availablePresentMode : swapchainSupport.presentModes) {
+		if (availablePresentMode == VK_PRESENT_MODE_MAILBOX_KHR) {
+			presentMode = availablePresentMode;
+			break;
+		}
+	}
+	if (!foundPresentMode) presentMode = VK_PRESENT_MODE_FIFO_KHR;
+
 
 	VkSwapchainCreateInfoKHR createInfo = {
 		.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
 		.surface = device.getSurface(),
 		.minImageCount = minImageCount,
-		.imageFormat = ,
-		.imageColorSpace = ,
+		.imageFormat = format.format,
+		.imageColorSpace = format.colorSpace,
 		.imageExtent = extent,
 		.imageArrayLayers = ,
 		.imageUsage = ,
@@ -42,8 +66,8 @@ VkSwapchainKHR foto::Swapchain::createSwapchain(GLFWwindow* window, Device& devi
 		.pQueueFamilyIndices = ,
 		.preTransform = ,
 		.compositeAlpha = ,
-		.presentMode = ,
-		.clipped = ,
+		.presentMode = presentMode,
+		.clipped = VK_TRUE,
 	};
 
 	if (vkCreateSwapchainKHR(device.getDevice(), &createInfo, nullptr, &swapchain) != VK_SUCCESS) {
