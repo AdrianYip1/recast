@@ -119,7 +119,8 @@ namespace foto {
 		u32 photonCount = CAUSTIC_PHOTONS;
 		enginemath::Vec4 objectSphere; // bounding sphere of the dynamic casters, w = radius (0 = none)
 		u32 ownerTexture = 0; // per photo pixel: which cutout it shows (Material::maskId), 0 = no owner image
-		u32 _pad[3] = {};
+		u32 depthTexture = 0; // per photo pixel: distance from the camera to what it shows (metres, R), 0 = none
+		u32 _pad[2] = {};
 	};
 	static_assert(sizeof(TracePush) == 48);
 

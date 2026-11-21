@@ -218,6 +218,10 @@ void foto::Application::setPathTraceOwners(u32 ownerTexture) {
 	render->setPathTraceOwners(ownerTexture);
 }
 
+void foto::Application::setPathTraceDepth(u32 depthTexture) {
+	render->setPathTraceDepth(depthTexture);
+}
+
 foto::u32 foto::Application::addTexture(std::unique_ptr<Image> image) {
 	textures.push_back(std::move(image));
 	return render->addTexture(*textures.back(), *sampler);

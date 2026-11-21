@@ -23,7 +23,7 @@ from PIL import Image
 from . import evaluate, lens
 from .camera import Camera, solve_camera
 from .gbuffer import load_gbuffer, save_gbuffer
-from .io import Photo, linear_to_srgb, load_image_linear, load_photo, save_jpg, to_srgb8
+from .io import Photo, linear_to_srgb, load_image_linear, load_photo, save_hdr, save_jpg, to_srgb8
 from .lighting import fit_scene_lighting
 from .scene import (PHOTO_NAME, Lighting, Scene, floor_proxy, render_gbuffer, update_scene_file,
                     write_json_atomic)
@@ -222,6 +222,13 @@ def cmd_detect(args) -> None:
         print(f"  {'window light' if light['type'] == 'area' else 'lamp light':<14} " +
               (f"{np.ptp(np.array(light['corners'])[:, [0, 2]], axis=0).max():.2f} x {np.ptp(np.array(light['corners'])[:, 1]):.2f} m"
                if light["type"] == "area" else "at " + ", ".join(f"{v:.2f}" for v in light["position"])))
+
+    # the photo's own depth (distance from the camera, metres): the engine hides the object only where the photo really
+    # has something in front of it, instead of wherever a box stands in for the furniture
+    with np.errstate(invalid="ignore"):
+        distance = np.linalg.norm(det.points - cam.position, axis=2)
+    distance = np.where(np.isfinite(distance), distance, 1e4).astype(np.float32)
+    save_hdr(out / "photo_depth.hdr", np.repeat(distance[..., None], 3, axis=2))
 
     proxies = kept + [p.to_dict() for p in det.proxies]
     sections = {"proxies": proxies, "lights": emitters}

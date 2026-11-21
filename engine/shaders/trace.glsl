@@ -8,6 +8,7 @@ layout(push_constant) uniform TracePush {
 	uint photonCount;
 	vec4 objectSphere; // bounding sphere of the dynamic casters (w = radius, 0 = none), where photons are aimed
 	uint ownerTexture; // which cutout each photo pixel shows (Material.maskId), 0 = none
+	uint depthTexture; // distance from the camera to what each photo pixel shows (metres, R), 0 = none
 } push;
 
 layout(set = 1, binding = 0) uniform accelerationStructureEXT scene;
@@ -39,6 +40,7 @@ layout(buffer_reference, std430, buffer_reference_align = 4) readonly buffer Flo
 layout(buffer_reference, std430, buffer_reference_align = 4) readonly buffer Indices { uint i[]; };
 
 const uint MASK_STATIC = 0x01u;
+const uint MASK_DYNAMIC = 0x02u;
 const uint MASK_ALL = 0xFFu;
 const uint VERTEX_FLOATS = 8u;
 const float PI = 3.14159265;
@@ -221,6 +223,13 @@ vec3 albedoOf(Hit hit) {
 
 vec3 photoAt(vec2 viewportUV) {
 	return textureLod(textures[push.photoTexture], viewportUV, 0.0).rgb;
+}
+
+// Distance from the camera to what the photo shows at this pixel, in metres (very far where depth is unknown)
+float photoDepthAt(vec2 viewportUV) {
+	ivec2 size = textureSize(textures[push.depthTexture], 0);
+	ivec2 texel = clamp(ivec2(viewportUV * vec2(size)), ivec2(0), size - 1);
+	return texelFetch(textures[push.depthTexture], texel, 0).r;
 }
 
 // The cutout the photo shows at this pixel (exact, no filtering), 0 = none

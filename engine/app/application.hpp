@@ -92,6 +92,9 @@ namespace foto {
 		void setPathTracing(bool enabled, u32 photoMaterial);
 		// Which cutout each photo pixel shows, so the path tracer can look past boxes where the photo shows something else
 		void setPathTraceOwners(u32 ownerTexture);
+		// The photo's depth per pixel (distance from the camera in R), so the inserted object hides only behind what the
+		// photo really has in front of it. 0 = none (boxes decide)
+		void setPathTraceDepth(u32 depthTexture);
 		bool isPathTracing();
 		// Edge-aware filtering of the path traced noise, strongest right after a change (on by default)
 		void setDenoise(bool enabled);

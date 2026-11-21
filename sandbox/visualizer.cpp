@@ -173,6 +173,22 @@ void Visualizer::loadScene() {
 	scene = std::move(loaded);
 	sceneLoaded = true;
 	detectedProxies = scene.proxies;
+	// the photo's depth from detect: reloaded only when the file changes (each load makes a new texture)
+	std::error_code error;
+	std::filesystem::path depthPath = scene.directory / "photo_depth.hdr";
+	auto depthTime = std::filesystem::last_write_time(depthPath, error);
+	if (error) depthTexture = 0;
+	else if (depthPath != loadedDepthPath || depthTime != loadedDepthTime) {
+		try {
+			depthTexture = loadTextureHDR(depthPath.string());
+			loadedDepthPath = depthPath;
+			loadedDepthTime = depthTime;
+		}
+		catch (const std::exception& e) {
+			std::cerr << "[recast] " << e.what() << std::endl;
+			depthTexture = 0;
+		}
+	}
 	selectedProxy = -1;
 	hoveredProxy = -1;
 	loadProxyLabels();
@@ -367,6 +383,7 @@ void Visualizer::onUpdate(foto::f32 deltaTime) {
 	if (editRoom) updateRoomEditing();
 	else if (!(showLights && updateLightEditing())) updateObjectInteraction();
 	setPathTraceOwners(ownerTexture);
+	setPathTraceDepth(depthTexture);
 	setPathTracing(pathTrace && !showOriginal && !editRoom && !showLights && supportsPathTracing(), photoMaterial);
 	float pixelsPerPhotoPixel = getViewportSize().x / std::max(static_cast<float>(scene.image_size[0]), 1.0f);
 	setCameraMatch(cameraMatch.grain, cameraMatch.blur * pixelsPerPhotoPixel);

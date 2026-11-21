@@ -121,6 +121,9 @@ private:
 	std::map<foto::u32, std::string> proxyLabels;
 	std::map<foto::u32, foto::u32> proxyMaskIds; // proxy id -> its object's cutout number in the owner image
 	foto::u32 ownerTexture = 0;
+	foto::u32 depthTexture = 0; // the photo's depth (photo_depth.hdr from detect), 0 = none
+	std::filesystem::path loadedDepthPath;
+	std::filesystem::file_time_type loadedDepthTime;
 	std::vector<unsigned char> ownerPixels; // the owner image on the CPU too, for picking (RGBA, R = cutout number)
 	int ownerWidth = 0, ownerHeight = 0;
 	foto::u32 photoOwnerAt(const enginemath::Vec3& point) const;
