@@ -23,7 +23,7 @@ from PIL import Image
 from . import evaluate, lens
 from .camera import Camera, solve_camera
 from .gbuffer import load_gbuffer, save_gbuffer
-from .io import Photo, linear_to_srgb, load_image_linear, load_photo, save_jpg
+from .io import Photo, linear_to_srgb, load_image_linear, load_photo, save_jpg, to_srgb8
 from .lighting import fit_scene_lighting
 from .scene import (PHOTO_NAME, Lighting, Scene, floor_proxy, render_gbuffer, update_scene_file,
                     write_json_atomic)
@@ -141,19 +141,18 @@ def cmd_detect(args) -> None:
     path = require(out / "scene.json", "run `python -m recast scene` (stage A) first")
     scene = Scene.load(path)
     cam = scene.camera
-    rgb8 = np.asarray(Image.open(out / scene.photo).convert("RGB"))
-    if rgb8.shape[:2] != (cam.height, cam.width):
-        sys.exit(f"{scene.photo} is {rgb8.shape[1]}x{rgb8.shape[0]} but the camera is {cam.width}x{cam.height}")
-    photo_linear = load_image_linear(out / scene.photo)
+    with Image.open(out / scene.photo) as header:
+        if header.size != (cam.width, cam.height):
+            sys.exit(f"{scene.photo} is {header.size[0]}x{header.size[1]} but the camera is {cam.width}x{cam.height}")
 
     # the models see ~512 px anyway: everything runs on a smaller copy with the same camera, scaled.
     # Boxes come out in metres, so they don't depend on the working size
-    shrink = min(1.0, args.max_size / max(cam.width, cam.height)) if args.max_size else 1.0
+    small = load_photo(out / scene.photo, max_side=args.max_size or None)
+    photo_linear = small.pixels
+    rgb8 = to_srgb8(photo_linear)
     full_cam = cam
-    if shrink < 1.0:
-        size = (round(cam.width * shrink), round(cam.height * shrink))
-        rgb8 = cv2.resize(rgb8, size, interpolation=cv2.INTER_AREA)
-        photo_linear = cv2.resize(photo_linear.astype(np.float32), size, interpolation=cv2.INTER_AREA)
+    if small.scale < 1.0:
+        size = (photo_linear.shape[1], photo_linear.shape[0])
         cam = Camera(size[0], size[1], full_cam.fx * size[0] / full_cam.width, full_cam.R, full_cam.position.copy(),
                      (full_cam.principal + 0.5) * np.array(size) / [full_cam.width, full_cam.height] - 0.5,
                      full_cam.fy * size[1] / full_cam.height)

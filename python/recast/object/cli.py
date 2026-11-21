@@ -80,19 +80,16 @@ def run(args) -> dict:
     out.mkdir(parents=True, exist_ok=True)
     ui = not args.no_ui
 
-    photo = load_photo(args.photo)
+    # loaded at the working size (much faster than decoding 12 MP); everything after this works in its pixels,
+    # command line clicks included
+    photo = load_photo(args.photo, max_side=args.max_size or None)
+    shrink = photo.scale
+    if args.focal_px:
+        args.focal_px *= shrink
     from ..cli import preprocess  # same undistortion as the scene photo
     img = preprocess(photo, {"lensfun": not args.no_lensfun, "k1": args.k1, "k2": args.k2,
                              "focal_px": args.focal_px or photo.focal_px() or 0.9 * max(photo.width, photo.height)})
-
-    # everything after this works in the shrunk photo's pixels, command line clicks included
-    shrink = min(1.0, args.max_size / max(img.shape[:2])) if args.max_size else 1.0
-    if shrink < 1.0:
-        img = cv2.resize(img.astype(np.float32), (round(img.shape[1] * shrink), round(img.shape[0] * shrink)),
-                         interpolation=cv2.INTER_AREA).astype(img.dtype)
-    exif_focal = photo.focal_px() * shrink if photo.focal_px() else None
-    if args.focal_px:
-        args.focal_px *= shrink
+    exif_focal = photo.focal_px()
 
     # --- segment
     rect = tuple(int(round(v * shrink)) for v in args.rect) if args.rect else None
