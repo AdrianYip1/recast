@@ -29,22 +29,40 @@ namespace recast {
 	// One sample per `stride` pixels that sees a proxy. Clipped pixels of 8-bit photos are skipped
 	std::vector<LightingSample> collectLightingSamples(const SceneFile& scene, const LinearImage& photo, int stride);
 
+	// Point: falls off with distance squared. Directional: parallel rays, no falloff, `direction` is the way the light travels.
+	// Directional lights are only shadowed by boxes: planes are assumed open towards a distant source (sun through an opening)
+	struct FitLight {
+		bool directional = false;
+		enginemath::Vec3 position;
+		enginemath::Vec3 direction = enginemath::Vec3(0.0f, -1.0f, 0.0f);
+	};
+
 	struct LightingFit {
 		enginemath::Vec3 ambient;
 		std::vector<enginemath::Vec3> intensities;
 		double residual = 0.0;
 	};
 
-	// photo = albedo * (ambient + sum intensity * cos / d^2 * visibility), solved per proxy with its own albedo scale,
+	// photo = albedo * (ambient + sum intensity * lightTerm), solved per proxy with its own albedo scale,
 	// then converted to absolute values with the proxies' albedo from scene.json
-	LightingFit fitLightIntensities(const SceneFile& scene, const std::vector<LightingSample>& samples,
-									const std::vector<enginemath::Vec3>& lightPositions);
+	LightingFit fitLightIntensities(const SceneFile& scene, const std::vector<LightingSample>& samples, const std::vector<FitLight>& lights);
+
+	// Refines the given lights' positions / directions, then fits intensities
+	LightingFit refineLighting(const SceneFile& scene, const std::vector<LightingSample>& samples, std::vector<FitLight>& lights);
+
+	// Surface points under the brightest blobs of the photo (lamps, windows, hotspots), brightest first
+	std::vector<enginemath::Vec3> detectBrightSpots(const SceneFile& scene, const LinearImage& photo, int maxSpots = 4);
+
+	// Finds lights from scratch: tries point lights (bright spot seeds + grid search) and directional lights, keeps the
+	// better model, and adds more lights (up to maxLights) only while each one lowers the residual by at least 5%
+	LightingFit autoFitLighting(const SceneFile& scene, const LinearImage& photo, const std::vector<LightingSample>& samples,
+								std::vector<FitLight>& lights, int maxLights = 3);
 
 	// Photo brightness divided by the lighting model's prediction on the supporting surface around `center`
 	// (a disk of `radius` at center.y), per channel. 1 = the model already matches the photo there.
 	// Returns 1 if too little of the surface is visible
 	enginemath::Vec3 localLightingCalibration(const SceneFile& scene, const LinearImage& photo, const enginemath::Vec3& center, float radius);
 
-	// Refines light positions (and finds a first one by grid search if `positions` is empty), then fits intensities
-	LightingFit fitLighting(const SceneFile& scene, const std::vector<LightingSample>& samples, std::vector<enginemath::Vec3>& positions);
+	// Scene lights (point and directional) in fitting form
+	std::vector<FitLight> fitLightsFromScene(const SceneFile& scene);
 } // namespace recast

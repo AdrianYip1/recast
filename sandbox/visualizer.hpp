@@ -3,6 +3,7 @@
 #include <engine/app/application.hpp>
 #include <engine/core/fileWatcher.hpp>
 
+#include <chrono>
 #include <future>
 
 #include "scene/sceneFile.hpp"
@@ -61,19 +62,24 @@ private:
 	bool showLights = true;
 	int placingLight = -1;
 
+	enum class FitMode { Detect, Refine, Intensities };
+
 	struct FitJob {
-		std::vector<enginemath::Vec3> positions;
+		std::vector<recast::FitLight> lights;
 		recast::LightingFit fit;
 		std::string error;
 	};
 	std::future<FitJob> fitJob;
 	std::string fitStatus;
+	std::chrono::steady_clock::time_point fitStarted;
 
 	recast::LinearImage photoPixels;
 	bool autoCalibrate = true;
 	enginemath::Vec3 calibrationTarget = enginemath::Vec3(1.0f, 1.0f, 1.0f);
 	enginemath::Vec3 calibration = enginemath::Vec3(1.0f, 1.0f, 1.0f);
 	std::vector<float> calibrationKey;
+	enginemath::Vec3 shadowCenter;
+	foto::f32 shadowRadius = 5.0f;
 
 	void loadScene();
 	void applySceneCamera();
@@ -86,7 +92,7 @@ private:
 	void resolveCollisions();
 	void applySceneLighting();
 	void updateLightPlacement();
-	void startLightingFit(bool refinePositions);
+	void startLightingFit(FitMode mode);
 	void finishLightingFit();
 	void drawLightingPanel();
 	void updateCalibration(foto::f32 deltaTime);

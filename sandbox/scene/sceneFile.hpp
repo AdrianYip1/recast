@@ -53,10 +53,12 @@ namespace recast {
 	};
 
 	// type "point": position + intensity (irradiance = intensity * cos / distance^2).
+	// type "directional": direction (the way the light travels) + intensity (irradiance = intensity * cos).
 	// type "area": corners + radiance (not rendered yet)
 	struct SceneLight {
 		std::string type = "point";
 		Vec3f position = { 0, 0, 0 };
+		Vec3f direction = { 0, -1, 0 };
 		Vec3f intensity = { 0, 0, 0 };
 		std::array<Vec3f, 4> corners = {};
 		Vec3f radiance = { 0, 0, 0 };

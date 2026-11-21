@@ -156,8 +156,23 @@ void Visualizer::loadScene() {
 	applySceneCamera();
 
 	calibrationKey.clear();
-	bool hasPointLight = std::any_of(scene.lights.begin(), scene.lights.end(), [](const recast::SceneLight& l) { return l.type == "point"; });
-	if (!hasPointLight && !loadedPhotoPath.empty()) startLightingFit(true);
+	if (!photoPixels.rgb.empty()) {
+		std::vector<recast::LightingSample> coarse = recast::collectLightingSamples(scene, photoPixels, 16);
+		if (!coarse.empty()) {
+			Vec3 boundsMin(1e30f), boundsMax(-1e30f);
+			for (const recast::LightingSample& sample : coarse) {
+				for (int a = 0; a < 3; a++) {
+					boundsMin[a] = std::min(boundsMin[a], sample.point[a]);
+					boundsMax[a] = std::max(boundsMax[a], sample.point[a]);
+				}
+			}
+			shadowCenter = (boundsMin + boundsMax) * 0.5f;
+			Vec3 extent = boundsMax - boundsMin;
+			shadowRadius = std::max(0.5f * std::sqrt(extent.dot(extent)), 1.0f);
+		}
+	}
+
+	if (recast::fitLightsFromScene(scene).empty() && !loadedPhotoPath.empty()) startLightingFit(FitMode::Detect);
 
 	std::cout << "[recast] loaded " << scenePath << ": " << scene.image_size[0] << "x" << scene.image_size[1]
 			  << " photo, " << scene.proxies.size() << " proxies, " << scene.lights.size() << " lights" << std::endl;
@@ -231,9 +246,11 @@ void Visualizer::drawPhotoView() {
 
 	if (showLights) {
 		for (const recast::SceneLight& light : scene.lights) {
-			if (light.type != "point") continue;
-			draw(lightMarker, Mat4::translationM(light.position[0], light.position[1], light.position[2]) * Mat4::scaleM(0.06f, 0.06f, 0.06f),
-				 lightMarkerMaterial);
+			Vec3 at;
+			if (light.type == "point") at = Vec3(light.position[0], light.position[1], light.position[2]);
+			else if (light.type == "directional") at = shadowCenter - Vec3(light.direction[0], light.direction[1], light.direction[2]).normalized() * 2.0f;
+			else continue;
+			draw(lightMarker, Mat4::translationM(at.x, at.y, at.z) * Mat4::scaleM(0.06f, 0.06f, 0.06f), lightMarkerMaterial);
 		}
 	}
 
@@ -245,13 +262,16 @@ void Visualizer::drawPhotoView() {
 void Visualizer::applySceneLighting() {
 	std::vector<foto::Light> lights;
 	for (const recast::SceneLight& light : scene.lights) {
-		if (light.type != "point") continue;
+		if (light.type != "point" && light.type != "directional") continue;
 		lights.push_back({
+			.type = light.type == "directional" ? foto::LightType::Directional : foto::LightType::Point,
 			.position = Vec3(light.position[0], light.position[1], light.position[2]),
+			.direction = Vec3(light.direction[0], light.direction[1], light.direction[2]),
 			.intensity = Vec3(light.intensity[0], light.intensity[1], light.intensity[2]),
 		});
 	}
 	setLights(lights);
+	setShadowBounds(shadowCenter, shadowRadius);
 
 	const recast::Vec3f& ambient = scene.lighting.ambient;
 	setAmbient(Vec3(ambient[0], ambient[1], ambient[2]));
@@ -265,7 +285,9 @@ void Visualizer::updateCalibration(foto::f32 deltaTime) {
 							   scene.lighting.ambient[0], scene.lighting.ambient[1], scene.lighting.ambient[2] };
 	for (const recast::SceneLight& light : scene.lights) {
 		key.insert(key.end(), light.position.begin(), light.position.end());
+		key.insert(key.end(), light.direction.begin(), light.direction.end());
 		key.insert(key.end(), light.intensity.begin(), light.intensity.end());
+		key.push_back(light.type == "directional" ? 1.0f : 0.0f);
 	}
 
 	if (key != calibrationKey) {
@@ -298,29 +320,30 @@ void Visualizer::updateLightPlacement() {
 	leftMouseWasDown = leftDown;
 }
 
-void Visualizer::startLightingFit(bool refinePositions) {
+void Visualizer::startLightingFit(FitMode mode) {
 	if (fitJob.valid() || loadedPhotoPath.empty()) return;
 
-	std::vector<Vec3> positions;
-	for (const recast::SceneLight& light : scene.lights) {
-		if (light.type == "point") positions.push_back(Vec3(light.position[0], light.position[1], light.position[2]));
-	}
-	if (!refinePositions && positions.empty()) {
-		fitStatus = "add a light first, or use fit lighting";
+	std::vector<recast::FitLight> lights = recast::fitLightsFromScene(scene);
+	if (mode != FitMode::Detect && lights.empty()) {
+		fitStatus = "no lights yet: use detect lights";
 		return;
 	}
 
-	fitStatus = "fitting...";
+	fitStatus = mode == FitMode::Detect ? "detecting lights..." : "fitting...";
+	fitStarted = std::chrono::steady_clock::now();
 	recast::SceneFile sceneCopy = scene;
 	std::string photoPath = loadedPhotoPath;
-	fitJob = std::async(std::launch::async, [sceneCopy, photoPath, positions, refinePositions]() mutable {
+	fitJob = std::async(std::launch::async, [sceneCopy, photoPath, lights, mode]() mutable {
 		FitJob job;
 		try {
 			recast::LinearImage photo = recast::loadLinearImage(photoPath);
 			std::vector<recast::LightingSample> samples = recast::collectLightingSamples(sceneCopy, photo, 8);
-			job.positions = positions;
-			job.fit = refinePositions ? recast::fitLighting(sceneCopy, samples, job.positions)
-									  : recast::fitLightIntensities(sceneCopy, samples, job.positions);
+			job.lights = lights;
+			switch (mode) {
+			case FitMode::Detect: job.fit = recast::autoFitLighting(sceneCopy, photo, samples, job.lights); break;
+			case FitMode::Refine: job.fit = recast::refineLighting(sceneCopy, samples, job.lights); break;
+			case FitMode::Intensities: job.fit = recast::fitLightIntensities(sceneCopy, samples, job.lights); break;
+			}
 		}
 		catch (const std::exception& e) {
 			job.error = e.what();
@@ -340,11 +363,14 @@ void Visualizer::finishLightingFit() {
 
 	std::vector<recast::SceneLight> lights;
 	for (const recast::SceneLight& light : scene.lights) {
-		if (light.type != "point") lights.push_back(light);
+		if (light.type != "point" && light.type != "directional") lights.push_back(light);
 	}
-	for (size_t i = 0; i < job.positions.size(); i++) {
+	for (size_t i = 0; i < job.lights.size(); i++) {
+		const recast::FitLight& fitted = job.lights[i];
 		recast::SceneLight light;
-		light.position = { job.positions[i].x, job.positions[i].y, job.positions[i].z };
+		light.type = fitted.directional ? "directional" : "point";
+		light.position = { fitted.position.x, fitted.position.y, fitted.position.z };
+		light.direction = { fitted.direction.x, fitted.direction.y, fitted.direction.z };
 		light.intensity = { job.fit.intensities[i].x, job.fit.intensities[i].y, job.fit.intensities[i].z };
 		lights.push_back(light);
 	}
@@ -353,9 +379,12 @@ void Visualizer::finishLightingFit() {
 	unsavedChanges = true;
 
 	char buffer[128];
-	std::snprintf(buffer, sizeof(buffer), "fitted %zu light(s), ambient (%.3f, %.3f, %.3f)",
-				  job.positions.size(), job.fit.ambient.x, job.fit.ambient.y, job.fit.ambient.z);
+	size_t directionalCount = std::count_if(job.lights.begin(), job.lights.end(), [](const recast::FitLight& l) { return l.directional; });
+	std::snprintf(buffer, sizeof(buffer), "%zu point + %zu directional light(s), ambient (%.3f, %.3f, %.3f)",
+				  job.lights.size() - directionalCount, directionalCount, job.fit.ambient.x, job.fit.ambient.y, job.fit.ambient.z);
 	fitStatus = buffer;
+	double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - fitStarted).count();
+	std::cout << "[recast] lighting: " << fitStatus << " in " << static_cast<int>(seconds) << " s" << std::endl;
 }
 
 void Visualizer::drawLightingPanel() {
@@ -374,14 +403,33 @@ void Visualizer::drawLightingPanel() {
 
 	for (size_t i = 0; i < scene.lights.size(); i++) {
 		recast::SceneLight& light = scene.lights[i];
-		if (light.type != "point") continue;
+		if (light.type != "point" && light.type != "directional") continue;
 
 		ImGui::PushID(static_cast<int>(i));
-		ImGui::Text("light %zu", i);
-		unsavedChanges |= ImGui::DragFloat3("position", light.position.data(), 0.01f);
-		unsavedChanges |= ImGui::DragFloat3("intensity", light.intensity.data(), 0.01f, 0.0f, 1000.0f);
-		if (ImGui::Button(placingLight == static_cast<int>(i) ? "click the photo..." : "place by clicking")) placingLight = static_cast<int>(i);
+		int type = light.type == "directional" ? 1 : 0;
+		ImGui::SetNextItemWidth(120.0f);
+		if (ImGui::Combo("##type", &type, "point\0directional\0")) {
+			light.type = type == 1 ? "directional" : "point";
+			unsavedChanges = true;
+		}
 		ImGui::SameLine();
+		ImGui::Text("light %zu", i);
+		if (light.type == "point") {
+			unsavedChanges |= ImGui::DragFloat3("position", light.position.data(), 0.01f);
+		}
+		else if (ImGui::DragFloat3("direction", light.direction.data(), 0.01f, -1.0f, 1.0f)) {
+			Vec3 direction(light.direction[0], light.direction[1], light.direction[2]);
+			if (direction.dot(direction) > 1e-6f) {
+				direction.normalize();
+				light.direction = { direction.x, direction.y, direction.z };
+			}
+			unsavedChanges = true;
+		}
+		unsavedChanges |= ImGui::DragFloat3("intensity", light.intensity.data(), 0.01f, 0.0f, 1000.0f);
+		if (light.type == "point") {
+			if (ImGui::Button(placingLight == static_cast<int>(i) ? "click the photo..." : "place by clicking")) placingLight = static_cast<int>(i);
+			ImGui::SameLine();
+		}
 		if (ImGui::Button("remove")) {
 			scene.lights.erase(scene.lights.begin() + i);
 			unsavedChanges = true;
@@ -403,9 +451,11 @@ void Visualizer::drawLightingPanel() {
 
 	bool fitting = fitJob.valid();
 	ImGui::BeginDisabled(fitting);
-	if (ImGui::Button("fit lighting to photo")) startLightingFit(true);
+	if (ImGui::Button("detect lights")) startLightingFit(FitMode::Detect);
 	ImGui::SameLine();
-	if (ImGui::Button("fit intensities only")) startLightingFit(false);
+	if (ImGui::Button("refine lights")) startLightingFit(FitMode::Refine);
+	ImGui::SameLine();
+	if (ImGui::Button("fit intensities")) startLightingFit(FitMode::Intensities);
 	ImGui::EndDisabled();
 	if (!fitStatus.empty()) ImGui::TextWrapped("%s", fitStatus.c_str());
 }
