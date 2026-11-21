@@ -155,6 +155,57 @@ def intersect_can(origins, directions):
     return t, normal, u, v, is_side
 
 
+def direct_light(points, normals, with_can):
+    if LIGHT_TYPE == "directional":
+        light_dir = np.broadcast_to(-SUN_DIRECTION, points.shape)
+        distance = np.full(points.shape[:-1], np.inf)
+    else:
+        to_light = LIGHT_POS - points
+        distance = np.linalg.norm(to_light, axis=-1)
+        light_dir = to_light / np.maximum(distance, 1e-6)[..., None]
+
+    shadow_origins = points + normals * 1e-3
+    blocked = intersect_box(shadow_origins, light_dir)[0] < distance
+    if with_can:
+        blocked |= intersect_can(shadow_origins, light_dir)[0] < distance
+
+    cosine = np.clip(np.sum(normals * light_dir, axis=-1), 0.0, None)
+    if LIGHT_TYPE == "directional":
+        return SUN_IRRADIANCE * (cosine * ~blocked)[..., None]
+    return LIGHT_INTENSITY * (cosine * ~blocked / np.maximum(distance, 1e-3) ** 2)[..., None]
+
+
+def can_albedo_at(cu, cv, is_side):
+    return np.where(is_side[..., None], can_label(cu, cv), can_label(0.5, 0.5))
+
+
+def ambient_near_can(points, normals, steps=16):
+    """Ambient irradiance with the can in the way: AMBIENT arrives evenly from the room, except along rays that hit
+    the can, which bring its diffuse light instead (contact shadow + bounce). Stratified cosine-weighted directions."""
+    helper = np.where(np.abs(normals[:, :1]) > 0.5, [0.0, 1.0, 0.0], [1.0, 0.0, 0.0])
+    tangent = np.cross(normals, helper)
+    tangent /= np.linalg.norm(tangent, axis=-1, keepdims=True)
+    bitangent = np.cross(normals, tangent)
+    origins = points + normals * 1e-3
+
+    total = np.zeros(points.shape)
+    for i in range(steps):
+        for j in range(steps):
+            u = (i + 0.5) / steps
+            phi = 2 * np.pi * (j + 0.5) / steps
+            r = np.sqrt(u)
+            directions = tangent * (r * np.cos(phi)) + bitangent * (r * np.sin(phi)) + normals * np.sqrt(1 - u)
+            t, can_normal, cu, cv, is_side = intersect_can(origins, directions)
+            hit = np.isfinite(t)
+            incoming = np.broadcast_to(AMBIENT, points.shape).copy()
+            if hit.any():
+                p = origins[hit] + directions[hit] * t[hit][:, None]
+                albedo = can_albedo_at(cu[hit], cv[hit], is_side[hit])
+                incoming[hit] = albedo * (AMBIENT + direct_light(p, can_normal[hit], with_can=False))
+            total += incoming
+    return total / (steps * steps)
+
+
 def render(rotation, with_can):
     u, v = np.meshgrid(np.arange(WIDTH) + 0.5, np.arange(HEIGHT) + 0.5)
     directions = np.stack([(u - CX) / FX, -(v - CY) / FY, -np.ones_like(u)], axis=-1) @ rotation.T
@@ -194,32 +245,21 @@ def render(rotation, with_can):
         box_normal[..., a] = np.where(axis == a, -np.sign(directions[..., a]), 0.0)
     consider(t_box, [0.60, 0.18, 0.14], box_normal)
 
+    is_can = np.zeros(u.shape, dtype=bool)
     if with_can:
         t_can, can_normal, cu, cv, is_side = intersect_can(origins, directions)
-        can_albedo = np.where(is_side[..., None], can_label(cu, cv), [0.75, 0.75, 0.78])
-        consider(t_can, can_albedo, can_normal)
+        consider(t_can, can_albedo_at(cu, cv, is_side), can_normal)
+        is_can = np.isfinite(t_can) & (t_can == best_t)
 
     hit = np.isfinite(best_t)
     points = CAMERA_POS + directions * np.where(hit, best_t, 0.0)[..., None]
-    if LIGHT_TYPE == "directional":
-        light_dir = np.broadcast_to(-SUN_DIRECTION, points.shape)
-        distance = np.full(points.shape[:-1], np.inf)
-    else:
-        to_light = LIGHT_POS - points
-        distance = np.linalg.norm(to_light, axis=-1)
-        light_dir = to_light / np.maximum(distance, 1e-6)[..., None]
-
-    shadow_origins = points + normal * 1e-3
-    blocked = intersect_box(shadow_origins, light_dir)[0] < distance
+    ambient = np.broadcast_to(AMBIENT, points.shape).copy()
     if with_can:
-        blocked |= intersect_can(shadow_origins, light_dir)[0] < distance
+        offset = points - CAN_POS
+        near = hit & ~is_can & (np.hypot(offset[..., 0], offset[..., 2]) < 0.8) & (offset[..., 1] < CAN_HEIGHT + 0.6)
+        ambient[near] = ambient_near_can(points[near], normal[near])
 
-    cosine = np.clip(np.sum(normal * light_dir, axis=-1), 0.0, None)
-    if LIGHT_TYPE == "directional":
-        direct = SUN_IRRADIANCE * (cosine * ~blocked)[..., None]
-    else:
-        direct = LIGHT_INTENSITY * (cosine * ~blocked / np.maximum(distance, 1e-3) ** 2)[..., None]
-    image = albedo * (AMBIENT + direct)
+    image = albedo * (ambient + direct_light(points, normal, with_can))
     image[~hit] = [0.02, 0.02, 0.025]
     return image
 
@@ -275,7 +315,9 @@ def write_can_glb(path):
         "scene": 0, "scenes": [{"nodes": [0]}],
         "nodes": [{"name": "can", "mesh": 0}],
         "meshes": [{"primitives": [{"attributes": {"POSITION": 0, "NORMAL": 1, "TEXCOORD_0": 2}, "indices": 3, "material": 0}]}],
-        "materials": [{"name": "label", "pbrMetallicRoughness": {"baseColorTexture": {"index": 0}, "metallicFactor": 0.0, "roughnessFactor": 0.6}}],
+        "extensionsUsed": ["KHR_materials_specular"],
+        "materials": [{"name": "label", "pbrMetallicRoughness": {"baseColorTexture": {"index": 0}, "metallicFactor": 0.0, "roughnessFactor": 1.0},
+                       "extensions": {"KHR_materials_specular": {"specularFactor": 0.0}}}],
         "textures": [{"source": 0}], "images": [{"bufferView": 4, "mimeType": "image/png"}],
         "accessors": [
             {"bufferView": 0, "componentType": 5126, "count": len(positions), "type": "VEC3",
