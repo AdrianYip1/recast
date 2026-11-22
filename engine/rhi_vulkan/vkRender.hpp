@@ -52,6 +52,7 @@ namespace foto {
 
 		// Renders the scene offscreen at `extent` (with `samples` path traced samples when path tracing is on), then writes the
 		// tonemapped image as a PNG and the linear one as a Radiance .hdr. Blocks until done, false if a file can't be written
+		// hdrPath empty: the PNG only
 		bool exportImage(std::span<const DrawItem> items, FrameUbo frameUbo, VkExtent2D extent, u32 samples,
 						 const std::string& pngPath, const std::string& hdrPath);
 

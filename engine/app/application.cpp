@@ -224,7 +224,18 @@ foto::u64 foto::Application::loadUiImage(const std::string& filePath) {
 		return 0;
 	}
 	VkDescriptorSet set = ImGui_ImplVulkan_AddTexture(textures.back()->getView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+	uiImages[reinterpret_cast<u64>(set)] = textures.back().get();
 	return reinterpret_cast<u64>(set);
+}
+
+void foto::Application::unloadUiImage(u64 image) {
+	auto found = uiImages.find(image);
+	if (found == uiImages.end()) return;
+	vkDeviceWaitIdle(device->getDevice());
+	ImGui_ImplVulkan_RemoveTexture(reinterpret_cast<VkDescriptorSet>(image));
+	Image* texture = found->second;
+	std::erase_if(textures, [texture](const std::unique_ptr<Image>& t) { return t.get() == texture; });
+	uiImages.erase(found);
 }
 
 void foto::Application::setPathTraceOwners(u32 ownerTexture) {

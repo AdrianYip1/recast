@@ -50,6 +50,8 @@ namespace foto {
 		// An image file for the UI: the result is an ImTextureID for ImGui::Image / ImageButton, 0 if it can't be loaded.
 		// Each one takes a slot in ImGui's descriptor pool (64 to spare), so callers load each file once
 		u64 loadUiImage(const std::string& filePath);
+		// Frees an image from loadUiImage and its slot (waits for the GPU). Call from onUpdate, not while drawing the UI
+		void unloadUiImage(u64 image);
 		u32 createMaterial(const Material& material);
 		void updateMaterial(u32 index, const Material& material);
 		const Material& getMaterial(u32 index);
@@ -130,6 +132,7 @@ namespace foto {
 
 		std::unique_ptr<Sampler> sampler;
 		std::vector<std::unique_ptr<Image>> textures;
+		std::unordered_map<u64, Image*> uiImages; // loadUiImage's ImGui texture id -> its image in textures
 		std::vector<std::unique_ptr<Mesh>> meshes;
 		std::vector<std::unique_ptr<Pipeline>> pipelines;
 		f32 viewportAspect = 0.0f;

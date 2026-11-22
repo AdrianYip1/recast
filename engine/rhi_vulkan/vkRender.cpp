@@ -947,12 +947,16 @@ bool foto::Render::exportImage(std::span<const DrawItem> items, FrameUbo frameUb
 
 	traceKey.clear();
 	u32 passes = pathTracing ? std::clamp(samples, 1u, MAX_TRACE_SAMPLES) : 1u;
+	// the denoiser only matters for the image that's kept: it runs on the last pass alone
+	const bool denoiseWanted = denoise;
 	for (u32 i = 0; i < passes; i++) {
+		denoise = denoiseWanted && i + 1 == passes;
 		device.immediateSubmit(_commandPool, [&](VkCommandBuffer commandBuffer) {
 			if (pathTracing) recordPathTrace(commandBuffer, items, frameUbo, extent);
 			else recordRasterScene(commandBuffer, items, frameUbo, extent);
 		});
 	}
+	denoise = denoiseWanted;
 
 	Image color(device, extent, swapchain.getFormat(), VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
 	VkDeviceSize pixelCount = static_cast<VkDeviceSize>(extent.width) * extent.height;
@@ -998,16 +1002,19 @@ bool foto::Render::exportImage(std::span<const DrawItem> items, FrameUbo frameUb
 		if (bgra) std::swap(pixels[i], pixels[i + 2]);
 		pixels[i + 3] = 255;
 	}
-	std::vector<u16> halves(pixelCount * 4);
-	hdrBuffer.download(halves.data(), hdrBuffer.getSize());
-	std::vector<float> linear(pixelCount * 3);
-	for (size i = 0; i < pixelCount; i++) {
-		for (int c = 0; c < 3; c++) linear[i * 3 + c] = std::max(halfToFloat(halves[i * 4 + c]), 0.0f);
-	}
-
 	int width = static_cast<int>(extent.width), height = static_cast<int>(extent.height);
+	// light compression: a 12 MP photo takes seconds at stb's default level, for files only a little smaller
+	stbi_write_png_compression_level = 2;
 	bool written = stbi_write_png(pngPath.c_str(), width, height, 4, pixels.data(), width * 4) != 0;
-	written = stbi_write_hdr(hdrPath.c_str(), width, height, 3, linear.data()) != 0 && written;
+	if (!hdrPath.empty()) {
+		std::vector<u16> halves(pixelCount * 4);
+		hdrBuffer.download(halves.data(), hdrBuffer.getSize());
+		std::vector<float> linear(pixelCount * 3);
+		for (size i = 0; i < pixelCount; i++) {
+			for (int c = 0; c < 3; c++) linear[i * 3 + c] = std::max(halfToFloat(halves[i * 4 + c]), 0.0f);
+		}
+		written = stbi_write_hdr(hdrPath.c_str(), width, height, 3, linear.data()) != 0 && written;
+	}
 
 	// Back to the window's targets
 	vkDeviceWaitIdle(_device);
