@@ -968,7 +968,7 @@ void Visualizer::drawPrompt() {
 	case Prompt::Scene:
 		{
 			// as big as fits the card, centred
-			const char* welcome = "Welcome to ReCast!";
+			const char* welcome = "welcome to ReCast!";
 			const float base = ImGui::GetStyle().FontSizeBase;
 			ImGui::PushFont(recast::ui::titleFont(), base * 3.0f);
 			float fit = std::min(1.0f, ImGui::GetContentRegionAvail().x / ImGui::CalcTextSize(welcome).x);
