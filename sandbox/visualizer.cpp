@@ -1099,14 +1099,30 @@ bool Visualizer::updateLightEditing() {
 	}
 	if (!leftDown) draggingLight = false;
 
-	// scrolling moves the selected point light nearer or further along its line from the camera
+	// a point light never comes closer to the camera than this: there its marker leaves the photo and it lights
+	// nothing in the room, with no way left to grab it
+	constexpr float NEAREST_TO_CAMERA = 0.75f;
+	const Vec3 eye(scene.camera.position[0], scene.camera.position[1], scene.camera.position[2]);
+	auto keepAwayFromCamera = [&](Vec3 at) {
+		Vec3 offset = at - eye;
+		float distance = std::sqrt(offset.dot(offset));
+		if (distance >= NEAREST_TO_CAMERA) return at;
+		return eye + (distance > 1e-4f ? offset / distance : (haveRay ? direction : Vec3(0.0f, 0.0f, -1.0f))) * NEAREST_TO_CAMERA;
+	};
+
+	// scrolling over the selected point light's marker moves it nearer or further along its line from the camera
 	float scroll = getWindow().getScrollDelta();
 	if (scroll != 0.0f && selectedLight >= 0 && selectedLight < static_cast<int>(scene.lights.size()) &&
 		scene.lights[selectedLight].type == "point" && !ImGui::GetIO().WantCaptureMouse) {
 		recast::SceneLight& light = scene.lights[selectedLight];
-		const recast::Vec3f& eye = scene.camera.position;
-		for (int a = 0; a < 3; a++) light.position[a] = eye[a] + (light.position[a] - eye[a]) * std::pow(1.15f, -scroll);
-		unsavedChanges = true;
+		ImVec2 at, mouse = ImGui::GetIO().MousePos;
+		float reach = 1.5f * ImGui::GetFontSize();
+		if (projectToScreen(markerPosition(light), at) && (at.x - mouse.x) * (at.x - mouse.x) + (at.y - mouse.y) * (at.y - mouse.y) < reach * reach) {
+			Vec3 moved(light.position[0], light.position[1], light.position[2]);
+			moved = keepAwayFromCamera(eye + (moved - eye) * std::pow(1.15f, -scroll));
+			light.position = { moved.x, moved.y, moved.z };
+			unsavedChanges = true;
+		}
 	}
 
 	if (draggingLight && haveRay && selectedLight >= 0 && selectedLight < static_cast<int>(scene.lights.size())) {
@@ -1123,7 +1139,8 @@ bool Visualizer::updateLightEditing() {
 				light.direction = { -sky.x, -sky.y, -sky.z };
 			}
 			else {
-				light.position = { at.x, at.y, at.z };
+				Vec3 kept = keepAwayFromCamera(at);
+				light.position = { kept.x, kept.y, kept.z };
 			}
 			unsavedChanges = true;
 		}
@@ -1528,7 +1545,8 @@ void Visualizer::drawSidebar() {
 void Visualizer::drawPrompt() {
 	enum class Prompt { None, Working, Scene, Object, Placed };
 	Prompt prompt = Prompt::None;
-	if (pythonJob.running()) prompt = Prompt::Working;
+	// nothing over the photo while Python works, except when its own box window is open (photos the app can't read)
+	if (pythonJob.running()) prompt = pendingObjectReload && !objectBoxedInApp ? Prompt::Working : Prompt::None;
 	else if (!sceneLoaded) prompt = Prompt::Scene;
 	else if (scene.objects.empty()) prompt = Prompt::Object;
 	else if (showPlacedTip) prompt = Prompt::Placed;
@@ -1564,21 +1582,12 @@ void Visualizer::drawPrompt() {
 	const ImVec2 full(-FLT_MIN, 2.2f * em);
 
 	switch (prompt) {
-	case Prompt::Working: {
-		static const char* dots[] = { "", ".", "..", "..." };
-		if (pendingObjectReload && !objectBoxedInApp) {
-			title("Select your object");
-			text("Your photo opens in a new window (check behind this one).");
-			ImGui::Dummy(ImVec2(0.0f, 0.3f * em));
-			text("Drag a box around the object and press Enter.");
-			ImGui::Dummy(ImVec2(0.0f, 0.3f * em));
-		}
-		std::string working = std::string(pendingObjectReload ? "Making your object" : "Building the scene") +
-							  dots[static_cast<int>(ImGui::GetTime() * 3.0) % 4];
-		if (!pendingObjectReload || objectBoxedInApp) title(working.c_str());
-		else ImGui::TextColored(recast::ui::purple(), "%s", working.c_str());
+	case Prompt::Working:
+		title("Select your object");
+		text("Your photo opens in a new window (check behind this one).");
+		ImGui::Dummy(ImVec2(0.0f, 0.3f * em));
+		text("Drag a box around the object and press Enter.");
 		break;
-	}
 	case Prompt::Scene:
 		{
 			// as big as fits the card, centred
