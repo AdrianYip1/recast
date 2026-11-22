@@ -93,6 +93,8 @@ private:
 				   const std::string& resultScene = "", bool reloadPhoto = false, bool reloadObject = false);
 	void finishPython();
 	void drawPipeline();
+	void chooseScenePhoto();
+	void drawWelcome();
 
 	std::vector<recast::SceneLight> detectedLights; // what "reset lights" goes back to
 	std::vector<recast::FitLight> photoEmitters;    // windows and lamps detect found, whose strength the fit solves

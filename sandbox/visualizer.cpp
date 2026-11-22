@@ -8,6 +8,7 @@
 #include "scene/proxyMesh.hpp"
 #include "scene/raycast.hpp"
 #include "scene/placement.hpp"
+#include "ui/theme.hpp"
 
 #include <nlohmann/json.hpp>
 #include <stb_image.h>
@@ -77,6 +78,10 @@ Visualizer::Visualizer(const foto::ApplicationConfig& config, std::string sceneP
 }
 
 void Visualizer::onInit() {
+	float dpiX = 1.0f, dpiY = 1.0f;
+	if (GLFWmonitor* monitor = glfwGetPrimaryMonitor()) glfwGetMonitorContentScale(monitor, &dpiX, &dpiY);
+	recast::ui::applyTheme(dpiX);
+
 	backgroundPipeline = createPipeline({
 		.vertexShaderFilePath = "shaders/fullscreen.vert.spv",
 		.fragmentShaderFilePath = "shaders/background.frag.spv",
@@ -729,15 +734,17 @@ void Visualizer::drawScene() {
 }
 
 void Visualizer::onImGui() {
-	ImGui::SetNextWindowPos({ 12.0f, 12.0f }, ImGuiCond_FirstUseEver);
-	ImGui::Begin("recast");
-
 	if (!sceneLoaded) {
-		ImGui::TextWrapped("no scene loaded: pick a scene photo, or run with a path to scene.json");
-		drawPipeline();
-		ImGui::End();
+		drawWelcome();
 		return;
 	}
+
+	ImGui::SetNextWindowPos({ 12.0f, 12.0f }, ImGuiCond_FirstUseEver);
+	ImGui::Begin("recast");
+	ImGui::PushFont(recast::ui::boldFont(), ImGui::GetStyle().FontSizeBase * 1.3f);
+	ImGui::TextColored(recast::ui::purple(), "Welcome to ReCast!");
+	ImGui::PopFont();
+	ImGui::Separator();
 
 	ImGui::TextDisabled("drag the object, scroll to rotate, shift+scroll to scale");
 	ImGui::TextWrapped("%s", lightingStatus.c_str());
@@ -887,24 +894,85 @@ void Visualizer::finishPython() {
 	sceneWatcher = foto::FileWatcher(scenePath);
 }
 
+void Visualizer::chooseScenePhoto() {
+	std::string photo = pickPhoto("scene photo");
+	if (photo.empty()) return;
+	std::string name = folderName(photo);
+	std::filesystem::path result = std::filesystem::path(RECAST_DATA_DIR) / name / "scene.json";
+	std::string dataRoot = nativePath(RECAST_DATA_DIR);
+	runPython("building scene " + name, "recast", { "scene", photo, "--name", name, "--data-root", dataRoot, "--overwrite" },
+			  nativePath(result), true, false);
+	followUpLabel = "finding walls and furniture";
+	followUpArguments = { "detect", "--name", name, "--data-root", dataRoot };
+}
+
+// The first screen: fills the window until a scene is loaded and asks for the scene photo
+void Visualizer::drawWelcome() {
+	const ImGuiViewport* viewport = ImGui::GetMainViewport();
+	ImGui::SetNextWindowPos(viewport->WorkPos);
+	ImGui::SetNextWindowSize(viewport->WorkSize);
+	ImGui::PushStyleColor(ImGuiCol_WindowBg, recast::ui::beige());
+	ImGui::Begin("##welcome", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
+										   ImGuiWindowFlags_NoBringToFrontOnFocus);
+	ImGui::PopStyleColor();
+
+	const float width = std::min(520.0f * ImGui::GetStyle().FontScaleDpi, viewport->WorkSize.x - 40.0f);
+	const float left = 0.5f * (viewport->WorkSize.x - width);
+	ImGui::SetCursorPosY(0.32f * viewport->WorkSize.y);
+
+	const char* title = "Welcome to ReCast!";
+	ImGui::PushFont(recast::ui::boldFont(), ImGui::GetStyle().FontSizeBase * 2.4f);
+	ImGui::SetCursorPosX(0.5f * (viewport->WorkSize.x - ImGui::CalcTextSize(title).x));
+	ImGui::TextColored(recast::ui::purple(), "%s", title);
+	ImGui::PopFont();
+
+	const char* subtitle = "Put an object from one photo into another, with matching light and shadows.";
+	ImGui::SetCursorPosX(0.5f * (viewport->WorkSize.x - ImGui::CalcTextSize(subtitle).x));
+	ImGui::TextUnformatted(subtitle);
+	ImGui::Dummy(ImVec2(0.0f, 16.0f * ImGui::GetStyle().FontScaleDpi));
+
+	const float buttonWidth = 260.0f * ImGui::GetStyle().FontScaleDpi;
+	ImGui::SetCursorPosX(0.5f * (viewport->WorkSize.x - buttonWidth));
+	ImGui::BeginDisabled(pythonJob.running());
+	ImGui::PushFont(nullptr, ImGui::GetStyle().FontSizeBase * 1.15f);
+	if (recast::ui::accentButton("Choose a scene photo...", buttonWidth)) chooseScenePhoto();
+	ImGui::PopFont();
+	ImGui::EndDisabled();
+
+	const char* tip = "A photo of the empty spot where the object should go.";
+	ImGui::SetCursorPosX(0.5f * (viewport->WorkSize.x - ImGui::CalcTextSize(tip).x));
+	ImGui::TextDisabled("%s", tip);
+
+	ImGui::Dummy(ImVec2(0.0f, 12.0f * ImGui::GetStyle().FontScaleDpi));
+	ImGui::SetCursorPosX(left);
+	ImGui::BeginGroup();
+	ImGui::PushTextWrapPos(left + width);
+	if (pythonJob.running()) {
+		static const char* dots[] = { "", ".", "..", "..." };
+		ImGui::TextColored(recast::ui::purple(), "%s%s", pythonLabel.c_str(), dots[static_cast<int>(ImGui::GetTime() * 3.0) % 4]);
+		ImGui::TextDisabled("this can take a minute the first time");
+	}
+	else if (!pipelineStatus.empty()) {
+		ImGui::TextUnformatted(pipelineStatus.c_str());
+	}
+	ImGui::PopTextWrapPos();
+	if (pythonFailed) {
+		std::string log = pythonJob.output();
+		ImGui::BeginChild("python log", ImVec2(width, 160.0f), ImGuiChildFlags_Borders, ImGuiWindowFlags_HorizontalScrollbar);
+		ImGui::TextUnformatted(log.c_str(), log.c_str() + log.size());
+		ImGui::EndChild();
+	}
+	ImGui::EndGroup();
+	ImGui::End();
+}
+
 void Visualizer::drawPipeline() {
 	ImGui::BeginDisabled(pythonJob.running());
-	if (ImGui::Button("scene photo...")) {
-		std::string photo = pickPhoto("scene photo");
-		if (!photo.empty()) {
-			std::string name = folderName(photo);
-			std::filesystem::path result = std::filesystem::path(RECAST_DATA_DIR) / name / "scene.json";
-			std::string dataRoot = nativePath(RECAST_DATA_DIR);
-			runPython("building scene " + name, "recast", { "scene", photo, "--name", name, "--data-root", dataRoot, "--overwrite" },
-					  nativePath(result), true, false);
-			followUpLabel = "finding walls and furniture";
-			followUpArguments = { "detect", "--name", name, "--data-root", dataRoot };
-		}
-	}
+	if (ImGui::Button("scene photo...")) chooseScenePhoto();
 
 	ImGui::BeginDisabled(!sceneLoaded);
 	ImGui::SameLine();
-	if (ImGui::Button("object photo...")) {
+	if (recast::ui::accentButton("object photo...")) {
 		std::string photo = pickPhoto("object photo");
 		if (!photo.empty()) {
 			char height[32];

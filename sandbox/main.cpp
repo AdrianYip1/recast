@@ -8,13 +8,14 @@
 
 int main(int argc, char** argv) {
 	foto::ApplicationConfig config = {
-		.title = "foto",
+		.title = "ReCast",
 		.width = 1280,
 		.height = 720
 	};
 
 	try {
-		std::string scenePath = argc > 1 ? argv[1] : RECAST_SAMPLE_SCENE;
+		// no scene given: start on the welcome screen, which asks for a scene photo
+		std::string scenePath = argc > 1 ? argv[1] : "";
 
 		Visualizer app(config, scenePath);
 		app.run();
