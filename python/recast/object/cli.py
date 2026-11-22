@@ -78,6 +78,20 @@ def _pt(v, scale: float = 1.0) -> np.ndarray | None:
     return None if v is None else np.asarray(v, dtype=np.float64) * scale
 
 
+def save_thumbnail(path: Path, img_linear: np.ndarray, alpha: np.ndarray, size: int = 128) -> None:
+    """The object as the bank shows it: its cutout from the photo, centred in a transparent square."""
+    ys, xs = np.nonzero(alpha > 0.1)
+    if len(xs) == 0:
+        return
+    x0, x1, y0, y1 = xs.min(), xs.max() + 1, ys.min(), ys.max() + 1
+    rgba = np.dstack([to_srgb8(img_linear[y0:y1, x0:x1]), (np.clip(alpha[y0:y1, x0:x1], 0, 1) * 255 + 0.5).astype(np.uint8)])
+    side = int(max(x1 - x0, y1 - y0) * 1.1) + 1
+    square = np.zeros((side, side, 4), np.uint8)
+    oy, ox = (side - (y1 - y0)) // 2, (side - (x1 - x0)) // 2
+    square[oy:oy + y1 - y0, ox:ox + x1 - x0] = rgba
+    Image.fromarray(square, "RGBA").resize((size, size), Image.LANCZOS).save(path)
+
+
 def bank_entry(args) -> str:
     """Folder name of this object in the bank: the photo's name plus a hash of its bytes and of everything that changes
     the result (mode, size, glass, cutout), so the same photo with the same settings is made only once."""
@@ -272,6 +286,7 @@ def _run_generated(args, out: Path, img: np.ndarray, mask: np.ndarray, alpha, sh
     else:
         export_glb(mesh, tex, out / "object.glb")
     save_jpg(out / "object_mask.jpg", mask.astype(np.uint8) * 255, linear=False)
+    save_thumbnail(out / "thumbnail.png", img, a)
     meta = {"mode": "generated", "glass": bool(args.glass), "photo": str(args.photo), "working_scale": shrink,
             "measurement": {"height_m": height} if height else {"width_m": width}, "model": info,
             "scale_units_to_m": scale, "vertices": len(mesh.vertices), "faces": len(mesh.faces)}

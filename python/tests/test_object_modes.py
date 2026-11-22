@@ -281,3 +281,33 @@ def test_bank_reuses_an_object_and_places_copies_side_by_side(tmp_path):
     assert a[1] == b[1] == 0.0 and np.hypot(*(a - b)[[0, 2]]) >= 0.25 - 1e-9
     other = build_parser().parse_args(args[:4] + ["0.2"] + args[5:])
     assert bank_entry(other) != entry.name                     # another size is another object
+
+
+def test_thumbnail_is_the_cutout_centred_on_transparent(tmp_path):
+    from recast.object.cli import save_thumbnail
+    img = np.zeros((60, 100, 3))
+    img[10:50, 70:90] = [0.8, 0.1, 0.1]
+    alpha = np.zeros((60, 100))
+    alpha[10:50, 70:90] = 1.0
+    save_thumbnail(tmp_path / "t.png", img, alpha, size=64)
+    t = np.asarray(Image.open(tmp_path / "t.png"))
+    assert t.shape == (64, 64, 4)
+    assert t[32, 32, 3] == 255 and t[32, 32, 0] > 200 and t[32, 32, 1] < 120   # the red object in the middle
+    assert t[32, 2, 3] == 0 and t[2, 2, 3] == 0                             # nothing beside it
+
+
+def test_example_wine_glass_is_a_closed_glass_of_real_size(tmp_path):
+    from recast.object.examples import ensure_examples, wine_glass
+    mesh = wine_glass()
+    assert mesh.is_watertight and mesh.volume > 0
+    size = np.ptp(mesh.vertices, axis=0)
+    assert size[1] == pytest.approx(0.205, abs=1e-3) and size[0] == pytest.approx(0.086, abs=2e-3)
+    assert mesh.vertices[:, 1].min() == pytest.approx(0.0, abs=1e-9)          # stands on its foot
+    written = ensure_examples(tmp_path)
+    folder = written[0]
+    assert {"object.glb", "object_meta.json", "thumbnail.png"} <= {f.name for f in folder.iterdir()}
+    gltf = trimesh.load(folder / "object.glb")
+    assert len(gltf.geometry) == 1
+    assert b"KHR_materials_transmission" in (folder / "object.glb").read_bytes()
+    assert json.loads((folder / "object_meta.json").read_text())["glass"] is True
+    assert ensure_examples(tmp_path) == []                                   # already there: left alone
