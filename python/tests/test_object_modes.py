@@ -296,18 +296,20 @@ def test_thumbnail_is_the_cutout_centred_on_transparent(tmp_path):
     assert t[32, 2, 3] == 0 and t[2, 2, 3] == 0                             # nothing beside it
 
 
-def test_example_wine_glass_is_a_closed_glass_of_real_size(tmp_path):
-    from recast.object.examples import ensure_examples, wine_glass
-    mesh = wine_glass()
-    assert mesh.is_watertight and mesh.volume > 0
-    size = np.ptp(mesh.vertices, axis=0)
-    assert size[1] == pytest.approx(0.205, abs=1e-3) and size[0] == pytest.approx(0.086, abs=2e-3)
-    assert mesh.vertices[:, 1].min() == pytest.approx(0.0, abs=1e-9)          # stands on its foot
+def test_example_glass_dragon_is_amber_glass_of_real_size(tmp_path):
+    from recast.object.examples import ensure_examples
+    (tmp_path / "example_wine_glass").mkdir()
+    (tmp_path / "example_wine_glass" / "object_meta.json").write_text(json.dumps({"mode": "example"}))
     written = ensure_examples(tmp_path)
+    assert not (tmp_path / "example_wine_glass").exists()                    # retired examples are removed
     folder = written[0]
     assert {"object.glb", "object_meta.json", "thumbnail.png"} <= {f.name for f in folder.iterdir()}
-    gltf = trimesh.load(folder / "object.glb")
-    assert len(gltf.geometry) == 1
-    assert b"KHR_materials_transmission" in (folder / "object.glb").read_bytes()
+    mesh = trimesh.load(folder / "object.glb", force="mesh")
+    mesh.merge_vertices(merge_tex=True, merge_norm=True)
+    assert mesh.is_winding_consistent and mesh.volume > 0                    # outward faces: inside the glass is known
+    assert mesh.extents[1] == pytest.approx(0.20, abs=1e-3)
+    assert mesh.bounds[0][1] == pytest.approx(0.0, abs=1e-6)                 # stands on its base
+    glb = (folder / "object.glb").read_bytes()
+    assert b"KHR_materials_transmission" in glb and b"attenuationColor" in glb
     assert json.loads((folder / "object_meta.json").read_text())["glass"] is True
     assert ensure_examples(tmp_path) == []                                   # already there: left alone

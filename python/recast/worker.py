@@ -100,7 +100,7 @@ def main(argv=None) -> None:
     queue = Path(args.queue)
     queue.mkdir(parents=True, exist_ok=True)
     _lower_priority()
-    try:                                              # the bank's built-in objects (a wine glass), if missing
+    try:                                              # the bank's built-in objects (a glass dragon), if missing
         from .object.cli import DEFAULT_DATA_ROOT
         from .object.examples import ensure_examples
         ensure_examples(DEFAULT_DATA_ROOT / "objects")

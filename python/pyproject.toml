@@ -34,5 +34,8 @@ recast = "recast.cli:main"
 [tool.setuptools.packages.find]
 include = ["recast*"]
 
+[tool.setuptools.package-data]
+"recast.object" = ["assets/*"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
