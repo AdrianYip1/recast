@@ -47,6 +47,9 @@ namespace foto {
 		u32 createTexture(const void* rgba, u32 width, u32 height);
 		// Exact values (UNORM, no mips) for lookups like ids: read it with texelFetch
 		u32 createDataTexture(const void* rgba, u32 width, u32 height);
+		// An image file for the UI: the result is an ImTextureID for ImGui::Image / ImageButton, 0 if it can't be loaded.
+		// Each one takes a slot in ImGui's descriptor pool (64 to spare), so callers load each file once
+		u64 loadUiImage(const std::string& filePath);
 		u32 createMaterial(const Material& material);
 		void updateMaterial(u32 index, const Material& material);
 		const Material& getMaterial(u32 index);

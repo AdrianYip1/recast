@@ -3,6 +3,7 @@
 #include <array>
 #include <chrono>
 #include <map>
+#include <set>
 
 #include <imgui.h>
 #include <future>
@@ -55,9 +56,37 @@ private:
 	// The object bank: every object made so far (data/objects/<entry>/object.glb), ready to add again without Python
 	struct BankEntry {
 		std::filesystem::path glb;
-		std::string label;
+		std::filesystem::path thumbnail; // the cutout from its photo, empty for objects made before thumbnails
+		foto::u64 image = 0;             // thumbnail as an ImGui texture, 0 until loaded
+		std::string name;                // its photo's name, under the tile
+		std::string label;               // name plus size, in the tooltip
 	};
 	std::vector<BankEntry> bank;
+	// Scenes built so far (data/<photo>_<hash>/scene.json), the drawer's other tab: a click opens one
+	struct SceneEntry {
+		std::filesystem::path sceneJson;
+		std::filesystem::path photo;     // for making its thumbnail
+		std::filesystem::path thumbnail; // thumbnail.jpg next to scene.json, made by the engine the first time
+		foto::u64 image = 0;
+		std::string name, label;
+	};
+	std::vector<SceneEntry> scenes;
+	int drawerTab = 0; // 0 objects, 1 scenes
+	bool drawerListed = false; // bank and scenes listed at startup, on every scene load, and when their folders change
+	std::chrono::steady_clock::time_point drawerChecked;
+	std::filesystem::file_time_type bankStamp, dataStamp;
+	std::future<void> thumbnailJob; // scene thumbnails being made in the background
+	std::set<std::string> thumbnailTried; // each made once: a photo that can't be read isn't retried every frame
+	std::map<std::string, foto::u64> thumbnails; // loaded once per file (ImGui has room for 64)
+	bool drawerOpen = true;
+	// Bank objects to add on the next update (loading a mesh mid-UI is unsafe): at the cursor ray, or beside the others
+	struct PendingAdd {
+		std::filesystem::path glb;
+		bool atCursor = false;
+		enginemath::Vec3 origin, direction;
+	};
+	std::vector<PendingAdd> pendingAdds;
+	bool openCachedScene = false; // set by the scene button when the photo's scene is cached: loaded on the next update
 	bool useCache = true; // a photo seen before opens its saved scene, an object photo reuses its bank entry
 	enginemath::Vec3 dragOffset;
 	bool leftMouseWasDown = false;
@@ -96,7 +125,6 @@ private:
 	std::string followUpLabel;
 	std::vector<std::string> followUpArguments;
 	bool loadIfFollowUpFails = false;
-	int objectMode = 0;
 	float objectHeight = 0.3f;
 	std::string pythonCommand(const std::vector<std::string>& arguments) const;
 	void startPythonWorker();
@@ -166,7 +194,12 @@ private:
 	void updateObjectInteraction();
 	foto::Mesh* objectMeshFor(const std::string& path);
 	void refreshBank();
-	void addFromBank(const BankEntry& entry);
+	void addFromBank(const PendingAdd& add);
+	void loadThumbnails();
+	void refreshScenes();
+	void drawObjectDrawer();
+	bool drawTile(size_t index, foto::u64 image, const std::string& name, const std::string& tooltip, const std::string& badge,
+				  const char* dragType);
 	void removeObject(int index);
 	void drawObjectPanel();
 	bool updateLightEditing();

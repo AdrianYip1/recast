@@ -13,6 +13,7 @@
 #include "../rhi_vulkan/vkDescriptorHelper.hpp"
 #include "../assets/gltfLoader.hpp"
 #include "../ui/imguiLayer.hpp"
+#include <imgui_impl_vulkan.h>
 
 using enginemath::Vec3;
 using enginemath::Mat4;
@@ -212,6 +213,18 @@ foto::u32 foto::Application::createTexture(const void* rgba, u32 width, u32 heig
 foto::u32 foto::Application::createDataTexture(const void* rgba, u32 width, u32 height) {
 	VkDeviceSize size = static_cast<VkDeviceSize>(width) * height * 4;
 	return addTexture(Image::createTexture(*device, render->getCommandPool(), rgba, size, { width, height }, VK_FORMAT_R8G8B8A8_UNORM, false));
+}
+
+foto::u64 foto::Application::loadUiImage(const std::string& filePath) {
+	try {
+		textures.push_back(Image::loadTexture(*device, render->getCommandPool(), filePath));
+	}
+	catch (const std::exception& e) {
+		std::cerr << e.what() << std::endl;
+		return 0;
+	}
+	VkDescriptorSet set = ImGui_ImplVulkan_AddTexture(textures.back()->getView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+	return reinterpret_cast<u64>(set);
 }
 
 void foto::Application::setPathTraceOwners(u32 ownerTexture) {
