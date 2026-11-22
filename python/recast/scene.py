@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -274,7 +275,16 @@ def write_json_atomic(path: str | Path, data: dict) -> None:
     try:
         with os.fdopen(fd, "w") as f:
             json.dump(data, f, indent=2)
-        os.replace(tmp, path)
+        # Windows refuses to replace a file another program has open for a moment (the engine reading it, a virus
+        # scanner): try again, then write over it in place
+        for _ in range(10):
+            try:
+                os.replace(tmp, path)
+                return
+            except PermissionError:
+                time.sleep(0.05)
+        path.write_text(Path(tmp).read_text())
+        os.remove(tmp)
     except BaseException:
         if os.path.exists(tmp):
             os.remove(tmp)

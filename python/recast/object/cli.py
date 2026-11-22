@@ -288,6 +288,7 @@ def _run_generated(args, out: Path, img: np.ndarray, mask: np.ndarray, alpha, sh
     save_jpg(out / "object_mask.jpg", mask.astype(np.uint8) * 255, linear=False)
     save_thumbnail(out / "thumbnail.png", img, a)
     meta = {"mode": "generated", "glass": bool(args.glass), "photo": str(args.photo), "working_scale": shrink,
+            "rect": list(args.rect) if args.rect else None,                 # full-size pixels: the app shows it again
             "measurement": {"height_m": height} if height else {"width_m": width}, "model": info,
             "scale_units_to_m": scale, "vertices": len(mesh.vertices), "faces": len(mesh.faces)}
     write_meta(out / "object_meta.json", meta)
