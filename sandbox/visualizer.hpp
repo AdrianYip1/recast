@@ -97,7 +97,7 @@ private:
 	void drawSidebar();
 	void drawPrompt();
 	float sidebarWidth = 0.0f;
-	bool objectPromptDismissed = false; // "not now" on the object prompt
+	void drawPythonLog();
 	bool showPlacedTip = false;          // how to move a newly added object
 
 	std::vector<recast::SceneLight> detectedLights; // what "reset lights" goes back to

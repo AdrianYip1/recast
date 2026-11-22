@@ -21,4 +21,8 @@ ImFont* boldFont();  // Montserrat SemiBold
 // A purple button with white text, for the main action on screen. A size of 0 fits the label
 bool accentButton(const char* label, ImVec2 size = ImVec2(0.0f, 0.0f));
 
+// The ReCast logo (assetsDir/logo.png); size is (0, 0) when it couldn't be loaded
+ImTextureRef logo();
+ImVec2 logoSize();
+
 } // namespace recast::ui

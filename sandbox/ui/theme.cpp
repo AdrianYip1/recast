@@ -2,7 +2,11 @@
 
 #include <cmath>
 #include <filesystem>
+#include <cstring>
 #include <initializer_list>
+
+#include <imgui_internal.h>
+#include <stb_image.h>
 
 namespace recast::ui {
 
@@ -10,6 +14,7 @@ namespace {
 
 ImFont* title = nullptr;
 ImFont* bold = nullptr;
+ImTextureData logoTexture;
 
 constexpr float FONT_SIZE = 16.0f;
 
@@ -33,7 +38,30 @@ ImVec4 rgb(int r, int g, int b, float a = 1.0f) {
 	return ImVec4(linear(r), linear(g), linear(b), a);
 }
 
+void loadLogo(const std::string& path) {
+	int width = 0, height = 0, channels = 0;
+	unsigned char* pixels = stbi_load(path.c_str(), &width, &height, &channels, 4);
+	if (!pixels) return;
+	// same reason as rgb(): the image is sRGB, the screen re-encodes what ImGui draws
+	for (int i = 0; i < width * height * 4; i++) {
+		if (i % 4 != 3) pixels[i] = static_cast<unsigned char>(std::lround(255.0f * linear(pixels[i])));
+	}
+	logoTexture.Create(ImTextureFormat_RGBA32, width, height);
+	std::memcpy(logoTexture.GetPixels(), pixels, static_cast<size_t>(width) * height * 4);
+	logoTexture.UseColors = true;
+	stbi_image_free(pixels);
+	ImGui::RegisterUserTexture(&logoTexture);
+}
+
 } // namespace
+
+ImTextureRef logo() {
+	return logoTexture.GetTexRef();
+}
+
+ImVec2 logoSize() {
+	return ImVec2(static_cast<float>(logoTexture.Width), static_cast<float>(logoTexture.Height));
+}
 
 ImVec4 purple() {
 	return rgb(132, 96, 138);
@@ -81,6 +109,7 @@ void applyTheme(float dpiScale, const std::string& assetsDir) {
 	title = loadFirst({ fonts + "Pinecone.ttf", fonts + "Pinecone.otf", fonts + "Pinecone-Regular.ttf",
 						fonts + "Pinecone-Regular.otf", fonts + "pinecone.ttf", fonts + "pinecone.otf" });
 	if (!title) title = bold;
+	loadLogo(assetsDir + "/logo.png");
 
 	ImGuiStyle& style = ImGui::GetStyle();
 	style = ImGuiStyle();

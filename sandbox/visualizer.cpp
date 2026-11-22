@@ -767,6 +767,11 @@ void Visualizer::onImGui() {
 
 // Everything the app does, in a sidebar that always fills the left of the window
 void Visualizer::drawSidebar() {
+	// hidden until there's a scene and an object to work on: the prompts lead up to that
+	if (!sceneLoaded || !objectMesh) {
+		sidebarWidth = 0.0f;
+		return;
+	}
 	const ImGuiViewport* viewport = ImGui::GetMainViewport();
 	sidebarWidth = std::min(22.0f * ImGui::GetFontSize(), 0.45f * viewport->WorkSize.x);
 	ImGui::SetNextWindowPos(viewport->WorkPos);
@@ -777,7 +782,15 @@ void Visualizer::drawSidebar() {
 	ImGui::PopStyleVar();
 	const float full = -FLT_MIN;
 
+	ImVec2 logoSize = recast::ui::logoSize();
 	ImGui::PushFont(recast::ui::titleFont(), ImGui::GetStyle().FontSizeBase * 2.0f);
+	const float titleHeight = ImGui::GetFontSize();
+	if (logoSize.y > 0.0f) {
+		float height = 1.5f * titleHeight;
+		ImGui::Image(recast::ui::logo(), ImVec2(logoSize.x * height / logoSize.y, height));
+		ImGui::SameLine();
+		ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 0.5f * (height - titleHeight));
+	}
 	ImGui::TextColored(recast::ui::purple(), "ReCast");
 	ImGui::PopFont();
 	hint("Put any object into any photo.");
@@ -797,13 +810,7 @@ void Visualizer::drawSidebar() {
 	else if (!pipelineStatus.empty()) {
 		ImGui::TextWrapped("%s", pipelineStatus.c_str());
 	}
-	if (pythonFailed) {
-		std::string log = pythonJob.output();
-		ImGui::BeginChild("python log", ImVec2(0.0f, 9.0f * ImGui::GetFontSize()), ImGuiChildFlags_Borders,
-						  ImGuiWindowFlags_HorizontalScrollbar);
-		ImGui::TextUnformatted(log.c_str(), log.c_str() + log.size());
-		ImGui::EndChild();
-	}
+	if (pythonFailed) drawPythonLog();
 
 	// object
 	sectionHeading("Object");
@@ -892,6 +899,15 @@ void Visualizer::drawSidebar() {
 	ImGui::End();
 }
 
+// What Python printed, after a step failed
+void Visualizer::drawPythonLog() {
+	std::string log = pythonJob.output();
+	ImGui::BeginChild("python log", ImVec2(0.0f, 9.0f * ImGui::GetFontSize()), ImGuiChildFlags_Borders,
+					  ImGuiWindowFlags_HorizontalScrollbar);
+	ImGui::TextUnformatted(log.c_str(), log.c_str() + log.size());
+	ImGui::EndChild();
+}
+
 // A small card in the middle of the photo that asks for the next step: the scene photo at the start, the object photo
 // once the scene is in, and how to move the object once it's added
 void Visualizer::drawPrompt() {
@@ -899,7 +915,7 @@ void Visualizer::drawPrompt() {
 	Prompt prompt = Prompt::None;
 	if (pythonJob.running()) prompt = Prompt::Working;
 	else if (!sceneLoaded) prompt = Prompt::Scene;
-	else if (!objectMesh && !objectPromptDismissed) prompt = Prompt::Object;
+	else if (!objectMesh) prompt = Prompt::Object;
 	else if (objectMesh && showPlacedTip) prompt = Prompt::Placed;
 	if (prompt == Prompt::None) return;
 
@@ -911,14 +927,13 @@ void Visualizer::drawPrompt() {
 							ImGuiCond_Always, ImVec2(0.5f, 0.5f));
 	ImGui::SetNextWindowSizeConstraints(ImVec2(width, 0.0f), ImVec2(width, FLT_MAX));
 	ImGui::PushStyleColor(ImGuiCol_WindowBg, recast::ui::paperLight());
-	ImGui::PushStyleColor(ImGuiCol_Border, recast::ui::purple());
-	ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 2.0f);
+	ImGui::PushStyleColor(ImGuiCol_FrameBg, recast::ui::paper()); // fields stand out from the card
+	ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
 	ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(1.4f * em, 1.2f * em));
 	ImGui::Begin("##prompt", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
 										  ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings |
 										  ImGuiWindowFlags_AlwaysAutoResize);
 	ImGui::PopStyleVar(2);
-	ImGui::PopStyleColor(2);
 
 	auto title = [](const char* text) {
 		ImGui::PushFont(recast::ui::titleFont(), ImGui::GetStyle().FontSizeBase * 1.6f);
@@ -935,8 +950,18 @@ void Visualizer::drawPrompt() {
 	switch (prompt) {
 	case Prompt::Working: {
 		static const char* dots[] = { "", ".", "..", "..." };
-		title("One moment");
-		ImGui::Text("%s%s", pythonLabel.c_str(), dots[static_cast<int>(ImGui::GetTime() * 3.0) % 4]);
+		if (pendingObjectReload) {
+			title("Select your object");
+			text("A new window should pop up with your object photo. If you don't see it, check behind this window or "
+				 "in the taskbar.");
+			ImGui::Dummy(ImVec2(0.0f, 0.3f * em));
+			text("In that window, drag a box around the object, then press Enter.");
+			ImGui::Dummy(ImVec2(0.0f, 0.3f * em));
+		}
+		else {
+			title("One moment");
+		}
+		ImGui::TextColored(recast::ui::purple(), "%s%s", pythonLabel.c_str(), dots[static_cast<int>(ImGui::GetTime() * 3.0) % 4]);
 		ImGui::TextDisabled("This can take a minute the first time.");
 		break;
 	}
@@ -947,24 +972,26 @@ void Visualizer::drawPrompt() {
 		if (recast::ui::accentButton("Choose scene photo...", full)) chooseScenePhoto();
 		if (pythonFailed) {
 			ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.55f, 0.02f, 0.02f, 1.0f));
-			text("That photo didn't work. Try another one, or see the log in the sidebar.");
+			text("That photo didn't work. Try another one, or see what went wrong below.");
 			ImGui::PopStyleColor();
+			drawPythonLog();
 		}
 		break;
 	case Prompt::Object:
 		title("Add an object");
-		text("Choose a photo of the object to place. Set its shape and real height first.");
+		text("Choose a photo of the object to place. Set its shape and real height first. A new window will then pop "
+			 "up where you drag a box around the object.");
 		ImGui::Dummy(ImVec2(0.0f, 0.3f * em));
 		labelled("Shape");
 		ImGui::Combo("##prompt shape", &objectMode, OBJECT_SHAPES, IM_ARRAYSIZE(OBJECT_SHAPES));
 		labelled("Height (m)");
 		ImGui::InputFloat("##prompt height", &objectHeight, 0.0f, 0.0f, "%.2f");
 		if (recast::ui::accentButton("Choose object photo...", full)) chooseObjectPhoto();
-		if (ImGui::Button("Not now", ImVec2(-FLT_MIN, 0.0f))) objectPromptDismissed = true;
 		if (pythonFailed) {
 			ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.55f, 0.02f, 0.02f, 1.0f));
-			text("That object didn't work. Try another photo, or see the log in the sidebar.");
+			text("That object didn't work. Try another photo, or see what went wrong below.");
 			ImGui::PopStyleColor();
+			drawPythonLog();
 		}
 		break;
 	case Prompt::Placed:
@@ -977,6 +1004,7 @@ void Visualizer::drawPrompt() {
 		break;
 	}
 	ImGui::End();
+	ImGui::PopStyleColor(2);
 }
 
 std::string Visualizer::pythonCommand(const std::vector<std::string>& arguments) const {
@@ -1054,7 +1082,6 @@ void Visualizer::finishPython() {
 	if (pendingPhotoReload) loadedPhotoPath.clear();
 	if (pendingObjectReload) loadedObjectPath.clear();
 	if (pendingObjectReload && succeeded) showPlacedTip = true;
-	if (pendingPhotoReload) objectPromptDismissed = false;
 	scenePath = pendingScenePath;
 	pendingScenePath.clear();
 	loadScene();
