@@ -106,7 +106,6 @@ private:
 	};
 	std::vector<PendingAdd> pendingAdds;
 	bool openCachedScene = false; // set by the scene button when the photo's scene is cached: loaded on the next update
-	bool useCache = true; // a photo seen before opens its saved scene, an object photo reuses its bank entry
 	enginemath::Vec3 dragOffset;
 	bool leftMouseWasDown = false;
 	bool screenshotKeyWasDown = false;
@@ -131,6 +130,7 @@ private:
 	foto::f32 shadowRadius = 5.0f;
 
 	bool exportRequested = false;
+	std::string exportFolder; // where the last export was saved, so the next save dialog starts there
 
 	// The Python pipeline (python/README.md) run from the panel. Its results land in scene.json, which hot reload picks up
 	recast::PythonWorker pythonWorker;

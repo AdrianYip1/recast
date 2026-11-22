@@ -62,7 +62,14 @@ namespace recast {
 
 	int currentProcessId();
 
+	// The folder the exe is in
+	std::filesystem::path executableDir();
+	// true when running from the release zip, which keeps everything next to the exe (runtime/ holds its own Python)
+	bool portableInstall();
+
 	// Native open-file dialog, "" when cancelled. filter uses the Windows format: "Name\0*.jpg;*.png\0"
 	// Windows only for now, elsewhere it returns "" and the path is typed in
-	std::string openFileDialog(const char* title, const char* filter);
+	std::string openFileDialog(const char* title, const char* filter, const char* folder = nullptr);
+	// Native save-file dialog starting in folder with name filled in, "" when cancelled. Asks before overwriting
+	std::string saveFileDialog(const char* title, const char* filter, const char* extension, const std::string& folder, const std::string& name);
 } // namespace recast

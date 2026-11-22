@@ -104,6 +104,9 @@ target_compile_definitions(foto PRIVATE
 
 target_link_libraries(foto PRIVATE foto_engine glfw Vulkan::Vulkan stb)
 if(WIN32)
+    # the exe's icon; GLFW_ICON is also the resource name GLFW gives the window and taskbar
+    configure_file(sandbox/recast.rc.in ${CMAKE_CURRENT_BINARY_DIR}/recast.rc @ONLY)
+    target_sources(foto PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/recast.rc)
     target_link_libraries(foto PRIVATE comdlg32)
 endif()
 

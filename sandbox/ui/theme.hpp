@@ -10,6 +10,7 @@ namespace recast::ui {
 ImVec4 purple();
 ImVec4 paper();
 ImVec4 paperLight(); // cards and fields on the paper
+ImVec4 ink();        // text and outlines
 
 // Fonts (Montserrat Light for text, Reenie Beanie for titles, from assetsDir/fonts), spacing and colours for the whole UI.
 // Call once after ImGui is created, before the first frame. dpiScale is the monitor's content scale
@@ -18,7 +19,9 @@ void applyTheme(float dpiScale, const std::string& assetsDir);
 ImFont* titleFont(); // Reenie Beanie (Montserrat SemiBold if it's missing)
 ImFont* boldFont();  // Montserrat SemiBold
 
-// A purple button with white text, for the main action on screen. A size of 0 fits the label
+// Buttons with the hand cursor. A size of 0 fits the label
+bool button(const char* label, ImVec2 size = ImVec2(0.0f, 0.0f));
+// Purple with white text, for the main action on screen
 bool accentButton(const char* label, ImVec2 size = ImVec2(0.0f, 0.0f));
 
 // The ReCast logo (assetsDir/logo.png); size is (0, 0) when it couldn't be loaded

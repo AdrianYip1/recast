@@ -1,5 +1,6 @@
 #include "theme.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <filesystem>
 #include <cstring>
@@ -83,13 +84,35 @@ ImFont* boldFont() {
 	return bold ? bold : ImGui::GetFont();
 }
 
+ImVec4 ink() {
+	return rgb(32, 26, 30);
+}
+
+namespace {
+
+// Buttons get a bit more height than other fields, and the hand cursor
+bool tallButton(const char* label, ImVec2 size) {
+	const ImGuiStyle& style = ImGui::GetStyle();
+	ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(style.FramePadding.x * 1.25f, style.FramePadding.y * 1.5f));
+	bool pressed = ImGui::Button(label, size);
+	if (ImGui::IsItemHovered()) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+	ImGui::PopStyleVar();
+	return pressed;
+}
+
+} // namespace
+
+bool button(const char* label, ImVec2 size) {
+	return tallButton(label, size);
+}
+
 bool accentButton(const char* label, ImVec2 size) {
 	ImGui::PushStyleColor(ImGuiCol_Button, purple());
-	ImGui::PushStyleColor(ImGuiCol_ButtonHovered, rgb(152, 114, 158));
-	ImGui::PushStyleColor(ImGuiCol_ButtonActive, rgb(110, 78, 116));
+	ImGui::PushStyleColor(ImGuiCol_ButtonHovered, rgb(112, 78, 118));
+	ImGui::PushStyleColor(ImGuiCol_ButtonActive, rgb(88, 58, 94));
 	ImGui::PushStyleColor(ImGuiCol_Text, rgb(255, 255, 255));
 	ImGui::PushFont(boldFont(), 0.0f);
-	bool pressed = ImGui::Button(label, size);
+	bool pressed = tallButton(label, size);
 	ImGui::PopFont();
 	ImGui::PopStyleColor(4);
 	return pressed;
@@ -119,7 +142,7 @@ void applyTheme(float dpiScale, const std::string& assetsDir) {
 	style.ItemSpacing = ImVec2(8.0f, 7.0f);
 	style.WindowRounding = 10.0f;
 	style.ChildRounding = 8.0f;
-	style.FrameRounding = 5.0f;
+	style.FrameRounding = 4.0f;
 	style.PopupRounding = 6.0f;
 	style.GrabRounding = 5.0f;
 	style.ScrollbarRounding = 5.0f;
@@ -141,7 +164,7 @@ void applyTheme(float dpiScale, const std::string& assetsDir) {
 	const ImVec4 ink = rgb(32, 26, 30);
 	ImVec4* c = style.Colors;
 	c[ImGuiCol_Text] = ink;
-	c[ImGuiCol_TextDisabled] = rgb(112, 102, 92);
+	c[ImGuiCol_TextDisabled] = rgb(88, 78, 74); // hints: still readable on the paper
 	c[ImGuiCol_WindowBg] = paper();
 	c[ImGuiCol_ChildBg] = rgb(0, 0, 0, 0.0f);
 	c[ImGuiCol_PopupBg] = light;
@@ -160,9 +183,10 @@ void applyTheme(float dpiScale, const std::string& assetsDir) {
 	c[ImGuiCol_CheckMark] = accent;
 	c[ImGuiCol_SliderGrab] = accent;
 	c[ImGuiCol_SliderGrabActive] = accentHover;
-	c[ImGuiCol_Button] = dark;
-	c[ImGuiCol_ButtonHovered] = accentSoft;
-	c[ImGuiCol_ButtonActive] = accentHover;
+	// plain buttons: light paper inside the ink outline, tinted with the purple on hover and darker when pressed
+	c[ImGuiCol_Button] = lighter;
+	c[ImGuiCol_ButtonHovered] = rgb(236, 224, 236);
+	c[ImGuiCol_ButtonActive] = rgb(214, 196, 216);
 	c[ImGuiCol_Header] = accentSoft;
 	c[ImGuiCol_HeaderHovered] = rgb(132, 96, 138, 0.25f);
 	c[ImGuiCol_HeaderActive] = rgb(132, 96, 138, 0.5f);

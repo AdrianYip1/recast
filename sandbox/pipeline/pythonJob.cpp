@@ -156,7 +156,26 @@ namespace recast {
 #endif
 	}
 
-	std::string openFileDialog(const char* title, const char* filter) {
+	std::filesystem::path executableDir() {
+#ifdef _WIN32
+		wchar_t buffer[MAX_PATH * 4] = {};
+		DWORD length = GetModuleFileNameW(nullptr, buffer, static_cast<DWORD>(std::size(buffer)));
+		return std::filesystem::path(std::wstring(buffer, length)).parent_path();
+#else
+		std::error_code error;
+		return std::filesystem::read_symlink("/proc/self/exe", error).parent_path();
+#endif
+	}
+
+	bool portableInstall() {
+		static const bool portable = [] {
+			std::error_code error;
+			return std::filesystem::exists(executableDir() / "runtime" / "python.exe", error);
+		}();
+		return portable;
+	}
+
+	std::string openFileDialog(const char* title, const char* filter, const char* folder) {
 #ifdef _WIN32
 		char path[MAX_PATH] = "";
 		OPENFILENAMEA dialog = {};
@@ -165,12 +184,38 @@ namespace recast {
 		dialog.lpstrFile = path;
 		dialog.nMaxFile = MAX_PATH;
 		dialog.lpstrTitle = title;
+		dialog.lpstrInitialDir = folder;
 		// NOCHANGEDIR: the engine loads shaders relative to the working directory
 		dialog.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
 		if (GetOpenFileNameA(&dialog)) return path;
 #else
 		(void)title;
 		(void)filter;
+		(void)folder;
+#endif
+		return {};
+	}
+
+	std::string saveFileDialog(const char* title, const char* filter, const char* extension, const std::string& folder, const std::string& name) {
+#ifdef _WIN32
+		char path[MAX_PATH] = "";
+		std::snprintf(path, sizeof(path), "%s", name.c_str());
+		OPENFILENAMEA dialog = {};
+		dialog.lStructSize = sizeof(dialog);
+		dialog.lpstrFilter = filter;
+		dialog.lpstrFile = path;
+		dialog.nMaxFile = MAX_PATH;
+		dialog.lpstrTitle = title;
+		dialog.lpstrDefExt = extension;
+		dialog.lpstrInitialDir = folder.empty() ? nullptr : folder.c_str();
+		dialog.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+		if (GetSaveFileNameA(&dialog)) return path;
+#else
+		(void)title;
+		(void)filter;
+		(void)extension;
+		(void)folder;
+		(void)name;
 #endif
 		return {};
 	}

@@ -15,6 +15,7 @@ foto::Window::~Window() {
 void foto::Window::initWindow() {
 	glfwInit();
 	glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+	glfwWindowHint(GLFW_MAXIMIZED, GLFW_TRUE);
 
 	window = glfwCreateWindow(WIDTH, HEIGHT, TITLE, nullptr, nullptr);
 
