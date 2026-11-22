@@ -93,7 +93,7 @@ def test_detect_command_keeps_hand_made_proxies_and_reseats_the_object(tmp_path,
     on_top = np.array([0.2, 0.75, 2.9])
     ray = (on_top - cam.position) / np.linalg.norm(on_top - cam.position)
     centre = list(cam.position + ray * (-cam.position[1] / ray[1]))
-    data["object"] = {"path": "object.glb", "transform": {"position": centre, "rotation_y_deg": 0, "scale": 1}}
+    data["object"] = {"path": "object.glb", "transform": {"position": centre, "rotation_y_deg": 0, "scale": 1}}  # older single form
     (sdir / "scene.json").write_text(json.dumps(data))
 
     args = ["detect", "--name", "t", "--data-root", str(tmp_path / "data")]
@@ -112,7 +112,7 @@ def test_detect_command_keeps_hand_made_proxies_and_reseats_the_object(tmp_path,
     assert (sdir / "detect_check.jpg").exists()
 
     # the object stays at the same spot in the photo, now standing on the table top
-    pos = np.array(scene.object.to_dict()["transform"]["position"])
+    pos = np.array(scene.objects[0].to_dict()["transform"]["position"])
     table = next(p for p in scene.proxies if p.id in next(o for o in info["objects"] if o["label"] == "table")["proxy_ids"])
     assert pos[1] == pytest.approx(table.max[1] + 0.002, abs=1e-3)
     np.testing.assert_allclose(cam.project(pos), cam.project(np.array(centre)), atol=1.5)

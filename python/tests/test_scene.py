@@ -16,7 +16,7 @@ def _scene():
     cam = look_at_camera(width=160, height=120, focal_px=130.0)
     return Scene(
         camera=cam,
-        object=ObjectPlacement("object.glb", (0.2, 0, 3.5), 30.0, 1.0),
+        objects=[ObjectPlacement("object.glb", (0.2, 0, 3.5), 30.0, 1.0)],
         proxies=[floor_proxy(0, Material((0.3, 0.25, 0.2), 0.3)),
                  BoxProxy(1, (0.5, 0, 3), (1.5, 0.75, 4))],
         lights=[AreaLight(np.array([[0, 2.4, 3], [1, 2.4, 3], [1, 2.4, 4], [0, 2.4, 4]]), (8, 8, 7))],
@@ -103,20 +103,21 @@ def test_box_on_floor_from_clicks():
     assert np.allclose(box.max, [1.2, 0.8, 3.6], atol=1e-6)
 
 
-def test_no_object_key_is_left_out_for_the_engine(tmp_path):
-    """The engine's loader rejects "object": null; missing (or an empty path) means no object."""
-    s = _scene()
-    s.object = None
-    d = s.to_dict()
-    assert "object" not in d
+def test_older_single_object_moves_into_the_list(tmp_path):
+    """Scenes hold a list of objects; older files have one "object" (null or an empty path meaning none)."""
+    d = _scene().to_dict()
+    assert "object" not in d and d["objects"][0]["path"] == "object.glb"
     jsonschema.validate(d, SCHEMA)
-    assert Scene.from_dict(dict(d, object={"path": "", "transform": {}})).object is None
-    assert Scene.from_dict(dict(d, object=None)).object is None
-    # an older file with null gets cleaned up on the next update
+    legacy = {k: v for k, v in d.items() if k != "objects"}
+    assert Scene.from_dict(dict(legacy, object={"path": "", "transform": {}})).objects == []
+    assert Scene.from_dict(dict(legacy, object=None)).objects == []
+    assert Scene.from_dict(dict(legacy, object=d["objects"][0])).objects[0].path == "object.glb"
+    # an older file is moved over on the next update
     p = tmp_path / "scene.json"
-    p.write_text(json.dumps(dict(d, object=None)))
+    p.write_text(json.dumps(dict(legacy, object=d["objects"][0])))
     update_scene_file(p, photo="photo.jpg")
-    assert "object" not in json.loads(p.read_text())
+    saved = json.loads(p.read_text())
+    assert "object" not in saved and saved["objects"][0]["path"] == "object.glb"
 
 
 def test_engine_lights_ambient_and_object_size_survive_python(tmp_path):
@@ -142,14 +143,14 @@ def test_engine_lights_ambient_and_object_size_survive_python(tmp_path):
            "intensity": [1.5, 1.5, 1.4], "angular_radius_deg": 0.5}
     data["lights"] = [point, sun]
     data["lighting"]["ambient"] = [0.11, 0.12, 0.13]
-    data["object"] = {"path": "object.glb", "transform": {"position": [0, 0, 2], "rotation_y_deg": 30, "scale": 1.7}}
+    data["objects"] = [{"path": "object.glb", "transform": {"position": [0, 0, 2], "rotation_y_deg": 30, "scale": 1.7}}]
     (sdir / "scene.json").write_text(json.dumps(data))
 
     main(["light", "--name", "t", "--data-root", str(tmp_path / "data"), "--python-gbuffer"])
     after = json.loads((sdir / "scene.json").read_text())
     assert after["lights"] == [point, sun]
     assert after["lighting"]["ambient"] == [0.11, 0.12, 0.13] and len(after["lighting"]["sh"]) == 4
-    assert after["object"]["transform"]["scale"] == 1.7
+    assert after["objects"][0]["transform"]["scale"] == 1.7
 
     again = Scene.from_dict(after).to_dict()
     assert again["lights"] == [point, sun] and again["lighting"]["ambient"] == [0.11, 0.12, 0.13]

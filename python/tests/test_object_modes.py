@@ -255,3 +255,29 @@ def test_neutral_light_takes_out_the_rooms_colour_but_not_too_much():
     green = grey * np.array([0.3, 1.0, 0.3])                       # a room that really is green: only partly undone
     corrected = neutral_light(green) * np.array([0.3, 1.0, 0.3])
     assert corrected[0] < 0.6 * corrected[1]                       # still clearly green
+
+
+def test_bank_reuses_an_object_and_places_copies_side_by_side(tmp_path):
+    """The same photo and settings come back from the bank without making the object again, and each copy lands on
+    the floor next to the ones already there."""
+    from recast.object.cli import bank_entry, build_parser
+    from recast.scene import Scene, floor_proxy
+    from synthetic import look_at_camera
+    sdir, bank = tmp_path / "room", tmp_path / "objects"
+    sdir.mkdir()
+    Scene(look_at_camera(width=160, height=120, focal_px=130.0), proxies=[floor_proxy(0)]).save(sdir / "scene.json")
+    photo = tmp_path / "mug.jpg"
+    save_jpg(photo, np.full((40, 40, 3), 0.5))
+    args = [str(photo), "--mode", "generated", "--height", "0.1", "--out", str(sdir), "--bank", str(bank), "--no-ui"]
+    entry = bank / bank_entry(build_parser().parse_args(args))
+    entry.mkdir(parents=True)
+    (entry / "object.glb").write_bytes(b"glb")                 # made earlier: nothing should run TripoSR now
+    (entry / "object_meta.json").write_text(json.dumps({"mode": "generated"}))
+    object_main(args)
+    object_main(args)
+    placed = json.loads((sdir / "scene.json").read_text())["objects"]
+    assert [o["path"] for o in placed] == [f"../objects/{entry.name}/object.glb"] * 2
+    a, b = (np.array(o["transform"]["position"]) for o in placed)
+    assert a[1] == b[1] == 0.0 and np.hypot(*(a - b)[[0, 2]]) >= 0.25 - 1e-9
+    other = build_parser().parse_args(args[:4] + ["0.2"] + args[5:])
+    assert bank_entry(other) != entry.name                     # another size is another object

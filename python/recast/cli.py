@@ -25,7 +25,7 @@ from .camera import Camera, solve_camera
 from .gbuffer import load_gbuffer, save_gbuffer
 from .io import Photo, linear_to_srgb, load_image_linear, load_photo, save_hdr, save_jpg, to_srgb8
 from .lighting import fit_scene_lighting
-from .scene import (PHOTO_NAME, Lighting, Scene, floor_proxy, render_gbuffer, update_scene_file,
+from .scene import (PHOTO_NAME, Lighting, Scene, floor_proxy, render_gbuffer, scene_objects, update_scene_file,
                     write_json_atomic)
 
 PREPROCESS_FILE = "preprocess.json"
@@ -195,8 +195,9 @@ def cmd_detect(args) -> None:
         for light in data.get("lights", []):
             if "position" in light:
                 light["position"] = [float(v) * k for v in light["position"]]
-        if data.get("object", {}) and data["object"].get("transform"):
-            data["object"]["transform"]["position"] = [float(v) * k for v in data["object"]["transform"]["position"]]
+        for obj in scene_objects(data):
+            if obj.get("transform"):
+                obj["transform"]["position"] = [float(v) * k for v in obj["transform"]["position"]]
 
     det = detect.open_below_slabs(det)
 
@@ -242,21 +243,23 @@ def cmd_detect(args) -> None:
     if rescaled:
         sections.update(camera=full_cam.to_dict(),
                         scale_reference={"kind": "camera_height", "metres": float(cam.position[1]), "guess": guess, "from": used})
-        if data.get("object"):
-            sections["object"] = data["object"]
-    obj = data.get("object")
-    if obj and obj.get("transform"):
-        # the surfaces changed under the object: keep it at the same spot in the photo and stand it
+    placed_objects = scene_objects(data)
+    if placed_objects:
+        # the surfaces changed under the objects: keep each at the same spot in the photo and stand it
         # on whatever surface is there now, like dragging it there in the engine does
         from .scene import cast, proxy_from_dict
-        pos = np.asarray(obj["transform"]["position"], float)
-        ray = cam.rays(cam.project(pos))
-        t, n, hit_id = cast(cam.position, ray, [proxy_from_dict(p) for p in proxies])
-        if hit_id[0] >= 0 and n[0][1] > 0.7:
-            pos = cam.position + ray[0] * t[0]
-            pos[1] += 0.002   # just above the surface: the engine pushes overlapping objects aside
-            obj["transform"]["position"] = [round(float(v), 4) for v in pos]
-            sections["object"] = obj
+        casters = [proxy_from_dict(p) for p in proxies]
+        for obj in placed_objects:
+            if not obj.get("transform"):
+                continue
+            pos = np.asarray(obj["transform"]["position"], float)
+            ray = cam.rays(cam.project(pos))
+            t, n, hit_id = cast(cam.position, ray, casters)
+            if hit_id[0] >= 0 and n[0][1] > 0.7:
+                pos = cam.position + ray[0] * t[0]
+                pos[1] += 0.002   # just above the surface: the engine pushes overlapping objects aside
+                obj["transform"]["position"] = [round(float(v), 4) for v in pos]
+        sections["objects"] = placed_objects
     update_scene_file(path, **sections)
     write_json_atomic(out / DETECT_FILE, {
         "models": {"segmentation": detect.SEG_MODEL, "depth": detect.DEPTH_MODEL},
