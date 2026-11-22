@@ -936,7 +936,7 @@ void Visualizer::drawPrompt() {
 	ImGui::PopStyleVar(2);
 
 	auto title = [](const char* text) {
-		ImGui::PushFont(recast::ui::titleFont(), ImGui::GetStyle().FontSizeBase * 2.4f);
+		ImGui::PushFont(recast::ui::boldFont(), ImGui::GetStyle().FontSizeBase * 1.5f);
 		ImGui::TextColored(recast::ui::purple(), "%s", text);
 		ImGui::PopFont();
 	};
