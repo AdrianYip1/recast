@@ -966,6 +966,18 @@ void Visualizer::drawPrompt() {
 		break;
 	}
 	case Prompt::Scene:
+		{
+			// as big as fits the card, centred
+			const char* welcome = "Welcome to ReCast!";
+			const float base = ImGui::GetStyle().FontSizeBase;
+			ImGui::PushFont(recast::ui::titleFont(), base * 3.0f);
+			float fit = std::min(1.0f, ImGui::GetContentRegionAvail().x / ImGui::CalcTextSize(welcome).x);
+			ImGui::PopFont();
+			ImGui::PushFont(recast::ui::titleFont(), base * 3.0f * fit);
+			ImGui::SetCursorPosX(ImGui::GetCursorPosX() + 0.5f * (ImGui::GetContentRegionAvail().x - ImGui::CalcTextSize(welcome).x));
+			ImGui::TextColored(recast::ui::purple(), "%s", welcome);
+			ImGui::PopFont();
+		}
 		title("Start with a scene");
 		text("Choose a photo of the empty spot where your object should go. Show some floor so ReCast can measure the room.");
 		ImGui::Dummy(ImVec2(0.0f, 0.3f * em));
