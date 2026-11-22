@@ -99,7 +99,8 @@ target_include_directories(foto PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/sandbox ${CM
 target_compile_definitions(foto PRIVATE
     RECAST_SAMPLE_SCENE="${CMAKE_CURRENT_SOURCE_DIR}/data/sample/scene.json"
     RECAST_PYTHON_DIR="${CMAKE_CURRENT_SOURCE_DIR}/python"
-    RECAST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
+    RECAST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
+    RECAST_ASSETS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/sandbox/assets")
 
 target_link_libraries(foto PRIVATE foto_engine glfw Vulkan::Vulkan stb)
 if(WIN32)

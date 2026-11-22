@@ -95,6 +95,10 @@ private:
 	void drawPipeline();
 	void chooseScenePhoto();
 	void drawWelcome();
+	void findRecentScenes();
+	void openScene(const std::string& path);
+	std::vector<std::filesystem::path> recentScenes;
+	bool recentScenesFound = false;
 
 	std::vector<recast::SceneLight> detectedLights; // what "reset lights" goes back to
 	std::vector<recast::FitLight> photoEmitters;    // windows and lamps detect found, whose strength the fit solves

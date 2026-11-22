@@ -1,22 +1,28 @@
 #include "theme.hpp"
 
 #include <cmath>
+#include <cstring>
 #include <filesystem>
 #include <initializer_list>
+
+#include <imgui_internal.h>
+#include <stb_image.h>
 
 namespace recast::ui {
 
 namespace {
 
+ImFont* title = nullptr;
 ImFont* bold = nullptr;
+ImTextureData logoTexture;
 
-constexpr float FONT_SIZE = 16.0f;
+constexpr float FONT_SIZE = 17.0f; // Source Sans runs small
 
-// The first of these that exists, or nullptr
-ImFont* loadFirst(std::initializer_list<const char*> paths) {
-	for (const char* path : paths) {
+// The first of these files that exists, or nullptr
+ImFont* loadFirst(std::initializer_list<std::string> paths) {
+	for (const std::string& path : paths) {
 		std::error_code error;
-		if (std::filesystem::exists(path, error)) return ImGui::GetIO().Fonts->AddFontFromFileTTF(path, FONT_SIZE);
+		if (std::filesystem::exists(path, error)) return ImGui::GetIO().Fonts->AddFontFromFileTTF(path.c_str(), FONT_SIZE);
 	}
 	return nullptr;
 }
@@ -32,39 +38,74 @@ ImVec4 rgb(int r, int g, int b, float a = 1.0f) {
 	return ImVec4(linear(r), linear(g), linear(b), a);
 }
 
+void loadLogo(const std::string& path) {
+	int width = 0, height = 0, channels = 0;
+	unsigned char* pixels = stbi_load(path.c_str(), &width, &height, &channels, 4);
+	if (!pixels) return;
+	// same reason as rgb(): the image is sRGB, the screen re-encodes what ImGui draws
+	for (int i = 0; i < width * height * 4; i++) {
+		if (i % 4 != 3) pixels[i] = static_cast<unsigned char>(std::lround(255.0f * linear(pixels[i])));
+	}
+	logoTexture.Create(ImTextureFormat_RGBA32, width, height);
+	std::memcpy(logoTexture.GetPixels(), pixels, static_cast<size_t>(width) * height * 4);
+	logoTexture.UseColors = true;
+	stbi_image_free(pixels);
+	ImGui::RegisterUserTexture(&logoTexture);
+}
+
 } // namespace
 
 ImVec4 purple() {
 	return rgb(132, 96, 138);
 }
 
-ImVec4 beige() {
-	return rgb(208, 198, 180);
+ImVec4 paper() {
+	return rgb(240, 231, 200);
+}
+
+ImVec4 paperLight() {
+	return rgb(250, 245, 228);
+}
+
+ImFont* titleFont() {
+	return title ? title : ImGui::GetFont();
 }
 
 ImFont* boldFont() {
 	return bold ? bold : ImGui::GetFont();
 }
 
-bool accentButton(const char* label, float width) {
+ImTextureRef logo() {
+	return logoTexture.GetTexRef();
+}
+
+ImVec2 logoSize() {
+	return ImVec2(static_cast<float>(logoTexture.Width), static_cast<float>(logoTexture.Height));
+}
+
+bool accentButton(const char* label, ImVec2 size) {
 	ImGui::PushStyleColor(ImGuiCol_Button, purple());
 	ImGui::PushStyleColor(ImGuiCol_ButtonHovered, rgb(152, 114, 158));
 	ImGui::PushStyleColor(ImGuiCol_ButtonActive, rgb(110, 78, 116));
 	ImGui::PushStyleColor(ImGuiCol_Text, rgb(255, 255, 255));
-	bool pressed = ImGui::Button(label, ImVec2(width, 0.0f));
+	bool pressed = ImGui::Button(label, size);
 	ImGui::PopStyleColor(4);
 	return pressed;
 }
 
-void applyTheme(float dpiScale) {
+void applyTheme(float dpiScale, const std::string& assetsDir) {
 	if (dpiScale <= 0.0f) dpiScale = 1.0f;
+	const std::string fonts = assetsDir + "/fonts/";
 
-	// a UI font instead of ImGui's 13 px pixel font; the first one added is the default
-	ImFont* regular = loadFirst({ "C:/Windows/Fonts/segoeui.ttf", "/System/Library/Fonts/Helvetica.ttc",
-								  "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "/usr/share/fonts/TTF/DejaVuSans.ttf" });
+	// the first font added is the default; Segoe UI etc. if the bundled fonts are missing
+	ImFont* regular = loadFirst({ fonts + "SourceSansPro-Regular.ttf", "C:/Windows/Fonts/segoeui.ttf",
+								  "/System/Library/Fonts/Helvetica.ttc", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf" });
 	if (!regular) ImGui::GetIO().Fonts->AddFontDefault();
-	bold = loadFirst({ "C:/Windows/Fonts/segoeuib.ttf", "C:/Windows/Fonts/seguisb.ttf",
-					   "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", "/usr/share/fonts/TTF/DejaVuSans-Bold.ttf" });
+	bold = loadFirst({ fonts + "SourceSansPro-SemiBold.ttf", "C:/Windows/Fonts/seguisb.ttf",
+					   "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" });
+	title = loadFirst({ fonts + "SourceSerifPro-Bold.ttf", "C:/Windows/Fonts/georgiab.ttf",
+						"/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf" });
+	loadLogo(assetsDir + "/logo.png");
 
 	ImGuiStyle& style = ImGui::GetStyle();
 	style = ImGuiStyle();
@@ -74,51 +115,51 @@ void applyTheme(float dpiScale) {
 	style.FramePadding = ImVec2(8.0f, 4.0f);
 	style.ItemSpacing = ImVec2(8.0f, 6.0f);
 	style.WindowRounding = 8.0f;
-	style.ChildRounding = 6.0f;
+	style.ChildRounding = 8.0f;
 	style.FrameRounding = 5.0f;
 	style.PopupRounding = 6.0f;
 	style.GrabRounding = 5.0f;
 	style.ScrollbarRounding = 5.0f;
 	style.WindowBorderSize = 1.0f;
+	style.ChildBorderSize = 1.0f;
 	style.FrameBorderSize = 0.0f;
 
-	// the logo's beige paper, dark ink text and its purple for everything that's picked or active
+	// light yellow paper, dark ink text, the logo's purple for everything that's picked or active
 	const ImVec4 accent = purple();
 	const ImVec4 accentSoft = rgb(132, 96, 138, 0.35f);
 	const ImVec4 accentHover = rgb(152, 114, 158);
-	const ImVec4 paper = beige();
-	const ImVec4 paperLight = rgb(228, 220, 205);
-	const ImVec4 paperLighter = rgb(238, 232, 220);
-	const ImVec4 paperDark = rgb(190, 178, 158);
+	const ImVec4 light = paperLight();
+	const ImVec4 lighter = rgb(255, 252, 242);
+	const ImVec4 dark = rgb(218, 206, 170);
 	const ImVec4 ink = rgb(32, 26, 30);
 	ImVec4* c = style.Colors;
 	c[ImGuiCol_Text] = ink;
-	c[ImGuiCol_TextDisabled] = rgb(112, 102, 96);
-	c[ImGuiCol_WindowBg] = rgb(208, 198, 180, 0.97f);
+	c[ImGuiCol_TextDisabled] = rgb(118, 108, 98);
+	c[ImGuiCol_WindowBg] = rgb(240, 231, 200, 0.97f);
 	c[ImGuiCol_ChildBg] = rgb(0, 0, 0, 0.0f);
-	c[ImGuiCol_PopupBg] = paperLight;
-	c[ImGuiCol_Border] = rgb(32, 26, 30, 0.25f);
-	c[ImGuiCol_FrameBg] = paperLight;
-	c[ImGuiCol_FrameBgHovered] = paperLighter;
-	c[ImGuiCol_FrameBgActive] = paperLighter;
-	c[ImGuiCol_TitleBg] = paperDark;
-	c[ImGuiCol_TitleBgActive] = paperDark;
-	c[ImGuiCol_TitleBgCollapsed] = paperDark;
-	c[ImGuiCol_MenuBarBg] = paper;
+	c[ImGuiCol_PopupBg] = light;
+	c[ImGuiCol_Border] = rgb(32, 26, 30, 0.18f);
+	c[ImGuiCol_FrameBg] = light;
+	c[ImGuiCol_FrameBgHovered] = lighter;
+	c[ImGuiCol_FrameBgActive] = lighter;
+	c[ImGuiCol_TitleBg] = dark;
+	c[ImGuiCol_TitleBgActive] = dark;
+	c[ImGuiCol_TitleBgCollapsed] = dark;
+	c[ImGuiCol_MenuBarBg] = paper();
 	c[ImGuiCol_ScrollbarBg] = rgb(0, 0, 0, 0.0f);
-	c[ImGuiCol_ScrollbarGrab] = paperDark;
+	c[ImGuiCol_ScrollbarGrab] = dark;
 	c[ImGuiCol_ScrollbarGrabHovered] = accentSoft;
 	c[ImGuiCol_ScrollbarGrabActive] = accent;
 	c[ImGuiCol_CheckMark] = accent;
 	c[ImGuiCol_SliderGrab] = accent;
 	c[ImGuiCol_SliderGrabActive] = accentHover;
-	c[ImGuiCol_Button] = paperDark;
+	c[ImGuiCol_Button] = dark;
 	c[ImGuiCol_ButtonHovered] = accentSoft;
 	c[ImGuiCol_ButtonActive] = accentHover;
 	c[ImGuiCol_Header] = accentSoft;
 	c[ImGuiCol_HeaderHovered] = rgb(132, 96, 138, 0.25f);
 	c[ImGuiCol_HeaderActive] = rgb(132, 96, 138, 0.5f);
-	c[ImGuiCol_Separator] = rgb(32, 26, 30, 0.2f);
+	c[ImGuiCol_Separator] = rgb(32, 26, 30, 0.18f);
 	c[ImGuiCol_SeparatorHovered] = accentHover;
 	c[ImGuiCol_SeparatorActive] = accent;
 	c[ImGuiCol_ResizeGrip] = rgb(132, 96, 138, 0.2f);

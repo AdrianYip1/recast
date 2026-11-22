@@ -13,6 +13,7 @@
 #include <nlohmann/json.hpp>
 #include <stb_image.h>
 
+#include <algorithm>
 #include <array>
 #include <cctype>
 #include <fstream>
@@ -80,7 +81,7 @@ Visualizer::Visualizer(const foto::ApplicationConfig& config, std::string sceneP
 void Visualizer::onInit() {
 	float dpiX = 1.0f, dpiY = 1.0f;
 	if (GLFWmonitor* monitor = glfwGetPrimaryMonitor()) glfwGetMonitorContentScale(monitor, &dpiX, &dpiY);
-	recast::ui::applyTheme(dpiX);
+	recast::ui::applyTheme(dpiX, RECAST_ASSETS_DIR);
 
 	backgroundPipeline = createPipeline({
 		.vertexShaderFilePath = "shaders/fullscreen.vert.spv",
@@ -740,8 +741,11 @@ void Visualizer::onImGui() {
 	}
 
 	ImGui::SetNextWindowPos({ 12.0f, 12.0f }, ImGuiCond_FirstUseEver);
-	ImGui::Begin("recast");
-	ImGui::PushFont(recast::ui::boldFont(), ImGui::GetStyle().FontSizeBase * 1.3f);
+	// fixed width, as tall as what's open in it
+	const float panelWidth = 30.0f * ImGui::GetFontSize();
+	ImGui::SetNextWindowSizeConstraints(ImVec2(panelWidth, 0.0f), ImVec2(panelWidth, ImGui::GetMainViewport()->WorkSize.y - 24.0f));
+	ImGui::Begin("recast", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
+	ImGui::PushFont(recast::ui::titleFont(), ImGui::GetStyle().FontSizeBase * 1.35f);
 	ImGui::TextColored(recast::ui::purple(), "Welcome to ReCast!");
 	ImGui::PopFont();
 	ImGui::Separator();
@@ -906,63 +910,186 @@ void Visualizer::chooseScenePhoto() {
 	followUpArguments = { "detect", "--name", name, "--data-root", dataRoot };
 }
 
-// The first screen: fills the window until a scene is loaded and asks for the scene photo
+// Scenes made before, newest first, for the welcome screen
+void Visualizer::findRecentScenes() {
+	recentScenes.clear();
+	std::error_code error;
+	std::vector<std::pair<std::filesystem::file_time_type, std::filesystem::path>> found;
+	for (const auto& entry : std::filesystem::directory_iterator(RECAST_DATA_DIR, error)) {
+		std::filesystem::path file = entry.path() / "scene.json";
+		if (entry.is_directory(error) && std::filesystem::exists(file, error)) {
+			found.emplace_back(std::filesystem::last_write_time(file, error), file);
+		}
+	}
+	std::sort(found.begin(), found.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+	for (size_t i = 0; i < found.size() && i < 4; i++) recentScenes.push_back(found[i].second);
+}
+
+void Visualizer::openScene(const std::string& path) {
+	scenePath = path;
+	loadScene();
+	sceneWatcher = foto::FileWatcher(scenePath);
+}
+
+// The first screen: fills the window until a scene is loaded. Logo, what ReCast does in three steps, the button that
+// starts it, and the scenes made before
 void Visualizer::drawWelcome() {
+	if (!recentScenesFound) {
+		findRecentScenes();
+		recentScenesFound = true;
+	}
+
 	const ImGuiViewport* viewport = ImGui::GetMainViewport();
 	ImGui::SetNextWindowPos(viewport->WorkPos);
 	ImGui::SetNextWindowSize(viewport->WorkSize);
-	ImGui::PushStyleColor(ImGuiCol_WindowBg, recast::ui::beige());
-	ImGui::Begin("##welcome", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
-										   ImGuiWindowFlags_NoBringToFrontOnFocus);
+	ImGui::PushStyleColor(ImGuiCol_WindowBg, recast::ui::paper());
+	ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+	ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+	// centred vertically using last frame's height; scrolls only when the window is too small for it
+	static float contentHeight = 0.0f;
+	ImGuiWindowFlags fits = contentHeight + 3.0f * ImGui::GetFontSize() < viewport->WorkSize.y ? ImGuiWindowFlags_NoScrollbar : 0;
+	ImGui::Begin("##welcome", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+										   ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus | fits);
+	ImGui::PopStyleVar(2);
 	ImGui::PopStyleColor();
 
-	const float width = std::min(520.0f * ImGui::GetStyle().FontScaleDpi, viewport->WorkSize.x - 40.0f);
-	const float left = 0.5f * (viewport->WorkSize.x - width);
-	ImGui::SetCursorPosY(0.32f * viewport->WorkSize.y);
+	const float em = ImGui::GetFontSize();
+	const float base = ImGui::GetStyle().FontSizeBase;
+	const float fullWidth = ImGui::GetWindowWidth();
+	const float width = std::min(52.0f * em, fullWidth - 3.0f * em);
+	const float left = 0.5f * (fullWidth - width);
+	auto centred = [&](float itemWidth) { ImGui::SetCursorPosX(0.5f * (fullWidth - itemWidth)); };
+	auto centredText = [&](const char* text) {
+		centred(ImGui::CalcTextSize(text).x);
+		ImGui::TextUnformatted(text);
+	};
 
-	const char* title = "Welcome to ReCast!";
-	ImGui::PushFont(recast::ui::boldFont(), ImGui::GetStyle().FontSizeBase * 2.4f);
-	ImGui::SetCursorPosX(0.5f * (viewport->WorkSize.x - ImGui::CalcTextSize(title).x));
-	ImGui::TextColored(recast::ui::purple(), "%s", title);
+	ImGui::SetCursorPosY(std::max(1.5f * em, 0.5f * (ImGui::GetWindowHeight() - contentHeight)));
+	const float startY = ImGui::GetCursorPosY();
+
+	// logo and title
+	ImVec2 logoSize = recast::ui::logoSize();
+	if (logoSize.y > 0.0f) {
+		float height = 6.5f * em;
+		ImVec2 size(logoSize.x * height / logoSize.y, height);
+		centred(size.x);
+		ImGui::Image(recast::ui::logo(), size);
+	}
+	ImGui::PushFont(recast::ui::titleFont(), base * 2.8f);
+	ImGui::PushStyleColor(ImGuiCol_Text, recast::ui::purple());
+	centredText("Welcome to ReCast!");
+	ImGui::PopStyleColor();
 	ImGui::PopFont();
-
-	const char* subtitle = "Put an object from one photo into another, with matching light and shadows.";
-	ImGui::SetCursorPosX(0.5f * (viewport->WorkSize.x - ImGui::CalcTextSize(subtitle).x));
-	ImGui::TextUnformatted(subtitle);
-	ImGui::Dummy(ImVec2(0.0f, 16.0f * ImGui::GetStyle().FontScaleDpi));
-
-	const float buttonWidth = 260.0f * ImGui::GetStyle().FontScaleDpi;
-	ImGui::SetCursorPosX(0.5f * (viewport->WorkSize.x - buttonWidth));
-	ImGui::BeginDisabled(pythonJob.running());
-	ImGui::PushFont(nullptr, ImGui::GetStyle().FontSizeBase * 1.15f);
-	if (recast::ui::accentButton("Choose a scene photo...", buttonWidth)) chooseScenePhoto();
+	ImGui::PushFont(nullptr, base * 1.2f);
+	centredText("Put any object into any photo, lit and shadowed like it was really there.");
 	ImGui::PopFont();
-	ImGui::EndDisabled();
+	ImGui::Dummy(ImVec2(0.0f, 1.2f * em));
 
-	const char* tip = "A photo of the empty spot where the object should go.";
-	ImGui::SetCursorPosX(0.5f * (viewport->WorkSize.x - ImGui::CalcTextSize(tip).x));
-	ImGui::TextDisabled("%s", tip);
-
-	ImGui::Dummy(ImVec2(0.0f, 12.0f * ImGui::GetStyle().FontScaleDpi));
+	// how it works, in three cards
+	struct Step {
+		const char* title;
+		const char* text;
+	};
+	const Step steps[] = {
+		{ "Pick a scene", "A photo of the empty spot where the object should go. ReCast works out the camera, the room and the light." },
+		{ "Add an object", "A photo of the thing to place. ReCast cuts it out and builds it in 3D." },
+		{ "Make it fit", "Drag it into place. Its light, shadows and size match the scene, then export the picture." },
+	};
+	const float gap = em;
+	const float cardWidth = (width - 2.0f * gap) / 3.0f;
+	const float cardHeight = 6.4f * em;
 	ImGui::SetCursorPosX(left);
-	ImGui::BeginGroup();
-	ImGui::PushTextWrapPos(left + width);
-	if (pythonJob.running()) {
-		static const char* dots[] = { "", ".", "..", "..." };
-		ImGui::TextColored(recast::ui::purple(), "%s%s", pythonLabel.c_str(), dots[static_cast<int>(ImGui::GetTime() * 3.0) % 4]);
-		ImGui::TextDisabled("this can take a minute the first time");
-	}
-	else if (!pipelineStatus.empty()) {
-		ImGui::TextUnformatted(pipelineStatus.c_str());
-	}
-	ImGui::PopTextWrapPos();
-	if (pythonFailed) {
-		std::string log = pythonJob.output();
-		ImGui::BeginChild("python log", ImVec2(width, 160.0f), ImGuiChildFlags_Borders, ImGuiWindowFlags_HorizontalScrollbar);
-		ImGui::TextUnformatted(log.c_str(), log.c_str() + log.size());
+	for (int i = 0; i < 3; i++) {
+		if (i > 0) ImGui::SameLine(0.0f, gap);
+		ImGui::PushStyleColor(ImGuiCol_ChildBg, recast::ui::paperLight());
+		ImGui::BeginChild(("##step" + std::to_string(i)).c_str(), ImVec2(cardWidth, cardHeight),
+						  ImGuiChildFlags_Borders | ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_NoScrollbar);
+		ImGui::PopStyleColor();
+
+		// the step number in a purple circle, then the step's title next to it
+		ImVec2 at = ImGui::GetCursorScreenPos();
+		float radius = 0.85f * em;
+		ImDrawList* list = ImGui::GetWindowDrawList();
+		list->AddCircleFilled(ImVec2(at.x + radius, at.y + radius), radius, ImGui::GetColorU32(recast::ui::purple()));
+		char number[4];
+		std::snprintf(number, sizeof(number), "%d", i + 1);
+		ImGui::PushFont(recast::ui::titleFont(), base * 1.1f);
+		ImVec2 numberSize = ImGui::CalcTextSize(number);
+		list->AddText(ImVec2(at.x + radius - 0.5f * numberSize.x, at.y + radius - 0.5f * numberSize.y), IM_COL32_WHITE, number);
+		ImGui::PopFont();
+
+		ImGui::PushFont(recast::ui::titleFont(), base * 1.25f);
+		ImGui::SetCursorScreenPos(ImVec2(at.x + 2.0f * radius + 0.6f * em, at.y + radius - 0.5f * ImGui::GetFontSize()));
+		ImGui::TextUnformatted(steps[i].title);
+		ImGui::PopFont();
+		ImGui::SetCursorScreenPos(ImVec2(at.x, at.y + 2.0f * radius + 0.6f * em));
+		ImGui::PushTextWrapPos(0.0f);
+		ImGui::TextUnformatted(steps[i].text);
+		ImGui::PopTextWrapPos();
 		ImGui::EndChild();
 	}
-	ImGui::EndGroup();
+	ImGui::Dummy(ImVec2(0.0f, 1.2f * em));
+
+	// the main button, or what's happening once a photo is picked
+	if (pythonJob.running()) {
+		static const char* dots[] = { "", ".", "..", "..." };
+		std::string label = pythonLabel + dots[static_cast<int>(ImGui::GetTime() * 3.0) % 4];
+		ImGui::PushFont(recast::ui::titleFont(), base * 1.3f);
+		ImGui::PushStyleColor(ImGuiCol_Text, recast::ui::purple());
+		centred(ImGui::CalcTextSize((pythonLabel + "...").c_str()).x);
+		ImGui::TextUnformatted(label.c_str());
+		ImGui::PopStyleColor();
+		ImGui::PopFont();
+		ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+		centredText("This can take a minute the first time, while the models load.");
+		ImGui::PopStyleColor();
+	}
+	else {
+		ImGui::PushFont(recast::ui::boldFont(), base * 1.2f);
+		ImVec2 buttonSize(17.0f * em, 2.4f * em);
+		centred(buttonSize.x);
+		if (recast::ui::accentButton("Choose a scene photo...", buttonSize)) chooseScenePhoto();
+		ImGui::PopFont();
+		if (pythonFailed) {
+			ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.55f, 0.02f, 0.02f, 1.0f));
+			centredText((pipelineStatus + ": try another photo, or see the details below").c_str());
+			ImGui::PopStyleColor();
+			std::string log = pythonJob.output();
+			ImGui::SetCursorPosX(left);
+			ImGui::BeginChild("python log", ImVec2(width, 9.0f * em), ImGuiChildFlags_Borders, ImGuiWindowFlags_HorizontalScrollbar);
+			ImGui::TextUnformatted(log.c_str(), log.c_str() + log.size());
+			ImGui::EndChild();
+		}
+	}
+
+	// scenes made before
+	if (!recentScenes.empty() && !pythonJob.running()) {
+		ImGui::Dummy(ImVec2(0.0f, 0.8f * em));
+		ImGui::PushFont(recast::ui::titleFont(), base * 1.15f);
+		centredText("Or open a recent scene");
+		ImGui::PopFont();
+		std::vector<std::string> names;
+		float total = 0.0f;
+		for (const std::filesystem::path& file : recentScenes) {
+			names.push_back(file.parent_path().filename().string());
+			total += ImGui::CalcTextSize(names.back().c_str()).x + 2.0f * ImGui::GetStyle().FramePadding.x;
+		}
+		total += ImGui::GetStyle().ItemSpacing.x * static_cast<float>(names.size() - 1);
+		centred(total);
+		for (size_t i = 0; i < names.size(); i++) {
+			if (i > 0) ImGui::SameLine();
+			if (ImGui::Button(names[i].c_str())) openScene(recentScenes[i].string());
+		}
+	}
+
+	// tips
+	ImGui::Dummy(ImVec2(0.0f, 1.0f * em));
+	ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+	centredText("Tips: show some floor in the scene photo so ReCast can measure the room,");
+	centredText("and take the object photo in soft, even light.");
+	ImGui::PopStyleColor();
+
+	contentHeight = ImGui::GetCursorPosY() - startY;
 	ImGui::End();
 }
 
