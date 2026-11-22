@@ -417,14 +417,15 @@ namespace {
 		return current;
 	}
 
-	Vec3 cameraRay(const recast::SceneCamera& camera, float u, float v) {
-		Vec3 local((u - camera.cx) / camera.fx, -(v - camera.cy) / camera.fy, -1.0f);
-		Vec3 direction;
-		for (int i = 0; i < 3; i++) {
-			direction[i] = camera.rotation[i][0] * local.x + camera.rotation[i][1] * local.y + camera.rotation[i][2] * local.z;
-		}
-		return direction.normalized();
+}
+
+Vec3 recast::cameraRay(const SceneCamera& camera, float u, float v) {
+	Vec3 local((u - camera.cx) / camera.fx, -(v - camera.cy) / camera.fy, -1.0f);
+	Vec3 direction;
+	for (int i = 0; i < 3; i++) {
+		direction[i] = camera.rotation[i][0] * local.x + camera.rotation[i][1] * local.y + camera.rotation[i][2] * local.z;
 	}
+	return direction.normalized();
 }
 
 Vec3 recast::LinearImage::at(int x, int y) const {

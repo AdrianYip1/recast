@@ -26,6 +26,9 @@ namespace recast {
 		int proxy = -1;
 	};
 
+	// The ray from the photo's camera through photo pixel (u, v)
+	enginemath::Vec3 cameraRay(const SceneCamera& camera, float u, float v);
+
 	// One sample per `stride` pixels that sees a proxy. Clipped pixels of 8-bit photos are left out of the fit; with
 	// `clipped` they are returned there instead (a blown-out sun patch says the sun is at least that strong)
 	std::vector<LightingSample> collectLightingSamples(const SceneFile& scene, const LinearImage& photo, int stride,

@@ -15,7 +15,7 @@ namespace recast {
 	NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(SceneLight, type, position, direction, intensity, radius, angular_radius_deg, corners, radiance)
 	NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(Lighting, ambient, sh_order, sh)
 	NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(SceneFile, version, photo, image_size, camera, scale_reference,
-													object, proxies, lights, lighting)
+													objects, proxies, lights, lighting)
 }
 
 std::string recast::SceneFile::resolve(const std::string& relativePath) const {
@@ -31,7 +31,12 @@ recast::SceneFile recast::loadSceneFile(const std::filesystem::path& path) {
 
 	SceneFile scene;
 	try {
-		scene = nlohmann::json::parse(file).get<SceneFile>();
+		nlohmann::json json = nlohmann::json::parse(file);
+		scene = json.get<SceneFile>();
+		if (scene.objects.empty() && json.contains("object") && json["object"].is_object()) {
+			SceneObject single = json["object"].get<SceneObject>();
+			if (!single.path.empty()) scene.objects.push_back(single);
+		}
 	}
 	catch (const nlohmann::json::exception& e) {
 		throw std::runtime_error("ERROR: sceneFile.cpp -> loadSceneFile(): " + path.string() + ": " + e.what());

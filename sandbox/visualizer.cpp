@@ -16,6 +16,10 @@
 #include <cctype>
 #include <fstream>
 #include <map>
+#include <set>
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <ctime>
@@ -62,6 +66,25 @@ namespace {
 			if (!std::isalnum(static_cast<unsigned char>(c)) && c != '-' && c != '_') c = '_';
 		}
 		return name.empty() ? "scene" : name;
+	}
+
+	// Short hash of a file's bytes (FNV-1a): the same photo gets the same folder, and so its cached scene
+	std::string contentHash(const std::string& path) {
+		std::ifstream file(path, std::ios::binary);
+		std::uint64_t hash = 1469598103934665603ull;
+		std::vector<char> buffer(1 << 16);
+		while (true) {
+			file.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+			std::streamsize count = file.gcount();
+			if (count <= 0) break;
+			for (std::streamsize i = 0; i < count; i++) {
+				hash ^= static_cast<unsigned char>(buffer[static_cast<size_t>(i)]);
+				hash *= 1099511628211ull;
+			}
+		}
+		char text[16];
+		std::snprintf(text, sizeof(text), "%08llx", static_cast<unsigned long long>((hash >> 32) ^ (hash & 0xffffffffull)));
+		return text;
 	}
 
 	std::string pickPhoto(const char* title) {
@@ -144,22 +167,29 @@ void Visualizer::loadScene() {
 		}
 	}
 
-	std::string objectPath = loaded.object.path.empty() ? "" : loaded.resolve(loaded.object.path);
-	if (objectPath != loadedObjectPath) {
-		if (objectMesh) destroyMesh(objectMesh);
-		objectMesh = nullptr;
-		loadedObjectPath.clear();
-		if (!objectPath.empty()) {
-			try {
-				objectMesh = loadModel(objectPath);
-				loadedObjectPath = objectPath;
-				placedTransform = loaded.object.transform; // where it was put (on the table): "reset object" goes back here
-			}
-			catch (const std::exception& e) {
-				std::cerr << "[recast] " << e.what() << std::endl;
-			}
-		}
+	// each object file is loaded once (copies share its mesh); files no object uses any more are dropped
+	std::vector<foto::Mesh*> meshes;
+	std::set<std::string> used;
+	for (const recast::SceneObject& object : loaded.objects) {
+		std::string path = loaded.resolve(object.path);
+		used.insert(path);
+		meshes.push_back(objectMeshFor(path));
 	}
+	for (auto it = objectMeshes.begin(); it != objectMeshes.end();) {
+		if (used.count(it->first)) {
+			++it;
+			continue;
+		}
+		if (it->second) destroyMesh(it->second);
+		it = objectMeshes.erase(it);
+	}
+	objectMeshOf = meshes;
+	placedTransforms.clear();
+	for (const recast::SceneObject& object : loaded.objects) placedTransforms.push_back(object.transform); // "reset" goes back here
+	if (selectNewestObject && !loaded.objects.empty()) selectedObject = static_cast<int>(loaded.objects.size()) - 1;
+	selectNewestObject = false;
+	if (selectedObject >= static_cast<int>(loaded.objects.size())) selectedObject = -1;
+	refreshBank();
 
 	scene = std::move(loaded);
 	sceneLoaded = true;
@@ -384,8 +414,145 @@ void Visualizer::onUpdate(foto::f32 deltaTime) {
 	if (exportRequested) exportRender();
 }
 
-Mat4 Visualizer::objectTransform() const {
-	return recast::objectMatrix(scene.object.transform);
+Mat4 Visualizer::objectTransform(size_t index) const {
+	return recast::objectMatrix(scene.objects[index].transform);
+}
+
+foto::Mesh* Visualizer::objectMeshFor(const std::string& path) {
+	auto found = objectMeshes.find(path);
+	if (found != objectMeshes.end()) return found->second;
+	foto::Mesh* mesh = nullptr;
+	try {
+		mesh = loadModel(path);
+	}
+	catch (const std::exception& e) {
+		std::cerr << "[recast] " << e.what() << std::endl;
+	}
+	objectMeshes[path] = mesh;
+	return mesh;
+}
+
+// Every object made so far, newest first, named after its photo
+void Visualizer::refreshBank() {
+	bank.clear();
+	std::error_code error;
+	std::vector<std::pair<std::filesystem::file_time_type, BankEntry>> found;
+	for (const auto& folder : std::filesystem::directory_iterator(std::filesystem::path(RECAST_DATA_DIR) / "objects", error)) {
+		std::filesystem::path glb = folder.path() / "object.glb", metaPath = folder.path() / "object_meta.json";
+		if (!std::filesystem::exists(glb, error) || !std::filesystem::exists(metaPath, error)) continue;
+		std::string label = folder.path().filename().string();
+		try {
+			std::ifstream file(metaPath);
+			nlohmann::json meta = nlohmann::json::parse(file);
+			std::string photo = std::filesystem::path(meta.value("photo", std::string())).stem().string();
+			if (!photo.empty()) {
+				label = photo + (meta.value("glass", false) ? " (glass)" : "");
+				if (meta.contains("measurement") && meta["measurement"].contains("height_m")) {
+					char size[32];
+					std::snprintf(size, sizeof(size), ", %.2f m", meta["measurement"]["height_m"].get<double>());
+					label += size;
+				}
+			}
+		}
+		catch (const std::exception&) {
+		}
+		found.push_back({ std::filesystem::last_write_time(glb, error), { glb, label } });
+	}
+	std::sort(found.begin(), found.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+	for (auto& [time, entry] : found) bank.push_back(std::move(entry));
+}
+
+// Adds a bank object to the room without Python: on the floor or table in the lower middle of the photo, beside the
+// objects already there, facing the camera
+void Visualizer::addFromBank(const BankEntry& entry) {
+	std::error_code error;
+	std::string relative = std::filesystem::relative(entry.glb, scene.directory, error).generic_string();
+	if (error || relative.empty()) relative = entry.glb.generic_string();
+	foto::Mesh* mesh = objectMeshFor(scene.resolve(relative));
+	if (!mesh) {
+		pipelineStatus = "couldn't load " + entry.glb.string();
+		return;
+	}
+	const recast::SceneCamera& camera = scene.camera;
+	Vec3 origin(camera.position[0], camera.position[1], camera.position[2]);
+	recast::ObjectTransform transform;
+	bool placed = false;
+	for (float u : { 0.5f, 0.62f, 0.38f, 0.74f, 0.26f }) {
+		recast::RayHit hit = supportUnderCursor(origin, recast::cameraRay(camera, u * scene.image_size[0], 0.68f * scene.image_size[1]));
+		if (!hit.valid()) continue;
+		bool free = true;
+		for (const recast::SceneObject& other : scene.objects) {
+			free = free && std::hypot(other.transform.position[0] - hit.point.x, other.transform.position[2] - hit.point.z) >= 0.25f;
+		}
+		if (!placed || free) transform.position = { hit.point.x, hit.point.y, hit.point.z };
+		placed = true;
+		if (free) break;
+	}
+	if (!placed) transform.position = { shadowCenter.x, 0.0f, shadowCenter.z };
+	float toCameraX = origin.x - transform.position[0], toCameraZ = origin.z - transform.position[2];
+	transform.rotation_y_deg = std::atan2(toCameraX, toCameraZ) * 180.0f / 3.14159265f;
+	recast::resolveCollisions(scene.proxies, transform, mesh->getBoundsMin(), mesh->getBoundsMax());
+	scene.objects.push_back({ relative, transform });
+	objectMeshOf.push_back(mesh);
+	placedTransforms.push_back(transform);
+	selectedObject = static_cast<int>(scene.objects.size()) - 1;
+	unsavedChanges = true;
+}
+
+void Visualizer::removeObject(int index) {
+	if (index < 0 || index >= static_cast<int>(scene.objects.size())) return;
+	scene.objects.erase(scene.objects.begin() + index);
+	if (index < static_cast<int>(objectMeshOf.size())) objectMeshOf.erase(objectMeshOf.begin() + index);
+	if (index < static_cast<int>(placedTransforms.size())) placedTransforms.erase(placedTransforms.begin() + index);
+	selectedObject = -1;
+	draggingObject = false;
+	unsavedChanges = true;
+}
+
+void Visualizer::drawObjectPanel() {
+	if (!scene.objects.empty()) {
+		ImGui::SeparatorText("objects in the room");
+		for (size_t i = 0; i < scene.objects.size(); i++) {
+			std::filesystem::path path(scene.objects[i].path);
+			std::string name = path.has_parent_path() ? path.parent_path().filename().string() : path.stem().string();
+			ImGui::PushID(static_cast<int>(i));
+			if (ImGui::Selectable(name.c_str(), selectedObject == static_cast<int>(i))) selectedObject = static_cast<int>(i);
+			ImGui::PopID();
+		}
+		bool valid = selectedObject >= 0 && selectedObject < static_cast<int>(scene.objects.size()) &&
+					 selectedObject < static_cast<int>(objectMeshOf.size()) && objectMeshOf[selectedObject];
+		if (valid) {
+			recast::ObjectTransform& transform = scene.objects[selectedObject].transform;
+			foto::Mesh* mesh = objectMeshOf[selectedObject];
+			if (ImGui::Button("reset")) {
+				transform = placedTransforms[selectedObject];
+				draggingObject = false;
+				unsavedChanges = true;
+			}
+			ImGui::SameLine();
+			if (ImGui::Button("remove")) {
+				removeObject(selectedObject);
+				return;
+			}
+			ImGui::SameLine();
+			ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - ImGui::CalcTextSize("size").x - 8.0f);
+			if (ImGui::SliderFloat("size", &transform.scale, 0.1f, 10.0f, "%.2fx", ImGuiSliderFlags_Logarithmic)) {
+				transform.scale = std::max(transform.scale, 0.01f);
+				recast::resolveCollisions(scene.proxies, transform, mesh->getBoundsMin(), mesh->getBoundsMax());
+				unsavedChanges = true;
+			}
+		}
+	}
+	if (ImGui::CollapsingHeader(("object bank (" + std::to_string(bank.size()) + ")###bank").c_str())) {
+		if (bank.empty()) ImGui::TextDisabled("objects you make show up here");
+		for (size_t i = 0; i < bank.size(); i++) {
+			ImGui::PushID(static_cast<int>(i));
+			if (ImGui::SmallButton("add")) addFromBank(bank[i]);
+			ImGui::SameLine();
+			ImGui::TextUnformatted(bank[i].label.c_str());
+			ImGui::PopID();
+		}
+	}
 }
 
 // Where the object goes for this mouse ray: the first surface it points at, or the floor in front of it when that's a
@@ -532,8 +699,12 @@ void Visualizer::drawLightOverlay() {
 void Visualizer::addLight() {
 	recast::SceneLight light;
 	light.type = "point";
-	const recast::Vec3f& base = scene.object.transform.position;
-	Vec3 above = objectMesh ? Vec3(base[0], base[1] + 1.2f, base[2]) : shadowCenter + Vec3(0.0f, 1.2f, 0.0f);
+	int nearObject = selectedObject >= 0 && selectedObject < static_cast<int>(scene.objects.size()) ? selectedObject : (scene.objects.empty() ? -1 : 0);
+	Vec3 above = shadowCenter + Vec3(0.0f, 1.2f, 0.0f);
+	if (nearObject >= 0) {
+		const recast::Vec3f& base = scene.objects[nearObject].transform.position;
+		above = Vec3(base[0], base[1] + 1.2f, base[2]);
+	}
 	light.position = { above.x, above.y, above.z };
 	light.intensity = { 2.0f, 2.0f, 2.0f };
 	for (const recast::SceneLight& existing : scene.lights) {
@@ -639,25 +810,45 @@ void Visualizer::drawLightEditor() {
 }
 
 void Visualizer::updateObjectInteraction() {
-	if (!objectMesh) return;
-
 	foto::Window& window = getWindow();
 	bool leftDown = window.isMouseButtonDown(GLFW_MOUSE_BUTTON_LEFT);
 	Vec3 origin, direction;
 	bool haveRay = getCursorRay(origin, direction);
-	recast::ObjectTransform& transform = scene.object.transform;
 
+	// a click selects the nearest object under the cursor and starts dragging it
 	if (leftDown && !leftMouseWasDown && haveRay) {
-		Vec3 worldMin, worldMax;
-		recast::objectWorldBounds(transform, objectMesh->getBoundsMin(), objectMesh->getBoundsMax(), worldMin, worldMax);
-		float t = 0.0f;
+		float nearest = 1e30f;
+		int picked = -1;
+		for (size_t i = 0; i < scene.objects.size() && i < objectMeshOf.size(); i++) {
+			if (!objectMeshOf[i]) continue;
+			Vec3 worldMin, worldMax;
+			recast::objectWorldBounds(scene.objects[i].transform, objectMeshOf[i]->getBoundsMin(), objectMeshOf[i]->getBoundsMax(), worldMin, worldMax);
+			float t = 0.0f;
+			if (recast::rayAabb(origin, direction, worldMin, worldMax, t) && t < nearest) {
+				nearest = t;
+				picked = static_cast<int>(i);
+			}
+		}
 		recast::RayHit hit = supportUnderCursor(origin, direction);
-		if (recast::rayAabb(origin, direction, worldMin, worldMax, t) && hit.valid()) {
-			draggingObject = true;
-			dragOffset = Vec3(transform.position[0] - hit.point.x, 0.0f, transform.position[2] - hit.point.z);
+		if (picked >= 0) {
+			selectedObject = picked;
+			if (hit.valid()) {
+				const recast::Vec3f& position = scene.objects[picked].transform.position;
+				draggingObject = true;
+				dragOffset = Vec3(position[0] - hit.point.x, 0.0f, position[2] - hit.point.z);
+			}
 		}
 	}
 	if (!leftDown) draggingObject = false;
+
+	if (selectedObject < 0 || selectedObject >= static_cast<int>(scene.objects.size()) ||
+		selectedObject >= static_cast<int>(objectMeshOf.size()) || !objectMeshOf[selectedObject]) {
+		draggingObject = false;
+		leftMouseWasDown = leftDown;
+		return;
+	}
+	recast::ObjectTransform& transform = scene.objects[selectedObject].transform;
+	foto::Mesh* objectMesh = objectMeshOf[selectedObject];
 
 	bool moved = false;
 	if (draggingObject && haveRay) {
@@ -726,7 +917,10 @@ void Visualizer::drawScene() {
 				  scene.proxies[i].type == "plane" && std::abs(scene.proxies[i].normal[1]) < 0.5f ? foto::ShadowCaster::None : foto::ShadowCaster::Static);
 	}
 
-	if (objectMesh && !showOriginal) draw(objectMesh, objectTransform(), foto::NO_MATERIAL_OVERRIDE, nullptr, foto::ShadowCaster::Dynamic);
+	if (showOriginal) return;
+	for (size_t i = 0; i < scene.objects.size() && i < objectMeshOf.size(); i++) {
+		if (objectMeshOf[i]) draw(objectMeshOf[i], objectTransform(i), foto::NO_MATERIAL_OVERRIDE, nullptr, foto::ShadowCaster::Dynamic);
+	}
 }
 
 void Visualizer::onImGui() {
@@ -740,7 +934,7 @@ void Visualizer::onImGui() {
 		return;
 	}
 
-	ImGui::TextDisabled("drag the object, scroll to rotate, shift+scroll to scale");
+	ImGui::TextDisabled("click an object to pick it, drag to move, scroll to rotate, shift+scroll to scale");
 	ImGui::TextWrapped("%s", lightingStatus.c_str());
 	drawPipeline();
 
@@ -752,21 +946,7 @@ void Visualizer::onImGui() {
 	ImGui::SameLine();
 	if (ImGui::Button("export image")) exportRequested = true;
 
-	if (objectMesh) {
-		recast::ObjectTransform& transform = scene.object.transform;
-		if (ImGui::Button("reset object")) {
-			transform = placedTransform;
-			draggingObject = false;
-			unsavedChanges = true;
-		}
-		ImGui::SameLine();
-		ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - ImGui::CalcTextSize("object size").x - 8.0f);
-		if (ImGui::SliderFloat("object size", &transform.scale, 0.1f, 10.0f, "%.2fx", ImGuiSliderFlags_Logarithmic)) {
-			transform.scale = std::max(transform.scale, 0.01f);
-			recast::resolveCollisions(scene.proxies, transform, objectMesh->getBoundsMin(), objectMesh->getBoundsMax());
-			unsavedChanges = true;
-		}
-	}
+	drawObjectPanel();
 
 	float exposure = getExposure();
 	if (ImGui::SliderFloat("exposure", &exposure, -4.0f, 4.0f, "%.1f EV")) setExposure(exposure);
@@ -881,7 +1061,15 @@ void Visualizer::finishPython() {
 
 	// Same file names get rewritten (photo.jpg, object.glb), so the loaded copies are dropped to force a reload
 	if (pendingPhotoReload) loadedPhotoPath.clear();
-	if (pendingObjectReload) loadedObjectPath.clear();
+	if (pendingObjectReload) {
+		// object.glb may have been rewritten under the same name: load every object file again
+		for (auto& [path, mesh] : objectMeshes) {
+			if (mesh) destroyMesh(mesh);
+		}
+		objectMeshes.clear();
+		objectMeshOf.clear();
+		selectNewestObject = true;
+	}
 	scenePath = pendingScenePath;
 	pendingScenePath.clear();
 	loadScene();
@@ -893,13 +1081,26 @@ void Visualizer::drawPipeline() {
 	if (ImGui::Button("scene photo...")) {
 		std::string photo = pickPhoto("scene photo");
 		if (!photo.empty()) {
-			std::string name = folderName(photo);
-			std::filesystem::path result = std::filesystem::path(RECAST_DATA_DIR) / name / "scene.json";
-			std::string dataRoot = nativePath(RECAST_DATA_DIR);
-			runPython("building scene " + name, "recast", { "scene", photo, "--name", name, "--data-root", dataRoot, "--overwrite" },
-					  nativePath(result), true, false);
-			followUpLabel = "finding walls and furniture";
-			followUpArguments = { "detect", "--name", name, "--data-root", dataRoot };
+			// the folder is named after the photo's bytes too: the same photo opens the scene built (and edited) before
+			std::string name = folderName(photo) + "_" + contentHash(photo);
+			std::filesystem::path folder = std::filesystem::path(RECAST_DATA_DIR) / name;
+			std::filesystem::path result = folder / "scene.json";
+			std::error_code error;
+			if (useCache && std::filesystem::exists(result, error) && std::filesystem::exists(folder / "detect.json", error)) {
+				if (sceneLoaded && unsavedChanges) saveScene();
+				scenePath = nativePath(result);
+				loadedPhotoPath.clear();
+				loadScene();
+				sceneWatcher = foto::FileWatcher(scenePath);
+				pipelineStatus = "opened " + name + " from the cache (untick use cache to build it again)";
+			}
+			else {
+				std::string dataRoot = nativePath(RECAST_DATA_DIR);
+				runPython("building scene " + name, "recast", { "scene", photo, "--name", name, "--data-root", dataRoot, "--overwrite" },
+						  nativePath(result), true, false);
+				followUpLabel = "finding walls and furniture";
+				followUpArguments = { "detect", "--name", name, "--data-root", dataRoot };
+			}
 		}
 	}
 
@@ -910,9 +1111,12 @@ void Visualizer::drawPipeline() {
 		if (!photo.empty()) {
 			char height[32];
 			std::snprintf(height, sizeof(height), "%.3f", std::max(objectHeight, 0.01f));
+			// made once into the bank (data/objects), and added to this room as one more object
 			std::vector<std::string> arguments = { photo, "--mode", OBJECT_MODES[objectMode], "--height", height,
-												   "--out", nativePath(scene.directory) };
+												   "--out", nativePath(scene.directory),
+												   "--bank", nativePath(std::filesystem::path(RECAST_DATA_DIR) / "objects") };
 			if (objectMode == GLASS_SHAPE) arguments.push_back("--glass");
+			if (!useCache) arguments.push_back("--rebuild");
 			runPython("adding object", "recast.object", arguments, scenePath, false, true);
 		}
 	}
@@ -923,6 +1127,9 @@ void Visualizer::drawPipeline() {
 	ImGui::SetNextItemWidth(70.0f);
 	ImGui::InputFloat("m tall", &objectHeight, 0.0f, 0.0f, "%.2f");
 	ImGui::EndDisabled();
+	ImGui::SameLine();
+	ImGui::Checkbox("use cache", &useCache);
+	if (ImGui::IsItemHovered()) ImGui::SetTooltip("a photo used before opens its saved scene, or reuses its object from the bank");
 	ImGui::EndDisabled();
 
 	if (!pipelineStatus.empty()) ImGui::TextWrapped("%s", pipelineStatus.c_str());

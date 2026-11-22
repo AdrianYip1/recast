@@ -82,7 +82,7 @@ namespace recast {
 		std::array<foto::u32, 2> image_size = { 0, 0 };
 		SceneCamera camera;
 		ScaleReference scale_reference;
-		SceneObject object;
+		std::vector<SceneObject> objects; // every object placed in the room (older files: one "object", read as the only one)
 		std::vector<Proxy> proxies;
 		std::vector<SceneLight> lights;
 		Lighting lighting;

@@ -44,10 +44,21 @@ private:
 	recast::LinearImage photoPixels;
 	recast::CameraMatch cameraMatch;
 
-	foto::Mesh* objectMesh = nullptr;
-	recast::ObjectTransform placedTransform; // the object's place when it was loaded
-	std::string loadedObjectPath;
+	// Placed objects: scene.objects[i] draws objectMeshOf[i]; copies of one file share its mesh in objectMeshes
+	std::map<std::string, foto::Mesh*> objectMeshes;
+	std::vector<foto::Mesh*> objectMeshOf;
+	std::vector<recast::ObjectTransform> placedTransforms; // where each was when loaded: "reset" goes back there
+	int selectedObject = -1;
+	bool selectNewestObject = false; // after an object step: the one it added
 	bool draggingObject = false;
+
+	// The object bank: every object made so far (data/objects/<entry>/object.glb), ready to add again without Python
+	struct BankEntry {
+		std::filesystem::path glb;
+		std::string label;
+	};
+	std::vector<BankEntry> bank;
+	bool useCache = true; // a photo seen before opens its saved scene, an object photo reuses its bank entry
 	enginemath::Vec3 dragOffset;
 	bool leftMouseWasDown = false;
 	bool screenshotKeyWasDown = false;
@@ -153,6 +164,11 @@ private:
 	void detectLighting();
 	void finishLightingDetection();
 	void updateObjectInteraction();
+	foto::Mesh* objectMeshFor(const std::string& path);
+	void refreshBank();
+	void addFromBank(const BankEntry& entry);
+	void removeObject(int index);
+	void drawObjectPanel();
 	bool updateLightEditing();
 	void addLight();
 	void drawLightEditor();
@@ -161,5 +177,5 @@ private:
 	recast::RayHit supportUnderCursor(const enginemath::Vec3& origin, const enginemath::Vec3& direction);
 	void drawScene();
 	void exportRender();
-	enginemath::Mat4 objectTransform() const;
+	enginemath::Mat4 objectTransform(size_t index) const;
 };
