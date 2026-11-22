@@ -783,10 +783,10 @@ void Visualizer::drawSidebar() {
 	const float full = -FLT_MIN;
 
 	ImVec2 logoSize = recast::ui::logoSize();
-	ImGui::PushFont(recast::ui::titleFont(), ImGui::GetStyle().FontSizeBase * 2.0f);
+	ImGui::PushFont(recast::ui::titleFont(), ImGui::GetStyle().FontSizeBase * 3.0f);
 	const float titleHeight = ImGui::GetFontSize();
 	if (logoSize.y > 0.0f) {
-		float height = 1.5f * titleHeight;
+		float height = 1.15f * titleHeight;
 		ImGui::Image(recast::ui::logo(), ImVec2(logoSize.x * height / logoSize.y, height));
 		ImGui::SameLine();
 		ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 0.5f * (height - titleHeight));
@@ -936,7 +936,7 @@ void Visualizer::drawPrompt() {
 	ImGui::PopStyleVar(2);
 
 	auto title = [](const char* text) {
-		ImGui::PushFont(recast::ui::titleFont(), ImGui::GetStyle().FontSizeBase * 1.6f);
+		ImGui::PushFont(recast::ui::titleFont(), ImGui::GetStyle().FontSizeBase * 2.4f);
 		ImGui::TextColored(recast::ui::purple(), "%s", text);
 		ImGui::PopFont();
 	};

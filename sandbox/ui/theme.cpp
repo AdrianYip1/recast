@@ -105,9 +105,8 @@ void applyTheme(float dpiScale, const std::string& assetsDir) {
 	if (!regular) ImGui::GetIO().Fonts->AddFontDefault();
 	bold = loadFirst({ fonts + "Montserrat-SemiBold.ttf", "C:/Windows/Fonts/seguisb.ttf",
 					   "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" });
-	// Pinecone under any of its usual file names, else the bold font
-	title = loadFirst({ fonts + "Pinecone.ttf", fonts + "Pinecone.otf", fonts + "Pinecone-Regular.ttf",
-						fonts + "Pinecone-Regular.otf", fonts + "pinecone.ttf", fonts + "pinecone.otf" });
+	// handwritten titles; Reenie Beanie draws small, so titles are pushed at about 1.4x the size of other fonts
+	title = loadFirst({ fonts + "ReenieBeanie.ttf" });
 	if (!title) title = bold;
 	loadLogo(assetsDir + "/logo.png");
 
