@@ -155,7 +155,6 @@ private:
 	void drawPrompt();
 	float sidebarWidth = 0.0f;
 	float drawerHeight = 0.0f; // last frame's, so the prompt card can sit above it
-	bool showPlacedTip = false;          // how to move a newly added object
 
 	// The object's box is drawn in the app over a preview of its photo, then sent to Python as --rect (full photo pixels).
 	// A photo the app can't read (camera RAW) falls back to Python's own box window

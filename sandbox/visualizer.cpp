@@ -1543,13 +1543,12 @@ void Visualizer::drawSidebar() {
 // A small card in the middle of the photo that asks for the next step: the scene photo at the start, the object photo
 // once the scene is in, and how to move the object once it's added
 void Visualizer::drawPrompt() {
-	enum class Prompt { None, Working, Scene, Object, Placed };
+	enum class Prompt { None, Working, Scene, Object };
 	Prompt prompt = Prompt::None;
 	// nothing over the photo while Python works, except when its own box window is open (photos the app can't read)
 	if (pythonJob.running()) prompt = pendingObjectReload && !objectBoxedInApp ? Prompt::Working : Prompt::None;
 	else if (!sceneLoaded) prompt = Prompt::Scene;
 	else if (scene.objects.empty()) prompt = Prompt::Object;
-	else if (showPlacedTip) prompt = Prompt::Placed;
 	if (prompt == Prompt::None || !boxPhoto.empty()) return;
 
 	const ImGuiViewport* viewport = ImGui::GetMainViewport();
@@ -1622,12 +1621,6 @@ void Visualizer::drawPrompt() {
 			text("That didn't work. Try another photo.");
 			ImGui::PopStyleColor();
 		}
-		break;
-	case Prompt::Placed:
-		title("Object added");
-		text("Drag to move, scroll to rotate, Shift+scroll to resize.");
-		ImGui::Dummy(ImVec2(0.0f, 0.3f * em));
-		if (recast::ui::accentButton("Got it", full)) showPlacedTip = false;
 		break;
 	default:
 		break;
@@ -1718,7 +1711,6 @@ void Visualizer::finishPython() {
 		objectMeshes.clear();
 		objectMeshOf.clear();
 		selectNewestObject = true;
-		if (succeeded) showPlacedTip = true;
 	}
 	scenePath = pendingScenePath;
 	pendingScenePath.clear();
