@@ -1,12 +1,8 @@
 #include "theme.hpp"
 
 #include <cmath>
-#include <cstring>
 #include <filesystem>
 #include <initializer_list>
-
-#include <imgui_internal.h>
-#include <stb_image.h>
 
 namespace recast::ui {
 
@@ -14,9 +10,8 @@ namespace {
 
 ImFont* title = nullptr;
 ImFont* bold = nullptr;
-ImTextureData logoTexture;
 
-constexpr float FONT_SIZE = 17.0f; // Source Sans runs small
+constexpr float FONT_SIZE = 16.0f;
 
 // The first of these files that exists, or nullptr
 ImFont* loadFirst(std::initializer_list<std::string> paths) {
@@ -36,21 +31,6 @@ float linear(int channel) {
 
 ImVec4 rgb(int r, int g, int b, float a = 1.0f) {
 	return ImVec4(linear(r), linear(g), linear(b), a);
-}
-
-void loadLogo(const std::string& path) {
-	int width = 0, height = 0, channels = 0;
-	unsigned char* pixels = stbi_load(path.c_str(), &width, &height, &channels, 4);
-	if (!pixels) return;
-	// same reason as rgb(): the image is sRGB, the screen re-encodes what ImGui draws
-	for (int i = 0; i < width * height * 4; i++) {
-		if (i % 4 != 3) pixels[i] = static_cast<unsigned char>(std::lround(255.0f * linear(pixels[i])));
-	}
-	logoTexture.Create(ImTextureFormat_RGBA32, width, height);
-	std::memcpy(logoTexture.GetPixels(), pixels, static_cast<size_t>(width) * height * 4);
-	logoTexture.UseColors = true;
-	stbi_image_free(pixels);
-	ImGui::RegisterUserTexture(&logoTexture);
 }
 
 } // namespace
@@ -75,20 +55,14 @@ ImFont* boldFont() {
 	return bold ? bold : ImGui::GetFont();
 }
 
-ImTextureRef logo() {
-	return logoTexture.GetTexRef();
-}
-
-ImVec2 logoSize() {
-	return ImVec2(static_cast<float>(logoTexture.Width), static_cast<float>(logoTexture.Height));
-}
-
 bool accentButton(const char* label, ImVec2 size) {
 	ImGui::PushStyleColor(ImGuiCol_Button, purple());
 	ImGui::PushStyleColor(ImGuiCol_ButtonHovered, rgb(152, 114, 158));
 	ImGui::PushStyleColor(ImGuiCol_ButtonActive, rgb(110, 78, 116));
 	ImGui::PushStyleColor(ImGuiCol_Text, rgb(255, 255, 255));
+	ImGui::PushFont(boldFont(), 0.0f);
 	bool pressed = ImGui::Button(label, size);
+	ImGui::PopFont();
 	ImGui::PopStyleColor(4);
 	return pressed;
 }
@@ -98,23 +72,24 @@ void applyTheme(float dpiScale, const std::string& assetsDir) {
 	const std::string fonts = assetsDir + "/fonts/";
 
 	// the first font added is the default; Segoe UI etc. if the bundled fonts are missing
-	ImFont* regular = loadFirst({ fonts + "SourceSansPro-Regular.ttf", "C:/Windows/Fonts/segoeui.ttf",
+	ImFont* regular = loadFirst({ fonts + "Montserrat-Light.ttf", "C:/Windows/Fonts/segoeuil.ttf",
 								  "/System/Library/Fonts/Helvetica.ttc", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf" });
 	if (!regular) ImGui::GetIO().Fonts->AddFontDefault();
-	bold = loadFirst({ fonts + "SourceSansPro-SemiBold.ttf", "C:/Windows/Fonts/seguisb.ttf",
+	bold = loadFirst({ fonts + "Montserrat-SemiBold.ttf", "C:/Windows/Fonts/seguisb.ttf",
 					   "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" });
-	title = loadFirst({ fonts + "SourceSerifPro-Bold.ttf", "C:/Windows/Fonts/georgiab.ttf",
-						"/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf" });
-	loadLogo(assetsDir + "/logo.png");
+	// Pinecone under any of its usual file names, else the bold font
+	title = loadFirst({ fonts + "Pinecone.ttf", fonts + "Pinecone.otf", fonts + "Pinecone-Regular.ttf",
+						fonts + "Pinecone-Regular.otf", fonts + "pinecone.ttf", fonts + "pinecone.otf" });
+	if (!title) title = bold;
 
 	ImGuiStyle& style = ImGui::GetStyle();
 	style = ImGuiStyle();
 	ImGui::StyleColorsLight(&style);
 
-	style.WindowPadding = ImVec2(12.0f, 12.0f);
-	style.FramePadding = ImVec2(8.0f, 4.0f);
-	style.ItemSpacing = ImVec2(8.0f, 6.0f);
-	style.WindowRounding = 8.0f;
+	style.WindowPadding = ImVec2(14.0f, 14.0f);
+	style.FramePadding = ImVec2(8.0f, 5.0f);
+	style.ItemSpacing = ImVec2(8.0f, 7.0f);
+	style.WindowRounding = 10.0f;
 	style.ChildRounding = 8.0f;
 	style.FrameRounding = 5.0f;
 	style.PopupRounding = 6.0f;
@@ -123,6 +98,8 @@ void applyTheme(float dpiScale, const std::string& assetsDir) {
 	style.WindowBorderSize = 1.0f;
 	style.ChildBorderSize = 1.0f;
 	style.FrameBorderSize = 0.0f;
+	style.SeparatorTextBorderSize = 1.0f;
+	style.SeparatorTextPadding = ImVec2(0.0f, 4.0f);
 
 	// light yellow paper, dark ink text, the logo's purple for everything that's picked or active
 	const ImVec4 accent = purple();
@@ -134,8 +111,8 @@ void applyTheme(float dpiScale, const std::string& assetsDir) {
 	const ImVec4 ink = rgb(32, 26, 30);
 	ImVec4* c = style.Colors;
 	c[ImGuiCol_Text] = ink;
-	c[ImGuiCol_TextDisabled] = rgb(118, 108, 98);
-	c[ImGuiCol_WindowBg] = rgb(240, 231, 200, 0.97f);
+	c[ImGuiCol_TextDisabled] = rgb(112, 102, 92);
+	c[ImGuiCol_WindowBg] = paper();
 	c[ImGuiCol_ChildBg] = rgb(0, 0, 0, 0.0f);
 	c[ImGuiCol_PopupBg] = light;
 	c[ImGuiCol_Border] = rgb(32, 26, 30, 0.18f);
@@ -162,7 +139,7 @@ void applyTheme(float dpiScale, const std::string& assetsDir) {
 	c[ImGuiCol_Separator] = rgb(32, 26, 30, 0.18f);
 	c[ImGuiCol_SeparatorHovered] = accentHover;
 	c[ImGuiCol_SeparatorActive] = accent;
-	c[ImGuiCol_ResizeGrip] = rgb(132, 96, 138, 0.2f);
+	c[ImGuiCol_ResizeGrip] = rgb(0, 0, 0, 0.0f);
 	c[ImGuiCol_ResizeGripHovered] = accentSoft;
 	c[ImGuiCol_ResizeGripActive] = accent;
 	c[ImGuiCol_TextSelectedBg] = accentSoft;

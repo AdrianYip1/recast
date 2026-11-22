@@ -92,13 +92,13 @@ private:
 	void runPython(const std::string& label, const std::string& module, const std::vector<std::string>& arguments,
 				   const std::string& resultScene = "", bool reloadPhoto = false, bool reloadObject = false);
 	void finishPython();
-	void drawPipeline();
 	void chooseScenePhoto();
-	void drawWelcome();
-	void findRecentScenes();
-	void openScene(const std::string& path);
-	std::vector<std::filesystem::path> recentScenes;
-	bool recentScenesFound = false;
+	void chooseObjectPhoto();
+	void drawSidebar();
+	void drawPrompt();
+	float sidebarWidth = 0.0f;
+	bool objectPromptDismissed = false; // "not now" on the object prompt
+	bool showPlacedTip = false;          // how to move a newly added object
 
 	std::vector<recast::SceneLight> detectedLights; // what "reset lights" goes back to
 	std::vector<recast::FitLight> photoEmitters;    // windows and lamps detect found, whose strength the fit solves
