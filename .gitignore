@@ -24,6 +24,7 @@ __pycache__/
 # scene folders (photos are big); the example scene is kept
 data/*
 !data/example/
+data/example/thumbnail.jpg
 
 # large image data (regenerate the sample with tools/make_test_scene.py)
 *.hdr
