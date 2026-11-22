@@ -4,6 +4,8 @@
 #include <cgltf.h>
 #include <stb_image.h>
 
+#include <algorithm>
+#include <cmath>
 #include <filesystem>
 
 using enginemath::Vec2;
@@ -125,6 +127,10 @@ namespace {
 		if (source.has_specular) material.specular = source.specular.specular_factor;
 		if (source.has_transmission) material.transmission = source.transmission.transmission_factor;
 		if (source.has_ior) material.ior = source.ior.ior;
+		const cgltf_volume& volume = source.volume;
+		if (source.has_volume && volume.thickness_factor > 0.0f && volume.attenuation_distance > 0.0f && std::isfinite(volume.attenuation_distance)) {
+			for (int c = 0; c < 3; c++) material.absorption[c] = -std::log(std::max(volume.attenuation_color[c], 1e-4f)) / volume.attenuation_distance;
+		}
 
 		float strength = source.has_emissive_strength ? source.emissive_strength.emissive_strength : 1.0f;
 		material.emissive = { source.emissive_factor[0] * strength, source.emissive_factor[1] * strength,

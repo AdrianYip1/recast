@@ -76,8 +76,9 @@ namespace foto {
 		f32 ior = 1.5f;          // KHR_materials_ior
 		u32 maskId = 0; // path tracing: the cutout (owner image value) this room surface belongs to, 0 = none
 		f32 _pad = 0.0f;
+		alignas(16) enginemath::Vec4 absorption = { 0.0f, 0.0f, 0.0f, 0.0f }; // KHR_materials_volume: light lost per metre inside glass (rgb)
 	};
-	static_assert(sizeof(Material) == 64);
+	static_assert(sizeof(Material) == 80);
 
 	// One mesh drawn with one transform. Every submesh uses its own material unless overridden.
 	// pipeline = nullptr uses the default scene pipeline. mesh = nullptr draws a fullscreen triangle (needs a pipeline).

@@ -277,8 +277,10 @@ float dielectricFresnel(float cosine, float ior) {
 }
 
 // Turns a ray at a glass surface: refracts (tinted by the glass colour when entering) or reflects by Fresnel.
+// A ray reaching the surface from inside has crossed the glass since from and loses light to its volume.
 // Returns the new origin; direction and throughput are updated in place
-vec3 glassBounce(Hit hit, inout vec3 direction, inout vec3 throughput, inout uint state) {
+vec3 glassBounce(Hit hit, vec3 from, inout vec3 direction, inout vec3 throughput, inout uint state) {
+	if (!hit.frontFace) throughput *= exp(-materials[hit.material].absorption.rgb * distance(from, hit.position));
 	float ior = max(materials[hit.material].ior, 1.0);
 	float eta = hit.frontFace ? 1.0 / ior : ior;
 	float cosIn = clamp(dot(-direction, hit.normal), 0.0, 1.0);

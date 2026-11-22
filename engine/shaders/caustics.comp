@@ -72,7 +72,7 @@ void main() {
 
 		Material material = materials[hit.material];
 		if (material.transmission > 0.0 && random(state) < material.transmission) {
-			origin = glassBounce(hit, direction, flux, state);
+			origin = glassBounce(hit, origin, direction, flux, state);
 		}
 		else if (mirrorLike(material)) {
 			flux *= albedoOf(hit);
