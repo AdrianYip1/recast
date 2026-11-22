@@ -206,7 +206,7 @@ class Scene:
     camera: Camera
     photo: str = PHOTO_NAME
     scale_reference: dict = field(default_factory=lambda: {"kind": "camera_height", "metres": 1.5})
-    object: ObjectPlacement | None = None
+    objects: list[ObjectPlacement] = field(default_factory=list)   # every object placed in the room
     proxies: list[Proxy] = field(default_factory=list)
     lights: list[AreaLight] = field(default_factory=list)
     # the engine's point/directional lights (detected or placed by hand), kept exactly as written
@@ -239,23 +239,19 @@ class Scene:
             "lights": [l.to_dict() for l in self.lights] + [dict(l) for l in self.engine_lights],
             "lighting": self.lighting.to_dict(),
         })
-        # no object yet -> leave the key out: the engine's loader rejects "object": null
-        # and falls back to an empty path when the key is missing
-        d.pop("object", None)
-        if self.object is not None:
-            d["object"] = self.object.to_dict()
+        d.pop("object", None)                      # the older single object, replaced by the list
+        d["objects"] = [o.to_dict() for o in self.objects]
         return d
 
     @classmethod
     def from_dict(cls, d: dict) -> "Scene":
-        known = {"version", "photo", "image_size", "camera", "scale_reference", "object",
+        known = {"version", "photo", "image_size", "camera", "scale_reference", "object", "objects",
                  "proxies", "lights", "lighting"}
         return cls(
             camera=Camera.from_dict(d["camera"], d["image_size"]),
             photo=d.get("photo", PHOTO_NAME),
             scale_reference=d.get("scale_reference", {"kind": "camera_height", "metres": 1.5}),
-            # missing, null, or the engine's default (empty path) all mean "no object yet"
-            object=ObjectPlacement.from_dict(d["object"]) if (d.get("object") or {}).get("path") else None,
+            objects=[ObjectPlacement.from_dict(o) for o in scene_objects(dict(d)) if o.get("path")],
             proxies=[proxy_from_dict(p) for p in d.get("proxies", [])],
             lights=[AreaLight.from_dict(l) for l in d.get("lights", []) if l.get("type", "area") == "area"],
             engine_lights=[l for l in d.get("lights", []) if l.get("type", "area") != "area"],
@@ -293,9 +289,18 @@ def update_scene_file(path: str | Path, **sections) -> None:
     path = Path(path)
     data = json.loads(path.read_text())
     data.update(sections)
-    if data.get("object", 0) is None:  # older files wrote null, which the engine rejects
-        del data["object"]
+    scene_objects(data)                             # an older single "object" becomes the "objects" list
     write_json_atomic(path, data)
+
+
+def scene_objects(data: dict) -> list[dict]:
+    """The placed objects of a raw scene.json dict, edited in place: older files have one "object" (possibly null or
+    with an empty path, meaning none), which moves into the "objects" list."""
+    legacy = data.pop("object", None)
+    objects = data.setdefault("objects", [])
+    if legacy and legacy.get("path") and not objects:
+        objects.append(legacy)
+    return objects
 
 
 # --- building proxies from clicks -------------------------------------------------

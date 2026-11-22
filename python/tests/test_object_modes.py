@@ -240,3 +240,76 @@ def test_glass_glb_has_transmission(tmp_path):
     assert ext["KHR_materials_transmission"]["transmissionFactor"] == 1.0
     assert ext["KHR_materials_ior"]["ior"] == 1.5
     assert len(trimesh.load(tmp_path / "glass.glb", force="mesh").vertices) > 0
+
+
+def test_neutral_light_takes_out_the_rooms_colour_but_not_too_much():
+    from recast.object.texture import neutral_light
+    from recast.io import luminance
+    rng = np.random.default_rng(0)
+    grey = rng.uniform(0.05, 0.6, (120, 160, 1)) * np.ones(3)
+    warm = grey * np.array([1.2, 1.0, 0.75])                       # under tungsten-ish light
+    gains = neutral_light(warm)
+    np.testing.assert_allclose(gains * np.array([1.2, 1.0, 0.75]) / (gains * np.array([1.2, 1.0, 0.75])).mean(),
+                               1.0, atol=0.03)                     # grey again
+    assert luminance(gains) == pytest.approx(1.0)                  # brightness kept
+    green = grey * np.array([0.3, 1.0, 0.3])                       # a room that really is green: only partly undone
+    corrected = neutral_light(green) * np.array([0.3, 1.0, 0.3])
+    assert corrected[0] < 0.6 * corrected[1]                       # still clearly green
+
+
+def test_bank_reuses_an_object_and_places_copies_side_by_side(tmp_path):
+    """The same photo and settings come back from the bank without making the object again, and each copy lands on
+    the floor next to the ones already there."""
+    from recast.object.cli import bank_entry, build_parser
+    from recast.scene import Scene, floor_proxy
+    from synthetic import look_at_camera
+    sdir, bank = tmp_path / "room", tmp_path / "objects"
+    sdir.mkdir()
+    Scene(look_at_camera(width=160, height=120, focal_px=130.0), proxies=[floor_proxy(0)]).save(sdir / "scene.json")
+    photo = tmp_path / "mug.jpg"
+    save_jpg(photo, np.full((40, 40, 3), 0.5))
+    args = [str(photo), "--mode", "generated", "--height", "0.1", "--out", str(sdir), "--bank", str(bank), "--no-ui"]
+    entry = bank / bank_entry(build_parser().parse_args(args))
+    entry.mkdir(parents=True)
+    (entry / "object.glb").write_bytes(b"glb")                 # made earlier: nothing should run TripoSR now
+    (entry / "object_meta.json").write_text(json.dumps({"mode": "generated"}))
+    object_main(args)
+    object_main(args)
+    placed = json.loads((sdir / "scene.json").read_text())["objects"]
+    assert [o["path"] for o in placed] == [f"../objects/{entry.name}/object.glb"] * 2
+    a, b = (np.array(o["transform"]["position"]) for o in placed)
+    assert a[1] == b[1] == 0.0 and np.hypot(*(a - b)[[0, 2]]) >= 0.25 - 1e-9
+    other = build_parser().parse_args(args[:4] + ["0.2"] + args[5:])
+    assert bank_entry(other) != entry.name                     # another size is another object
+
+
+def test_thumbnail_is_the_cutout_centred_on_transparent(tmp_path):
+    from recast.object.cli import save_thumbnail
+    img = np.zeros((60, 100, 3))
+    img[10:50, 70:90] = [0.8, 0.1, 0.1]
+    alpha = np.zeros((60, 100))
+    alpha[10:50, 70:90] = 1.0
+    save_thumbnail(tmp_path / "t.png", img, alpha, size=64)
+    t = np.asarray(Image.open(tmp_path / "t.png"))
+    assert t.shape == (64, 64, 4)
+    assert t[32, 32, 3] == 255 and t[32, 32, 0] > 200 and t[32, 32, 1] < 120   # the red object in the middle
+    assert t[32, 2, 3] == 0 and t[2, 2, 3] == 0                             # nothing beside it
+
+
+def test_example_glass_dragon_is_amber_glass_of_real_size(tmp_path):
+    from recast.object.examples import ensure_examples
+    (tmp_path / "example_wine_glass").mkdir()
+    (tmp_path / "example_wine_glass" / "object_meta.json").write_text(json.dumps({"mode": "example"}))
+    written = ensure_examples(tmp_path)
+    assert not (tmp_path / "example_wine_glass").exists()                    # retired examples are removed
+    folder = written[0]
+    assert {"object.glb", "object_meta.json", "thumbnail.png"} <= {f.name for f in folder.iterdir()}
+    mesh = trimesh.load(folder / "object.glb", force="mesh")
+    mesh.merge_vertices(merge_tex=True, merge_norm=True)
+    assert mesh.is_winding_consistent and mesh.volume > 0                    # outward faces: inside the glass is known
+    assert mesh.extents[1] == pytest.approx(0.20, abs=1e-3)
+    assert mesh.bounds[0][1] == pytest.approx(0.0, abs=1e-6)                 # stands on its base
+    glb = (folder / "object.glb").read_bytes()
+    assert b"KHR_materials_transmission" in glb and b"attenuationColor" in glb
+    assert json.loads((folder / "object_meta.json").read_text())["glass"] is True
+    assert ensure_examples(tmp_path) == []                                   # already there: left alone

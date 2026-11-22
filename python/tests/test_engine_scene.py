@@ -24,7 +24,7 @@ def test_python_stages_run_on_engine_test_scene(tmp_path):
     subprocess.run([sys.executable, str(TOOL), str(sdir)], check=True, capture_output=True)
 
     scene = Scene.load(sdir / "scene.json")
-    assert scene.photo.endswith(".hdr") and scene.object.path == "object.glb"
+    assert scene.photo.endswith(".hdr") and scene.objects[0].path == "object.glb"
 
     # stage C on the engine's scene, then the file must still match the shared schema
     main(["light", "--name", sdir.name, "--data-root", str(tmp_path)])

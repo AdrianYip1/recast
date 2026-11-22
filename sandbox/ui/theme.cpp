@@ -128,6 +128,8 @@ void applyTheme(float dpiScale, const std::string& assetsDir) {
 	style.FrameBorderSize = 0.0f;
 	style.SeparatorTextBorderSize = 1.0f;
 	style.SeparatorTextPadding = ImVec2(0.0f, 4.0f);
+	style.TabRounding = 5.0f;
+	style.TabBarOverlineSize = 2.0f;
 
 	// light yellow paper, dark ink text, the logo's purple for everything that's picked or active
 	const ImVec4 accent = purple();
@@ -167,6 +169,13 @@ void applyTheme(float dpiScale, const std::string& assetsDir) {
 	c[ImGuiCol_Separator] = rgb(32, 26, 30, 0.18f);
 	c[ImGuiCol_SeparatorHovered] = accentHover;
 	c[ImGuiCol_SeparatorActive] = accent;
+	c[ImGuiCol_Tab] = dark;
+	c[ImGuiCol_TabHovered] = accentSoft;
+	c[ImGuiCol_TabSelected] = light;
+	c[ImGuiCol_TabSelectedOverline] = accent;
+	c[ImGuiCol_TabDimmed] = dark;
+	c[ImGuiCol_TabDimmedSelected] = light;
+	c[ImGuiCol_TabDimmedSelectedOverline] = accent;
 	c[ImGuiCol_ResizeGrip] = rgb(0, 0, 0, 0.0f);
 	c[ImGuiCol_ResizeGripHovered] = accentSoft;
 	c[ImGuiCol_ResizeGripActive] = accent;

@@ -10,7 +10,10 @@ Photos are shrunk to --max-size pixels first, which keeps the cutout fast.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import os
+import re
 import sys
 from pathlib import Path
 
@@ -21,14 +24,14 @@ from PIL import Image
 from .. import object3d
 from ..camera import Camera, solve_camera
 from ..io import load_photo, save_jpg, to_srgb8
-from ..scene import ObjectPlacement, update_scene_file
+from ..scene import ObjectPlacement, scene_objects, update_scene_file
 from ..vanishing import assign_axes, detect_segments, find_vanishing_points, vp_from_segments
 from . import MODES, annotate, check
 from .export import export_glass_glb, export_glb, normalize, write_meta
 from .modes import build_box, build_card, build_extrude, build_revolution
 from .placement import base_point, height_from_click, mask_bottom_center, mask_top_above
 from .segment import chroma_key, grabcut, salient_alpha, soft_alpha
-from .texture import back_side_fill, crop_texture, delight, projective_uv
+from .texture import back_side_fill, crop_texture, delight, neutral_light, projective_uv
 
 DEFAULT_DATA_ROOT = Path(__file__).resolve().parents[3] / "data"
 
@@ -75,9 +78,43 @@ def _pt(v, scale: float = 1.0) -> np.ndarray | None:
     return None if v is None else np.asarray(v, dtype=np.float64) * scale
 
 
+def save_thumbnail(path: Path, img_linear: np.ndarray, alpha: np.ndarray, size: int = 128) -> None:
+    """The object as the bank shows it: its cutout from the photo, centred in a transparent square."""
+    ys, xs = np.nonzero(alpha > 0.1)
+    if len(xs) == 0:
+        return
+    x0, x1, y0, y1 = xs.min(), xs.max() + 1, ys.min(), ys.max() + 1
+    rgba = np.dstack([to_srgb8(img_linear[y0:y1, x0:x1]), (np.clip(alpha[y0:y1, x0:x1], 0, 1) * 255 + 0.5).astype(np.uint8)])
+    side = int(max(x1 - x0, y1 - y0) * 1.1) + 1
+    square = np.zeros((side, side, 4), np.uint8)
+    oy, ox = (side - (y1 - y0)) // 2, (side - (x1 - x0)) // 2
+    square[oy:oy + y1 - y0, ox:ox + x1 - x0] = rgba
+    Image.fromarray(square, "RGBA").resize((size, size), Image.LANCZOS).save(path)
+
+
+def bank_entry(args) -> str:
+    """Folder name of this object in the bank: the photo's name plus a hash of its bytes and of everything that changes
+    the result (mode, size, glass, cutout), so the same photo with the same settings is made only once."""
+    digest = hashlib.sha1(Path(args.photo).read_bytes())
+    settings = [args.mode, args.height, args.width, args.glass, args.keep_shading, args.rect, args.mask, args.chroma]
+    digest.update(repr(settings).encode())
+    stem = re.sub(r"[^A-Za-z0-9_-]", "_", Path(args.photo).stem)[:40] or "object"
+    return f"{stem}_{digest.hexdigest()[:10]}"
+
+
 def run(args) -> dict:
-    out = Path(args.out) if args.out else Path(args.data_root) / args.name
-    out.mkdir(parents=True, exist_ok=True)
+    scene_dir = Path(args.out) if args.out else Path(args.data_root) / args.name
+    scene_dir.mkdir(parents=True, exist_ok=True)
+    args.scene_dir = scene_dir
+    out = scene_dir
+    if args.bank:
+        # generated objects live in the bank, each in its own folder; the scene only points at them
+        out = Path(args.bank) / bank_entry(args)
+        if not args.rebuild and (out / "object.glb").exists() and (out / "object_meta.json").exists():
+            _place_in_scene(scene_dir, out / "object.glb", replace=False)
+            print(f"reused {out.name} from the object bank (made earlier from the same photo and settings)")
+            return json.loads((out / "object_meta.json").read_text())
+        out.mkdir(parents=True, exist_ok=True)
     ui = not args.no_ui
 
     # loaded at the working size (much faster than decoding 12 MP); everything after this works in its pixels,
@@ -129,7 +166,7 @@ def run(args) -> dict:
         save_jpg(out / "object_mask.jpg", mask.astype(np.uint8) * 255, linear=False)
         meta = {"mode": "inflate", "measurement": {"height_m": height}, "photo": str(args.photo)}
         write_meta(out / "object_meta.json", meta)
-        _place_in_scene(out)
+        _place_in_scene(args.scene_dir, out / "object.glb", replace=not args.bank)
         print(f"wrote {out / 'object.glb'} (inflate, {height} m tall)")
         return meta
 
@@ -220,7 +257,7 @@ def run(args) -> dict:
         print(f"vs {args.compare}: height error {c['height_error_pct']:.2f}%, "
               f"Chamfer {c['chamfer_m'] * 100:.2f} cm ({c['chamfer_pct_of_height']:.2f}% of height)")
     write_meta(out / "object_meta.json", meta)
-    _place_in_scene(out)
+    _place_in_scene(args.scene_dir, out / "object.glb", replace=not args.bank)
     size = np.ptp(mesh.vertices, axis=0)
     print(f"wrote {out / 'object.glb'} ({args.mode}, {size[0]:.3f} x {size[1]:.3f} x {size[2]:.3f} m)")
     meta["_world_mesh"] = world_mesh  # for tests; not written
@@ -235,7 +272,12 @@ def _run_generated(args, out: Path, img: np.ndarray, mask: np.ndarray, alpha, sh
     if not (height or width):
         sys.exit("give --height or --width in metres")
     a = alpha if alpha is not None else mask.astype(np.float32)
+    gains = np.ones(3)
+    if not args.keep_shading:                     # the light's colour comes off with its shading
+        gains = neutral_light(img, exclude=a > 0.1)
+        img = img * gains
     mesh, tex, info = build_generated(to_srgb8(img), a, remove_lighting=not args.keep_shading)
+    info["white_balance_gains"] = [float(g) for g in gains]
     lo, hi = mesh.bounds
     base = np.array([0.5 * (lo[0] + hi[0]), lo[1], 0.5 * (lo[2] + hi[2])])
     mesh, scale = normalize(mesh, base, height=height, width=width)
@@ -244,11 +286,12 @@ def _run_generated(args, out: Path, img: np.ndarray, mask: np.ndarray, alpha, sh
     else:
         export_glb(mesh, tex, out / "object.glb")
     save_jpg(out / "object_mask.jpg", mask.astype(np.uint8) * 255, linear=False)
+    save_thumbnail(out / "thumbnail.png", img, a)
     meta = {"mode": "generated", "glass": bool(args.glass), "photo": str(args.photo), "working_scale": shrink,
             "measurement": {"height_m": height} if height else {"width_m": width}, "model": info,
             "scale_units_to_m": scale, "vertices": len(mesh.vertices), "faces": len(mesh.faces)}
     write_meta(out / "object_meta.json", meta)
-    _place_in_scene(out)
+    _place_in_scene(args.scene_dir, out / "object.glb", replace=not args.bank)
     size = np.ptp(mesh.vertices, axis=0)
     print(f"wrote {out / 'object.glb'} (generated on {info['device']}, {size[0]:.3f} x {size[1]:.3f} x {size[2]:.3f} m)")
     return meta
@@ -330,9 +373,10 @@ def _table_spot(cam: Camera, data: dict, out: Path, boxes, walls) -> np.ndarray 
     return best
 
 
-def _place_in_scene(out: Path) -> None:
-    """If this folder has a scene.json, put object.glb in it: a new object goes on the biggest visible table, else on
-    the first floor or box top in view, with its photographed side facing the camera."""
+def _place_in_scene(out: Path, glb: Path, replace: bool = True) -> None:
+    """If this folder has a scene.json, add `glb` to its objects: on the biggest visible table, else on the first floor
+    or box top in view, next to what's already there, with its photographed side facing the camera. replace: drop
+    earlier placements of the same file first (an object.glb rewritten in the scene folder), else add another copy."""
     path = out / "scene.json"
     if not path.exists():
         return
@@ -345,11 +389,32 @@ def _place_in_scene(out: Path) -> None:
     spot = _table_spot(cam, data, out, boxes, walls)
     if spot is None:
         spot = _support_spot(cam, boxes, walls)
-    placed = ObjectPlacement("object.glb", (float(spot[0]), float(spot[1]), float(spot[2]))).to_dict()
+    relative = os.path.relpath(glb, out).replace(os.sep, "/")
+    objects = scene_objects(data)
+    if replace:
+        objects[:] = [o for o in objects if o.get("path") != relative]
+    spot = _free_spot(cam, spot, boxes, [np.asarray(o["transform"]["position"], float) for o in objects if o.get("transform")])
+    placed = ObjectPlacement(relative, (float(spot[0]), float(spot[1]), float(spot[2]))).to_dict()
     # the photographed side (+Z in object.glb) faces the camera
     to_cam = cam.position - spot
     placed["transform"]["rotation_y_deg"] = round(float(np.degrees(np.arctan2(to_cam[0], to_cam[2]))), 2)
-    update_scene_file(path, object=placed)
+    objects.append(placed)
+    update_scene_file(path, objects=objects)
+
+
+def _free_spot(cam: Camera, spot: np.ndarray, boxes, taken: list, gap: float = 0.25) -> np.ndarray:
+    """`spot`, or the nearest point sideways (as the camera sees it) at least `gap` from every placed object, still on
+    the same surface: the floor, or the top of the box `spot` is on."""
+    right = np.array([cam.R[0][0], 0.0, cam.R[0][2]])
+    right /= max(float(np.linalg.norm(right)), 1e-9)
+    on = [(lo, hi) for lo, hi in boxes if abs(hi[1] - spot[1]) < 0.02 and lo[0] <= spot[0] <= hi[0] and lo[2] <= spot[2] <= hi[2]]
+    for k in (0, 1, -1, 2, -2, 3, -3):
+        p = spot + right * gap * k
+        if on and not any(lo[0] + 0.05 <= p[0] <= hi[0] - 0.05 and lo[2] + 0.05 <= p[2] <= hi[2] - 0.05 for lo, hi in on):
+            continue                                   # off the edge of the table
+        if all(np.hypot(*(p - t)[[0, 2]]) >= gap for t in taken):
+            return p
+    return spot
 
 
 def build_parser(prog: str = "python -m recast.object") -> argparse.ArgumentParser:
@@ -359,6 +424,9 @@ def build_parser(prog: str = "python -m recast.object") -> argparse.ArgumentPars
     p.add_argument("--out", help="scene folder to write into (e.g. data/room1/)")
     p.add_argument("--name", help="scene folder name under data/ (instead of --out)")
     p.add_argument("--data-root", default=str(DEFAULT_DATA_ROOT))
+    p.add_argument("--bank", help="keep the object in this folder (one sub-folder per object) and reuse one already made "
+                                  "from the same photo and settings; the scene adds another copy of it")
+    p.add_argument("--rebuild", action="store_true", help="with --bank: make it again even if the bank has it")
     g = p.add_argument_group("measurement (sets the real scale)")
     g.add_argument("--height", type=float, help="real height in metres")
     g.add_argument("--width", type=float, help="real width in metres (instead of height)")

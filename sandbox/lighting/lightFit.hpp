@@ -26,8 +26,13 @@ namespace recast {
 		int proxy = -1;
 	};
 
-	// One sample per `stride` pixels that sees a proxy. Clipped pixels of 8-bit photos are skipped
-	std::vector<LightingSample> collectLightingSamples(const SceneFile& scene, const LinearImage& photo, int stride);
+	// The ray from the photo's camera through photo pixel (u, v)
+	enginemath::Vec3 cameraRay(const SceneCamera& camera, float u, float v);
+
+	// One sample per `stride` pixels that sees a proxy. Clipped pixels of 8-bit photos are left out of the fit; with
+	// `clipped` they are returned there instead (a blown-out sun patch says the sun is at least that strong)
+	std::vector<LightingSample> collectLightingSamples(const SceneFile& scene, const LinearImage& photo, int stride,
+													   std::vector<LightingSample>* clipped = nullptr);
 
 	// Point: falls off with distance squared. Directional: parallel rays, no falloff, `direction` is the way the light travels.
 	// Directional lights are only shadowed by boxes: planes are assumed open towards a distant source (sun through an opening)
@@ -63,8 +68,9 @@ namespace recast {
 	// Each light's size is then picked to match how soft the photo's shadow edges are
 	// The lights found in the photo (windows, lamps: `lights` on input, kept fixed) plus ambient, and one more light
 	// (directional sun, or a point lamp) when it explains the photo at least 2% better. Under a second
+	// `clipped`: the photo's blown-out pixels; a sun found weaker than they need is raised to make them white
 	LightingFit fitMainLight(const SceneFile& scene, const std::vector<LightingSample>& samples, std::vector<FitLight>& lights,
-							 const std::vector<enginemath::Vec3>& suns = {});
+							 const std::vector<enginemath::Vec3>& suns = {}, const std::vector<LightingSample>& clipped = {});
 
 	// Directions (the way the light travels) of the sun where the photo shows it: a small clipped-bright region above
 	// the horizon, seen through a window or open sky

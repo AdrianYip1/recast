@@ -66,6 +66,8 @@ def _warm_up() -> None:
             segment.salient_alpha(np.zeros((64, 64, 3), np.float32))
             from . import detect
             detect.run_models(np.zeros((64, 64, 3), np.uint8))
+            import skimage.measure, trimesh                  # shape carving: a second's import on the first scene
+            trimesh.creation.box().simplify_quadric_decimation(face_count=6)
             print("worker: models loaded", flush=True)
         except Exception as e:                       # a missing extra only matters when that step runs
             print(f"worker: warm-up skipped ({e})", flush=True)
@@ -98,6 +100,12 @@ def main(argv=None) -> None:
     queue = Path(args.queue)
     queue.mkdir(parents=True, exist_ok=True)
     _lower_priority()
+    try:                                              # the bank's built-in objects (a glass dragon), if missing
+        from .object.cli import DEFAULT_DATA_ROOT
+        from .object.examples import ensure_examples
+        ensure_examples(DEFAULT_DATA_ROOT / "objects")
+    except Exception as e:
+        print(f"worker: examples skipped ({e})", flush=True)
     print(f"worker: ready, watching {queue}", flush=True)
     threading.Thread(target=_warm_up, daemon=True).start()
 

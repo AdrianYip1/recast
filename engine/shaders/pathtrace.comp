@@ -49,8 +49,9 @@ vec3 reflection(vec3 position, vec3 normal, vec3 view, float alpha, vec3 f0, ino
 // Light seen through glass: follows the ray through the objects until it reaches the room or an opaque object
 vec3 throughGlass(Hit hit, vec3 direction, inout uint state, uint lightSeed) {
 	vec3 throughput = vec3(1.0);
+	vec3 origin = hit.position;
 	for (int bounce = 0; bounce < 8; bounce++) {
-		vec3 origin = glassBounce(hit, direction, throughput, state);
+		origin = glassBounce(hit, origin, direction, throughput, state);
 		hit = traceClosest(origin, direction, MASK_ALL);
 		if (!hit.found) return throughput * frame.ambient.rgb;
 		if (!hit.dynamic) return throughput * roomRadiance(hit, lightSeed);
@@ -110,19 +111,30 @@ vec3 radiance(ivec2 pixel, vec2 viewportUV, vec2 pixelUV, inout uint state, out 
 	vec3 photo = photoAt(pixelUV);
 	Hit hit = traceClosest(origin, direction, MASK_ALL);
 	// Whether the object shows is decided by the photo's own depth, not by the boxes standing in for the furniture:
-	// it's hidden only where the photo has something clearly in front of it (margin for the depth estimate's error)
+	// it's hidden where the photo has something clearly in front of it (margin for the depth estimate's error), or
+	// where the shape of the furniture this pixel shows (by the photo's cutout) is in front of it, which catches
+	// the near parts of what the object sits in (a chair's armrest) that are closer than that margin
+	uint owner = ownerAt(pixelUV);
 	if (push.depthTexture != 0u) {
 		Hit object = traceClosest(origin, direction, MASK_DYNAMIC);
 		if (object.found) {
 			float distance = length(object.position - origin);
 			bool photoInFront = photoDepthAt(pixelUV) < distance - max(0.2, 0.1 * distance);
-			if (!photoInFront) hit = object;
+			bool shapeInFront = false;
+			Hit front = owner != 0u ? traceClosest(origin, direction, MASK_STATIC) : object;
+			for (int skip = 0; skip < 8 && front.found && !front.dynamic && length(front.position - origin) < distance - 0.03; skip++) {
+				if (materials[front.material].maskId == owner) {
+					shapeInFront = true;
+					break;
+				}
+				front = traceClosest(front.position + direction * 2e-3, direction, MASK_STATIC);
+			}
+			if (!photoInFront && !shapeInFront) hit = object;
 			else if (hit.dynamic) hit = traceClosest(origin, direction, MASK_STATIC);
 		}
 	}
 	// A box stands in for furniture of another shape: where the photo's cutout says this pixel isn't that piece,
 	// the box isn't there, so look past it (a box is entered and left, both faces carry its mask)
-	uint owner = ownerAt(pixelUV);
 	for (int skip = 0; skip < 8 && hit.found && !hit.dynamic; skip++) {
 		uint maskId = materials[hit.material].maskId;
 		if (maskId == 0u || maskId == owner) break;

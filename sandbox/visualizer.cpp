@@ -12,12 +12,17 @@
 
 #include <nlohmann/json.hpp>
 #include <stb_image.h>
+#include <stb_image_write.h>
 
 #include <algorithm>
 #include <array>
 #include <cctype>
 #include <fstream>
 #include <map>
+#include <set>
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <ctime>
@@ -34,9 +39,6 @@ using enginemath::Mat4;
 
 namespace {
 	constexpr const char* PHOTO_FILTER = "Photos\0*.jpg;*.jpeg;*.png;*.tif;*.tiff;*.hdr;*.dng;*.cr2;*.cr3;*.nef;*.arw\0All files\0*.*\0";
-	constexpr const char* OBJECT_MODES[] = { "generated", "generated", "card" };
-	constexpr const char* OBJECT_SHAPES[] = { "3D model", "glass", "flat" };
-	constexpr int GLASS_SHAPE = 1;
 
 	std::string shellQuoted(const std::string& text) {
 		return "\"" + text + "\"";
@@ -64,6 +66,57 @@ namespace {
 			if (!std::isalnum(static_cast<unsigned char>(c)) && c != '-' && c != '_') c = '_';
 		}
 		return name.empty() ? "scene" : name;
+	}
+
+	// Short hash of a file's bytes (FNV-1a): the same photo gets the same folder, and so its cached scene
+	std::string contentHash(const std::string& path) {
+		std::ifstream file(path, std::ios::binary);
+		std::uint64_t hash = 1469598103934665603ull;
+		std::vector<char> buffer(1 << 16);
+		while (true) {
+			file.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+			std::streamsize count = file.gcount();
+			if (count <= 0) break;
+			for (std::streamsize i = 0; i < count; i++) {
+				hash ^= static_cast<unsigned char>(buffer[static_cast<size_t>(i)]);
+				hash *= 1099511628211ull;
+			}
+		}
+		char text[16];
+		std::snprintf(text, sizeof(text), "%08llx", static_cast<unsigned long long>((hash >> 32) ^ (hash & 0xffffffffull)));
+		return text;
+	}
+
+	// A small JPEG of a photo (long side `size`, box-filtered), for the drawer's scene tiles
+	bool writeThumbnail(const std::filesystem::path& photo, const std::filesystem::path& out, int size = 160) {
+		int width = 0, height = 0, channels = 0;
+		unsigned char* pixels = stbi_load(photo.string().c_str(), &width, &height, &channels, 3);
+		if (!pixels) return false;
+		float step = static_cast<float>(std::max(width, height)) / static_cast<float>(size);
+		int w = std::max(1, static_cast<int>(width / step)), h = std::max(1, static_cast<int>(height / step));
+		std::vector<unsigned char> small(static_cast<size_t>(w) * h * 3);
+		for (int y = 0; y < h; y++) {
+			for (int x = 0; x < w; x++) {
+				int x0 = static_cast<int>(x * step), x1 = std::min(width, static_cast<int>((x + 1) * step));
+				int y0 = static_cast<int>(y * step), y1 = std::min(height, static_cast<int>((y + 1) * step));
+				unsigned sum[3] = {}, count = 0;
+				for (int sy = y0; sy < y1; sy += 2) {
+					for (int sx = x0; sx < x1; sx += 2) {
+						const unsigned char* p = pixels + (static_cast<size_t>(sy) * width + sx) * 3;
+						for (int c = 0; c < 3; c++) sum[c] += p[c];
+						count++;
+					}
+				}
+				for (int c = 0; c < 3; c++) small[(static_cast<size_t>(y) * w + x) * 3 + c] = static_cast<unsigned char>(sum[c] / std::max(count, 1u));
+			}
+		}
+		stbi_image_free(pixels);
+		std::filesystem::path temporary = out;
+		temporary += ".tmp";
+		if (!stbi_write_jpg(temporary.string().c_str(), w, h, 3, small.data(), 85)) return false;
+		std::error_code error;
+		std::filesystem::rename(temporary, out, error);
+		return !error;
 	}
 
 	std::string pickPhoto(const char* title) {
@@ -150,22 +203,30 @@ void Visualizer::loadScene() {
 		}
 	}
 
-	std::string objectPath = loaded.object.path.empty() ? "" : loaded.resolve(loaded.object.path);
-	if (objectPath != loadedObjectPath) {
-		if (objectMesh) destroyMesh(objectMesh);
-		objectMesh = nullptr;
-		loadedObjectPath.clear();
-		if (!objectPath.empty()) {
-			try {
-				objectMesh = loadModel(objectPath);
-				loadedObjectPath = objectPath;
-				placedTransform = loaded.object.transform; // where it was put (on the table): "reset object" goes back here
-			}
-			catch (const std::exception& e) {
-				std::cerr << "[recast] " << e.what() << std::endl;
-			}
-		}
+	// each object file is loaded once (copies share its mesh); files no object uses any more are dropped
+	std::vector<foto::Mesh*> meshes;
+	std::set<std::string> used;
+	for (const recast::SceneObject& object : loaded.objects) {
+		std::string path = loaded.resolve(object.path);
+		used.insert(path);
+		meshes.push_back(objectMeshFor(path));
 	}
+	for (auto it = objectMeshes.begin(); it != objectMeshes.end();) {
+		if (used.count(it->first)) {
+			++it;
+			continue;
+		}
+		if (it->second) destroyMesh(it->second);
+		it = objectMeshes.erase(it);
+	}
+	objectMeshOf = meshes;
+	placedTransforms.clear();
+	for (const recast::SceneObject& object : loaded.objects) placedTransforms.push_back(object.transform); // "reset" goes back here
+	if (selectNewestObject && !loaded.objects.empty()) selectedObject = static_cast<int>(loaded.objects.size()) - 1;
+	selectNewestObject = false;
+	if (selectedObject >= static_cast<int>(loaded.objects.size())) selectedObject = -1;
+	refreshBank();
+	refreshScenes();
 
 	scene = std::move(loaded);
 	sceneLoaded = true;
@@ -219,7 +280,7 @@ void Visualizer::loadScene() {
 		return light.type == "area" ? light.radiance == recast::Vec3f{ 0, 0, 0 } : light.intensity == recast::Vec3f{ 0, 0, 0 };
 	});
 	if (scene.lights.empty() || unfitted) detectLighting();
-	else lightingStatus = std::to_string(scene.lights.size()) + " light(s) from scene.json";
+	else lightingStatus = std::to_string(scene.lights.size()) + " light(s) from the saved scene";
 
 	std::cout << "[recast] loaded " << scenePath << std::endl;
 }
@@ -288,7 +349,7 @@ void Visualizer::applySceneLighting() {
 void Visualizer::detectLighting() {
 	if (detectJob.valid() || loadedPhotoPath.empty()) return;
 
-	lightingStatus = "detecting lighting...";
+	lightingStatus = "Detecting lighting...";
 	detectStarted = std::chrono::steady_clock::now();
 	detectGaveUp = false;
 	recast::SceneFile sceneCopy = scene;
@@ -298,9 +359,10 @@ void Visualizer::detectLighting() {
 	detectJob = std::async(std::launch::async, [sceneCopy, photo, stride, emitters]() {
 		DetectJob job;
 		try {
-			std::vector<recast::LightingSample> samples = recast::collectLightingSamples(sceneCopy, photo, stride);
+			std::vector<recast::LightingSample> clipped;
+			std::vector<recast::LightingSample> samples = recast::collectLightingSamples(sceneCopy, photo, stride, &clipped);
 			job.lights = emitters;
-			job.fit = recast::fitMainLight(sceneCopy, samples, job.lights, recast::sunDirections(sceneCopy, photo));
+			job.fit = recast::fitMainLight(sceneCopy, samples, job.lights, recast::sunDirections(sceneCopy, photo), clipped);
 		}
 		catch (const std::exception& e) {
 			job.error = e.what();
@@ -316,7 +378,7 @@ int Visualizer::lightingStride(int base) const {
 }
 
 void Visualizer::askForManualLights(const std::string& reason) {
-	lightingStatus = "no light source detected (" + reason + "): add lights by hand with debug > show and edit lights > add light";
+	lightingStatus = "No light source detected (" + reason + "). Add lights by hand under Show and edit lights.";
 	showLights = true;
 	openLightEditor = true;
 	std::cout << "[recast] no light source detected (" << reason << ")" << std::endl;
@@ -336,7 +398,7 @@ void Visualizer::finishLightingDetection() {
 	DetectJob job = detectJob.get();
 	if (detectGaveUp && !scene.lights.empty()) return; // too late: lights were placed by hand meanwhile
 	if (!job.error.empty()) {
-		lightingStatus = "lighting detection failed: " + job.error;
+		lightingStatus = "Lighting detection failed: " + job.error;
 		std::cerr << "[recast] " << lightingStatus << std::endl;
 		return;
 	}
@@ -354,7 +416,7 @@ void Visualizer::finishLightingDetection() {
 	unsavedChanges = true;
 
 	int seconds = static_cast<int>(std::chrono::duration<double>(std::chrono::steady_clock::now() - detectStarted).count());
-	lightingStatus = "lit by " + std::to_string(windows) + " window(s) and " + std::to_string(others) + " other light(s), found in " +
+	lightingStatus = "Lit by " + std::to_string(windows) + " window(s) and " + std::to_string(others) + " other light(s), found in " +
 					 std::to_string(seconds) + " s";
 	std::cout << "[recast] " << lightingStatus << std::endl;
 	if (job.lights.empty()) askForManualLights("none found in the photo");
@@ -368,7 +430,32 @@ void Visualizer::onUpdate(foto::f32 deltaTime) {
 	screenshotKeyWasDown = screenshotKeyDown;
 
 	finishPython();
-	if (!sceneLoaded) return;
+	if (openCachedScene) {
+		openCachedScene = false;
+		loadScene();
+		sceneWatcher = foto::FileWatcher(scenePath);
+	}
+	// listed at startup, then again whenever an object or scene folder appears (the worker writes the example glass,
+	// another instance builds a scene); checked twice a second
+	auto now = std::chrono::steady_clock::now();
+	if (!drawerListed || now - drawerChecked > std::chrono::milliseconds(500)) {
+		drawerChecked = now;
+		std::error_code error;
+		auto bankTime = std::filesystem::last_write_time(std::filesystem::path(RECAST_DATA_DIR) / "objects", error);
+		auto dataTime = std::filesystem::last_write_time(std::filesystem::path(RECAST_DATA_DIR), error);
+		if (!drawerListed || bankTime != bankStamp) refreshBank();
+		if (!drawerListed || dataTime != dataStamp) refreshScenes();
+		bankStamp = bankTime;
+		dataStamp = dataTime;
+		drawerListed = true;
+	}
+	loadThumbnails();
+	if (!sceneLoaded) {
+		pendingAdds.clear(); // no room to add objects to yet
+		return;
+	}
+	for (const PendingAdd& add : pendingAdds) addFromBank(add);
+	pendingAdds.clear();
 	if (proxyMeshesDirty) {
 		proxyMeshesDirty = false;
 		rebuildProxyMeshes();
@@ -389,8 +476,380 @@ void Visualizer::onUpdate(foto::f32 deltaTime) {
 	if (exportRequested) exportRender();
 }
 
-Mat4 Visualizer::objectTransform() const {
-	return recast::objectMatrix(scene.object.transform);
+Mat4 Visualizer::objectTransform(size_t index) const {
+	return recast::objectMatrix(scene.objects[index].transform);
+}
+
+foto::Mesh* Visualizer::objectMeshFor(const std::string& path) {
+	auto found = objectMeshes.find(path);
+	if (found != objectMeshes.end()) return found->second;
+	foto::Mesh* mesh = nullptr;
+	try {
+		mesh = loadModel(path);
+	}
+	catch (const std::exception& e) {
+		std::cerr << "[recast] " << e.what() << std::endl;
+	}
+	objectMeshes[path] = mesh;
+	return mesh;
+}
+
+// Every object made so far, newest first, named after its photo
+void Visualizer::refreshBank() {
+	bank.clear();
+	std::error_code error;
+	std::vector<std::pair<std::filesystem::file_time_type, BankEntry>> found;
+	for (const auto& folder : std::filesystem::directory_iterator(std::filesystem::path(RECAST_DATA_DIR) / "objects", error)) {
+		std::filesystem::path glb = folder.path() / "object.glb", metaPath = folder.path() / "object_meta.json";
+		if (!std::filesystem::exists(glb, error) || !std::filesystem::exists(metaPath, error)) continue;
+		std::string label = folder.path().filename().string();
+		std::string name = label;
+		try {
+			std::ifstream file(metaPath);
+			nlohmann::json meta = nlohmann::json::parse(file);
+			std::string photo = std::filesystem::path(meta.value("photo", std::string())).stem().string();
+			if (!photo.empty()) {
+				name = photo;
+				label = photo + (meta.value("glass", false) ? " (glass)" : "");
+				if (meta.contains("measurement") && meta["measurement"].contains("height_m")) {
+					char size[32];
+					std::snprintf(size, sizeof(size), ", %.2f m", meta["measurement"]["height_m"].get<double>());
+					label += size;
+				}
+			}
+		}
+		catch (const std::exception&) {
+		}
+		std::filesystem::path thumbnail = folder.path() / "thumbnail.png";
+		if (!std::filesystem::exists(thumbnail, error)) thumbnail.clear();
+		BankEntry entry{ .glb = glb, .thumbnail = thumbnail, .name = name, .label = label };
+		auto loaded = thumbnails.find(thumbnail.string());
+		if (!thumbnail.empty() && loaded != thumbnails.end()) entry.image = loaded->second;
+		found.push_back({ std::filesystem::last_write_time(glb, error), entry });
+	}
+	std::sort(found.begin(), found.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+	for (auto& [time, entry] : found) bank.push_back(std::move(entry));
+}
+
+// Thumbnails for the drawer, loaded in the update (not mid-UI), each file once. A scene without one gets it made from
+// its photo, one per frame so opening the drawer never stalls
+void Visualizer::loadThumbnails() {
+	auto load = [this](const std::filesystem::path& file, foto::u64& image) {
+		if (image || file.empty()) return;
+		std::string key = file.string();
+		auto found = thumbnails.find(key);
+		if (found == thumbnails.end()) {
+			if (thumbnails.size() >= 60) return;
+			found = thumbnails.emplace(key, loadUiImage(key)).first;
+		}
+		image = found->second;
+	};
+	for (BankEntry& entry : bank) load(entry.thumbnail, entry.image);
+
+	// scenes without a thumbnail get one made from their photo, in the background (decoding a 12 MP photo takes a while)
+	if (thumbnailJob.valid() && thumbnailJob.wait_for(std::chrono::seconds(0)) == std::future_status::ready) thumbnailJob.get();
+	std::vector<std::pair<std::filesystem::path, std::filesystem::path>> missing;
+	for (SceneEntry& entry : scenes) {
+		std::error_code error;
+		if (std::filesystem::exists(entry.thumbnail, error)) load(entry.thumbnail, entry.image);
+		else if (!entry.photo.empty() && thumbnailTried.insert(entry.thumbnail.string()).second) missing.push_back({ entry.photo, entry.thumbnail });
+	}
+	if (!missing.empty()) {
+		if (thumbnailJob.valid()) thumbnailJob.wait(); // one job at a time (rare: a new scene while the first batch runs)
+		thumbnailJob = std::async(std::launch::async, [missing]() {
+			for (const auto& [photo, thumbnail] : missing) writeThumbnail(photo, thumbnail);
+		});
+	}
+}
+
+// Every folder under data/ with a scene.json, newest first; the name drops the photo hash the folder carries
+void Visualizer::refreshScenes() {
+	std::vector<std::pair<std::filesystem::file_time_type, SceneEntry>> found;
+	std::error_code error;
+	for (const auto& folder : std::filesystem::directory_iterator(std::filesystem::path(RECAST_DATA_DIR), error)) {
+		std::filesystem::path json = folder.path() / "scene.json";
+		if (!std::filesystem::exists(json, error)) continue;
+		SceneEntry entry{ .sceneJson = json, .thumbnail = folder.path() / "thumbnail.jpg" };
+		std::string folderName = folder.path().filename().string();
+		entry.name = folderName;
+		size_t cut = folderName.rfind('_');
+		if (cut != std::string::npos && folderName.size() - cut == 9 &&
+			std::all_of(folderName.begin() + cut + 1, folderName.end(), [](char c) { return std::isxdigit(static_cast<unsigned char>(c)); })) {
+			entry.name = folderName.substr(0, cut);
+		}
+		entry.label = folderName;
+		try {
+			std::ifstream file(json);
+			nlohmann::json data = nlohmann::json::parse(file);
+			entry.photo = folder.path() / data.value("photo", std::string("photo.jpg"));
+			size_t objects = data.contains("objects") ? data["objects"].size() : (data.contains("object") && data["object"].is_object() ? 1 : 0);
+			if (objects > 0) entry.label += ", " + std::to_string(objects) + " object" + (objects > 1 ? "s" : "");
+		}
+		catch (const std::exception&) {
+			continue;
+		}
+		auto loaded = thumbnails.find(entry.thumbnail.string());
+		if (loaded != thumbnails.end()) entry.image = loaded->second;
+		found.push_back({ std::filesystem::last_write_time(json, error), entry });
+	}
+	std::sort(found.begin(), found.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+	scenes.clear();
+	for (auto& [time, entry] : found) scenes.push_back(std::move(entry));
+}
+
+namespace {
+	// A bold heading with a line after it, for each part of the sidebar
+	void sectionHeading(const char* text) {
+		ImGui::Dummy(ImVec2(0.0f, 0.3f * ImGui::GetFontSize()));
+		ImGui::PushFont(recast::ui::boldFont(), 0.0f);
+		ImGui::PushStyleColor(ImGuiCol_Text, recast::ui::purple());
+		ImGui::SeparatorText(text);
+		ImGui::PopStyleColor();
+		ImGui::PopFont();
+	}
+
+	// A label on the left of the sidebar and the next control filling the rest of the row
+	void labelled(const char* label) {
+		ImGui::AlignTextToFramePadding();
+		ImGui::TextUnformatted(label);
+		ImGui::SameLine(0.4f * ImGui::GetWindowWidth());
+		ImGui::SetNextItemWidth(-FLT_MIN);
+	}
+
+	void hint(const char* text) {
+		ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+		ImGui::TextWrapped("%s", text);
+		ImGui::PopStyleColor();
+	}
+
+	// The width of each of `count` buttons that share the row
+	float splitWidth(int count) {
+		return (ImGui::GetContentRegionAvail().x - static_cast<float>(count - 1) * ImGui::GetStyle().ItemSpacing.x) / static_cast<float>(count);
+	}
+
+	// Drawer tiles grow with the font, so they keep their size on high-DPI screens
+	float tileSize() {
+		return 4.75f * ImGui::GetFontSize();
+	}
+}
+
+
+// One drawer tile: the thumbnail (or the name's first letter), a badge in the corner, the name under it. dragType:
+// the tile can be dragged out with its index as that payload. True when clicked
+bool Visualizer::drawTile(size_t index, foto::u64 image, const std::string& name, const std::string& tooltip, const std::string& badge,
+						  const char* dragType) {
+	const float TILE = tileSize();
+	const float em = ImGui::GetFontSize();
+	const ImGuiStyle& style = ImGui::GetStyle();
+	float tileWidth = TILE + 2.0f * style.FramePadding.x;
+	ImDrawList* draw = ImGui::GetWindowDrawList();
+	ImGui::PushID(static_cast<int>(index));
+	ImGui::BeginGroup();
+	ImVec2 corner = ImGui::GetCursorScreenPos();
+	bool clicked = image
+		? ImGui::ImageButton("tile", ImTextureRef(static_cast<ImTextureID>(image)), ImVec2(TILE, TILE),
+							 ImVec2(0.0f, 0.0f), ImVec2(1.0f, 1.0f), recast::ui::paperLight())
+		: ImGui::Button(name.substr(0, 1).c_str(), ImVec2(tileWidth, TILE + 2.0f * style.FramePadding.y));
+	if (dragType && ImGui::BeginDragDropSource()) {
+		ImGui::SetDragDropPayload(dragType, &index, sizeof(index));
+		if (image) ImGui::Image(ImTextureRef(static_cast<ImTextureID>(image)), ImVec2(3.0f * em, 3.0f * em));
+		ImGui::TextUnformatted(name.c_str());
+		ImGui::EndDragDropSource();
+	}
+	else if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tooltip.c_str());
+	if (!badge.empty()) {
+		ImVec2 size = ImGui::CalcTextSize(badge.c_str());
+		ImVec2 at(corner.x + tileWidth - size.x - 0.45f * em, corner.y + 0.3f * em);
+		draw->AddRectFilled(ImVec2(at.x - 0.25f * em, at.y - 0.05f * em), ImVec2(at.x + size.x + 0.25f * em, at.y + size.y + 0.05f * em),
+							ImGui::GetColorU32(recast::ui::purple()), 0.25f * em);
+		draw->AddText(at, IM_COL32_WHITE, badge.c_str());
+	}
+	// the name under the tile, cut to its width
+	ImVec2 textAt = ImGui::GetCursorScreenPos();
+	ImGui::Dummy(ImVec2(tileWidth, ImGui::GetTextLineHeight()));
+	draw->PushClipRect(textAt, ImVec2(textAt.x + tileWidth, textAt.y + ImGui::GetTextLineHeight()), true);
+	draw->AddText(textAt, ImGui::GetColorU32(ImGuiCol_TextDisabled), name.c_str());
+	draw->PopClipRect();
+	ImGui::EndGroup();
+	ImGui::PopID();
+	return clicked;
+}
+
+// The object bank as a strip of tiles along the bottom, like a game engine's content drawer: click a tile to add the
+// object beside the others, or drag it onto the photo to drop it right there. The arrow folds it to a thin bar
+void Visualizer::drawObjectDrawer() {
+	const float TILE = tileSize();
+	const ImGuiStyle& style = ImGui::GetStyle();
+	const ImGuiViewport* viewport = ImGui::GetMainViewport();
+	float bar = ImGui::GetFrameHeight() + 2.0f * style.WindowPadding.y;
+	// room for a scrollbar only when the tiles don't fit across
+	size_t count = drawerTab == 0 ? bank.size() : scenes.size();
+	float strip = static_cast<float>(count) * (TILE + 2.0f * style.FramePadding.x + style.ItemSpacing.x);
+	bool overflow = strip > viewport->WorkSize.x - sidebarWidth - 2.0f * style.WindowPadding.x;
+	float height = drawerOpen ? bar + TILE + 2.0f * style.FramePadding.y + ImGui::GetTextLineHeightWithSpacing() +
+								(overflow ? style.ScrollbarSize : 0.0f) + 0.6f * ImGui::GetFontSize() : bar;
+	drawerHeight = height;
+	ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + sidebarWidth, viewport->WorkPos.y + viewport->WorkSize.y - height));
+	ImGui::SetNextWindowSize(ImVec2(viewport->WorkSize.x - sidebarWidth, height));
+	ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+	ImGui::Begin("##object drawer", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+				 ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus);
+	ImGui::PopStyleVar();
+	if (ImGui::ArrowButton("##fold", drawerOpen ? ImGuiDir_Down : ImGuiDir_Up)) drawerOpen = !drawerOpen;
+	ImGui::SameLine();
+	ImGui::PushFont(recast::ui::boldFont(), 0.0f);
+	if (ImGui::BeginTabBar("drawer tabs")) {
+		std::string objectsTab = "Objects (" + std::to_string(bank.size()) + ")###objects";
+		std::string scenesTab = "Scenes (" + std::to_string(scenes.size()) + ")###scenes";
+		if (ImGui::BeginTabItem(objectsTab.c_str())) {
+			if (drawerTab != 0) drawerOpen = true;
+			drawerTab = 0;
+			ImGui::EndTabItem();
+		}
+		if (ImGui::BeginTabItem(scenesTab.c_str())) {
+			if (drawerTab != 1) drawerOpen = true;
+			drawerTab = 1;
+			ImGui::EndTabItem();
+		}
+		ImGui::EndTabBar();
+	}
+	ImGui::PopFont();
+
+	if (drawerOpen) {
+		ImGui::BeginChild("tiles", ImVec2(0.0f, 0.0f), ImGuiChildFlags_None,
+						  overflow ? ImGuiWindowFlags_HorizontalScrollbar : ImGuiWindowFlags_NoScrollbar);
+		if (drawerTab == 0) {
+			std::map<std::string, int> inRoom; // copies of each bank object in the room: a badge on its tile
+			for (const recast::SceneObject& object : scene.objects) {
+				inRoom[std::filesystem::path(scene.resolve(object.path)).lexically_normal().string()]++;
+			}
+			if (bank.empty()) hint("Objects you make from a photo show up here.");
+			for (size_t i = 0; i < bank.size(); i++) {
+				if (i > 0) ImGui::SameLine();
+				auto copies = inRoom.find(bank[i].glb.lexically_normal().string());
+				std::string badge = copies != inRoom.end() ? "x" + std::to_string(copies->second) : "";
+				std::string tooltip = bank[i].label + "\nClick to add, or drag onto the photo";
+				if (drawTile(i, bank[i].image, bank[i].name, tooltip, badge, "RECAST_BANK")) pendingAdds.push_back({ .glb = bank[i].glb });
+			}
+		}
+		else {
+			std::filesystem::path open = std::filesystem::path(scenePath).lexically_normal();
+			for (size_t i = 0; i < scenes.size(); i++) {
+				if (i > 0) ImGui::SameLine();
+				bool isOpen = scenes[i].sceneJson.lexically_normal() == open;
+				if (drawTile(i, scenes[i].image, scenes[i].name, scenes[i].label + (isOpen ? "\nOpen now" : "\nClick to open"),
+							 isOpen ? "Open" : "", nullptr) && !isOpen && !pythonJob.running()) {
+					if (unsavedChanges) saveScene();
+					scenePath = nativePath(scenes[i].sceneJson);
+					loadedPhotoPath.clear();
+					selectedObject = -1;
+					openCachedScene = true;
+				}
+			}
+		}
+		ImGui::EndChild();
+	}
+
+	// a tile let go over the photo (not over a panel): the object goes where the cursor points
+	const ImGuiPayload* payload = ImGui::GetDragDropPayload();
+	if (payload && payload->IsDataType("RECAST_BANK") && ImGui::IsMouseReleased(ImGuiMouseButton_Left) &&
+		!ImGui::IsWindowHovered(ImGuiHoveredFlags_AnyWindow | ImGuiHoveredFlags_AllowWhenBlockedByActiveItem)) {
+		size_t index = *static_cast<const size_t*>(payload->Data);
+		PendingAdd add{ .atCursor = true };
+		if (index < bank.size() && getCursorRay(add.origin, add.direction)) {
+			add.glb = bank[index].glb;
+			pendingAdds.push_back(add);
+		}
+	}
+	ImGui::End();
+}
+
+// Adds a bank object to the room without Python: on the floor or table in the lower middle of the photo, beside the
+// objects already there, facing the camera
+void Visualizer::addFromBank(const PendingAdd& add) {
+	std::error_code error;
+	std::string relative = std::filesystem::relative(add.glb, scene.directory, error).generic_string();
+	if (error || relative.empty()) relative = add.glb.generic_string();
+	foto::Mesh* mesh = objectMeshFor(scene.resolve(relative));
+	if (!mesh) {
+		pipelineStatus = "Couldn't load " + add.glb.string();
+		return;
+	}
+	const recast::SceneCamera& camera = scene.camera;
+	Vec3 origin(camera.position[0], camera.position[1], camera.position[2]);
+	recast::ObjectTransform transform;
+	bool placed = false;
+	if (add.atCursor) {
+		recast::RayHit hit = supportUnderCursor(add.origin, add.direction);
+		if (hit.valid()) {
+			transform.position = { hit.point.x, hit.point.y, hit.point.z };
+			placed = true;
+		}
+	}
+	for (float u : { 0.5f, 0.62f, 0.38f, 0.74f, 0.26f }) {
+		if (placed && add.atCursor) break;
+		recast::RayHit hit = supportUnderCursor(origin, recast::cameraRay(camera, u * scene.image_size[0], 0.68f * scene.image_size[1]));
+		if (!hit.valid()) continue;
+		bool free = true;
+		for (const recast::SceneObject& other : scene.objects) {
+			free = free && std::hypot(other.transform.position[0] - hit.point.x, other.transform.position[2] - hit.point.z) >= 0.25f;
+		}
+		if (!placed || free) transform.position = { hit.point.x, hit.point.y, hit.point.z };
+		placed = true;
+		if (free) break;
+	}
+	if (!placed) transform.position = { shadowCenter.x, 0.0f, shadowCenter.z };
+	float toCameraX = origin.x - transform.position[0], toCameraZ = origin.z - transform.position[2];
+	transform.rotation_y_deg = std::atan2(toCameraX, toCameraZ) * 180.0f / 3.14159265f;
+	recast::resolveCollisions(scene.proxies, transform, mesh->getBoundsMin(), mesh->getBoundsMax());
+	scene.objects.push_back({ relative, transform });
+	std::cout << "[recast] added " << add.glb.parent_path().filename().string() << (add.atCursor ? " where it was dropped" : " beside the others") << std::endl;
+	objectMeshOf.push_back(mesh);
+	placedTransforms.push_back(transform);
+	selectedObject = static_cast<int>(scene.objects.size()) - 1;
+	unsavedChanges = true;
+}
+
+void Visualizer::removeObject(int index) {
+	if (index < 0 || index >= static_cast<int>(scene.objects.size())) return;
+	scene.objects.erase(scene.objects.begin() + index);
+	if (index < static_cast<int>(objectMeshOf.size())) objectMeshOf.erase(objectMeshOf.begin() + index);
+	if (index < static_cast<int>(placedTransforms.size())) placedTransforms.erase(placedTransforms.begin() + index);
+	selectedObject = -1;
+	draggingObject = false;
+	unsavedChanges = true;
+}
+
+// Controls for the object picked in the room (click one); the bank itself is the drawer along the bottom
+void Visualizer::drawObjectPanel() {
+	bool valid = selectedObject >= 0 && selectedObject < static_cast<int>(scene.objects.size()) &&
+				 selectedObject < static_cast<int>(objectMeshOf.size()) && objectMeshOf[selectedObject];
+	if (!valid) return;
+	const float full = -FLT_MIN;
+	std::filesystem::path path(scene.objects[selectedObject].path);
+	std::string name = path.has_parent_path() ? path.parent_path().filename().string() : path.stem().string();
+	for (const BankEntry& entry : bank) {
+		if (entry.glb.lexically_normal() == std::filesystem::path(scene.resolve(scene.objects[selectedObject].path)).lexically_normal()) name = entry.name;
+	}
+	ImGui::PushFont(recast::ui::boldFont(), 0.0f);
+	ImGui::TextColored(recast::ui::purple(), "%s", name.c_str());
+	ImGui::PopFont();
+	recast::ObjectTransform& transform = scene.objects[selectedObject].transform;
+	foto::Mesh* mesh = objectMeshOf[selectedObject];
+	labelled("Size");
+	if (ImGui::SliderFloat("##size", &transform.scale, 0.1f, 10.0f, "%.2fx", ImGuiSliderFlags_Logarithmic)) {
+		transform.scale = std::max(transform.scale, 0.01f);
+		recast::resolveCollisions(scene.proxies, transform, mesh->getBoundsMin(), mesh->getBoundsMax());
+		unsavedChanges = true;
+	}
+	const float half = 0.5f * (ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x);
+	if (ImGui::Button("Reset object", ImVec2(half, 0.0f))) {
+		transform = placedTransforms[selectedObject];
+		draggingObject = false;
+		unsavedChanges = true;
+	}
+	ImGui::SameLine();
+	if (ImGui::Button("Remove", ImVec2(full, 0.0f))) removeObject(selectedObject);
 }
 
 // Where the object goes for this mouse ray: the first surface it points at, or the floor in front of it when that's a
@@ -537,8 +996,12 @@ void Visualizer::drawLightOverlay() {
 void Visualizer::addLight() {
 	recast::SceneLight light;
 	light.type = "point";
-	const recast::Vec3f& base = scene.object.transform.position;
-	Vec3 above = objectMesh ? Vec3(base[0], base[1] + 1.2f, base[2]) : shadowCenter + Vec3(0.0f, 1.2f, 0.0f);
+	int nearObject = selectedObject >= 0 && selectedObject < static_cast<int>(scene.objects.size()) ? selectedObject : (scene.objects.empty() ? -1 : 0);
+	Vec3 above = shadowCenter + Vec3(0.0f, 1.2f, 0.0f);
+	if (nearObject >= 0) {
+		const recast::Vec3f& base = scene.objects[nearObject].transform.position;
+		above = Vec3(base[0], base[1] + 1.2f, base[2]);
+	}
 	light.position = { above.x, above.y, above.z };
 	light.intensity = { 2.0f, 2.0f, 2.0f };
 	for (const recast::SceneLight& existing : scene.lights) {
@@ -553,43 +1016,44 @@ void Visualizer::addLight() {
 }
 
 void Visualizer::drawLightEditor() {
-	ImGui::TextDisabled("drag a light to move it, scroll over it to move it nearer or further");
-	if (scene.lights.size() < foto::MAX_LIGHTS && ImGui::Button("add light")) addLight();
-	if (scene.lights.size() < foto::MAX_LIGHTS) {
-		ImGui::SameLine();
-		if (ImGui::Button("add sun")) {
-			recast::SceneLight sun;
-			sun.type = "directional";
-			Vec3 travels = Vec3(0.3f, -0.5f, 0.8f).normalized(); // from the far side of the room, 30 degrees up
-			sun.direction = { travels.x, travels.y, travels.z };
-			sun.intensity = { 2.0f, 1.9f, 1.7f };
-			for (const recast::SceneLight& existing : scene.lights) {
-				if (existing.type == "directional") sun.intensity = existing.intensity;
+	hint("Drag a light to move it. Scroll over a light to move it nearer or further.");
+	bool canAdd = scene.lights.size() < foto::MAX_LIGHTS;
+	int buttons = (canAdd ? 2 : 0) + (detectedLights.empty() ? 0 : 1);
+	if (buttons > 0) {
+		const float width = splitWidth(buttons);
+		if (canAdd) {
+			if (ImGui::Button("Add light", ImVec2(width, 0.0f))) addLight();
+			ImGui::SameLine();
+			if (ImGui::Button("Add sun", ImVec2(width, 0.0f))) {
+				recast::SceneLight sun;
+				sun.type = "directional";
+				Vec3 travels = Vec3(0.3f, -0.5f, 0.8f).normalized(); // from the far side of the room, 30 degrees up
+				sun.direction = { travels.x, travels.y, travels.z };
+				sun.intensity = { 2.0f, 1.9f, 1.7f };
+				for (const recast::SceneLight& existing : scene.lights) {
+					if (existing.type == "directional") sun.intensity = existing.intensity;
+				}
+				scene.lights.push_back(sun);
+				selectedLight = static_cast<int>(scene.lights.size()) - 1;
+				unsavedChanges = true;
 			}
-			scene.lights.push_back(sun);
-			selectedLight = static_cast<int>(scene.lights.size()) - 1;
-			unsavedChanges = true;
 		}
-	}
-	if (!detectedLights.empty()) {
-		if (scene.lights.size() < foto::MAX_LIGHTS) ImGui::SameLine();
-		if (ImGui::Button("reset lights")) {
-			scene.lights = detectedLights;
-			scene.lighting.ambient = detectedAmbient;
-			selectedLight = -1;
-			unsavedChanges = true;
+		if (!detectedLights.empty()) {
+			if (canAdd) ImGui::SameLine();
+			if (ImGui::Button("Reset lights", ImVec2(width, 0.0f))) {
+				scene.lights = detectedLights;
+				scene.lighting.ambient = detectedAmbient;
+				selectedLight = -1;
+				unsavedChanges = true;
+			}
 		}
 	}
 
 	if (selectedLight < 0 || selectedLight >= static_cast<int>(scene.lights.size())) return;
 	recast::SceneLight& light = scene.lights[selectedLight];
-	if (scene.lights.size() < foto::MAX_LIGHTS) ImGui::SameLine();
-	if (ImGui::Button("remove light")) {
-		scene.lights.erase(scene.lights.begin() + selectedLight);
-		selectedLight = -1;
-		unsavedChanges = true;
-		return;
-	}
+	ImGui::PushFont(recast::ui::boldFont(), 0.0f);
+	ImGui::TextColored(recast::ui::purple(), "%s", light.type == "directional" ? "Sun" : ("Light " + std::to_string(selectedLight + 1)).c_str());
+	ImGui::PopFont();
 
 	if (light.type == "directional") {
 		// where the sun is in the sky: around (0 = straight ahead of the camera, positive = to its right) and above the
@@ -601,8 +1065,10 @@ void Visualizer::drawLightEditor() {
 		Vec3 sky = -Vec3(light.direction[0], light.direction[1], light.direction[2]).normalized();
 		float height = enginemath::toDeg(std::asin(std::clamp(sky.y, -1.0f, 1.0f)));
 		float around = enginemath::toDeg(std::atan2(sky.dot(right), sky.dot(ahead)));
-		bool changed = ImGui::SliderFloat("sun direction", &around, -180.0f, 180.0f, "%.0f deg");
-		changed |= ImGui::SliderFloat("sun height", &height, 2.0f, 89.0f, "%.0f deg");
+		labelled("Direction");
+		bool changed = ImGui::SliderFloat("##sun direction", &around, -180.0f, 180.0f, "%.0f deg");
+		labelled("Height");
+		changed |= ImGui::SliderFloat("##sun height", &height, 2.0f, 89.0f, "%.0f deg");
 		if (changed) {
 			float h = enginemath::toRad(height), a = enginemath::toRad(around);
 			Vec3 toSun = (ahead * std::cos(a) + right * std::sin(a)) * std::cos(h) + Vec3(0.0f, std::sin(h), 0.0f);
@@ -611,8 +1077,17 @@ void Visualizer::drawLightEditor() {
 		}
 	}
 
+	float strongest = std::max({ light.intensity[0], light.intensity[1], light.intensity[2] });
+	float brightness = strongest;
+	labelled("Brightness");
+	if (ImGui::SliderFloat("##brightness", &brightness, 0.0f, 50.0f, "%.2f", ImGuiSliderFlags_Logarithmic)) {
+		for (float& channel : light.intensity) channel = strongest > 1e-6f ? channel * brightness / strongest : brightness;
+		unsavedChanges = true;
+	}
+
 	// a sun shines from where the light is, towards the middle of the room; a point light goes back to that spot
-	if (ImGui::Button(light.type == "point" ? "make it a sun" : "make it a point light")) {
+	const float half = splitWidth(2);
+	if (ImGui::Button(light.type == "point" ? "Make it a sun" : "Make it a point light", ImVec2(half, 0.0f))) {
 		if (light.type == "point") {
 			Vec3 from(light.position[0], light.position[1], light.position[2]);
 			Vec3 toCenter = shadowCenter - from;
@@ -634,35 +1109,54 @@ void Visualizer::drawLightEditor() {
 		}
 		unsavedChanges = true;
 	}
-
-	float strongest = std::max({ light.intensity[0], light.intensity[1], light.intensity[2] });
-	float brightness = strongest;
-	if (ImGui::SliderFloat("brightness", &brightness, 0.0f, 50.0f, "%.2f", ImGuiSliderFlags_Logarithmic)) {
-		for (float& channel : light.intensity) channel = strongest > 1e-6f ? channel * brightness / strongest : brightness;
+	ImGui::SameLine();
+	if (ImGui::Button("Remove light", ImVec2(half, 0.0f))) {
+		scene.lights.erase(scene.lights.begin() + selectedLight);
+		selectedLight = -1;
 		unsavedChanges = true;
 	}
 }
 
 void Visualizer::updateObjectInteraction() {
-	if (!objectMesh) return;
-
 	foto::Window& window = getWindow();
 	bool leftDown = window.isMouseButtonDown(GLFW_MOUSE_BUTTON_LEFT);
 	Vec3 origin, direction;
 	bool haveRay = getCursorRay(origin, direction);
-	recast::ObjectTransform& transform = scene.object.transform;
 
+	// a click selects the nearest object under the cursor and starts dragging it
 	if (leftDown && !leftMouseWasDown && haveRay) {
-		Vec3 worldMin, worldMax;
-		recast::objectWorldBounds(transform, objectMesh->getBoundsMin(), objectMesh->getBoundsMax(), worldMin, worldMax);
-		float t = 0.0f;
+		float nearest = 1e30f;
+		int picked = -1;
+		for (size_t i = 0; i < scene.objects.size() && i < objectMeshOf.size(); i++) {
+			if (!objectMeshOf[i]) continue;
+			Vec3 worldMin, worldMax;
+			recast::objectWorldBounds(scene.objects[i].transform, objectMeshOf[i]->getBoundsMin(), objectMeshOf[i]->getBoundsMax(), worldMin, worldMax);
+			float t = 0.0f;
+			if (recast::rayAabb(origin, direction, worldMin, worldMax, t) && t < nearest) {
+				nearest = t;
+				picked = static_cast<int>(i);
+			}
+		}
 		recast::RayHit hit = supportUnderCursor(origin, direction);
-		if (recast::rayAabb(origin, direction, worldMin, worldMax, t) && hit.valid()) {
-			draggingObject = true;
-			dragOffset = Vec3(transform.position[0] - hit.point.x, 0.0f, transform.position[2] - hit.point.z);
+		if (picked >= 0) {
+			selectedObject = picked;
+			if (hit.valid()) {
+				const recast::Vec3f& position = scene.objects[picked].transform.position;
+				draggingObject = true;
+				dragOffset = Vec3(position[0] - hit.point.x, 0.0f, position[2] - hit.point.z);
+			}
 		}
 	}
 	if (!leftDown) draggingObject = false;
+
+	if (selectedObject < 0 || selectedObject >= static_cast<int>(scene.objects.size()) ||
+		selectedObject >= static_cast<int>(objectMeshOf.size()) || !objectMeshOf[selectedObject]) {
+		draggingObject = false;
+		leftMouseWasDown = leftDown;
+		return;
+	}
+	recast::ObjectTransform& transform = scene.objects[selectedObject].transform;
+	foto::Mesh* objectMesh = objectMeshOf[selectedObject];
 
 	bool moved = false;
 	if (draggingObject && haveRay) {
@@ -706,10 +1200,10 @@ void Visualizer::exportRender() {
 	int seconds = static_cast<int>(std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count());
 
 	if (!written) {
-		lightingStatus = "export failed: couldn't write " + pngPath;
+		lightingStatus = "Export failed: couldn't write " + pngPath;
 		return;
 	}
-	lightingStatus = "exported " + pngPath + " in " + std::to_string(seconds) + " s";
+	lightingStatus = "Exported " + pngPath + " in " + std::to_string(seconds) + " s";
 	std::cout << "[recast] " << lightingStatus << std::endl;
 #ifdef _WIN32
 	std::system(("start \"\" \"" + pngPath + "\"").c_str());
@@ -731,44 +1225,24 @@ void Visualizer::drawScene() {
 				  scene.proxies[i].type == "plane" && std::abs(scene.proxies[i].normal[1]) < 0.5f ? foto::ShadowCaster::None : foto::ShadowCaster::Static);
 	}
 
-	if (objectMesh && !showOriginal) draw(objectMesh, objectTransform(), foto::NO_MATERIAL_OVERRIDE, nullptr, foto::ShadowCaster::Dynamic);
-}
-
-namespace {
-	// A bold heading with a line after it, for each part of the sidebar
-	void sectionHeading(const char* text) {
-		ImGui::Dummy(ImVec2(0.0f, 0.3f * ImGui::GetFontSize()));
-		ImGui::PushFont(recast::ui::boldFont(), 0.0f);
-		ImGui::PushStyleColor(ImGuiCol_Text, recast::ui::purple());
-		ImGui::SeparatorText(text);
-		ImGui::PopStyleColor();
-		ImGui::PopFont();
-	}
-
-	// A label on the left of the sidebar and the next control filling the rest of the row
-	void labelled(const char* label) {
-		ImGui::AlignTextToFramePadding();
-		ImGui::TextUnformatted(label);
-		ImGui::SameLine(0.4f * ImGui::GetWindowWidth());
-		ImGui::SetNextItemWidth(-FLT_MIN);
-	}
-
-	void hint(const char* text) {
-		ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
-		ImGui::TextWrapped("%s", text);
-		ImGui::PopStyleColor();
+	if (showOriginal) return;
+	for (size_t i = 0; i < scene.objects.size() && i < objectMeshOf.size(); i++) {
+		if (objectMeshOf[i]) draw(objectMeshOf[i], objectTransform(i), foto::NO_MATERIAL_OVERRIDE, nullptr, foto::ShadowCaster::Dynamic);
 	}
 }
 
 void Visualizer::onImGui() {
 	drawSidebar();
 	drawPrompt();
+	// the start is only the welcome card: the drawer comes in with the first scene
+	if (sceneLoaded) drawObjectDrawer();
+	else drawerHeight = 0.0f;
 }
 
 // Everything the app does, in a sidebar that always fills the left of the window
 void Visualizer::drawSidebar() {
-	// hidden until there's a scene and an object to work on: the prompts lead up to that
-	if (!sceneLoaded || !objectMesh) {
+	// hidden until there's a scene and an object to work on: the prompts and the drawer lead up to that
+	if (!sceneLoaded || scene.objects.empty()) {
 		sidebarWidth = 0.0f;
 		return;
 	}
@@ -798,10 +1272,9 @@ void Visualizer::drawSidebar() {
 	// scene
 	sectionHeading("Scene");
 	ImGui::BeginDisabled(pythonJob.running());
-	if (sceneLoaded ? ImGui::Button("Choose scene photo...", ImVec2(full, 0.0f))
-					: recast::ui::accentButton("Choose scene photo...", ImVec2(full, 0.0f))) {
-		chooseScenePhoto();
-	}
+	if (ImGui::Button("Choose scene photo...", ImVec2(full, 0.0f))) chooseScenePhoto();
+	ImGui::Checkbox("Reuse saved scenes and objects", &useCache);
+	if (ImGui::IsItemHovered()) ImGui::SetTooltip("A photo used before opens its saved scene, or reuses its object from the Objects tab");
 	ImGui::EndDisabled();
 	if (pythonJob.running()) {
 		static const char* dots[] = { "", ".", "..", "..." };
@@ -812,33 +1285,13 @@ void Visualizer::drawSidebar() {
 	}
 	if (pythonFailed) drawPythonLog();
 
-	// object
-	sectionHeading("Object");
-	ImGui::BeginDisabled(!sceneLoaded || pythonJob.running());
-	labelled("Shape");
-	ImGui::Combo("##shape", &objectMode, OBJECT_SHAPES, IM_ARRAYSIZE(OBJECT_SHAPES));
-	labelled("Height (m)");
-	ImGui::InputFloat("##height", &objectHeight, 0.0f, 0.0f, "%.2f");
-	if (objectMesh ? ImGui::Button("Choose object photo...", ImVec2(full, 0.0f))
-				   : recast::ui::accentButton("Choose object photo...", ImVec2(full, 0.0f))) {
-		chooseObjectPhoto();
-	}
+	// objects
+	sectionHeading("Objects");
+	ImGui::BeginDisabled(pythonJob.running());
+	if (ImGui::Button("Add object from a photo...", ImVec2(full, 0.0f))) chooseObjectPhoto();
 	ImGui::EndDisabled();
-	if (sceneLoaded && objectMesh) {
-		recast::ObjectTransform& transform = scene.object.transform;
-		labelled("Size");
-		if (ImGui::SliderFloat("##size", &transform.scale, 0.1f, 10.0f, "%.2fx", ImGuiSliderFlags_Logarithmic)) {
-			transform.scale = std::max(transform.scale, 0.01f);
-			recast::resolveCollisions(scene.proxies, transform, objectMesh->getBoundsMin(), objectMesh->getBoundsMax());
-			unsavedChanges = true;
-		}
-		if (ImGui::Button("Reset object", ImVec2(full, 0.0f))) {
-			transform = placedTransform;
-			draggingObject = false;
-			unsavedChanges = true;
-		}
-		hint("Drag the object to move it. Scroll to rotate, Shift+scroll to resize.");
-	}
+	drawObjectPanel();
+	hint("Click an object to pick it. Drag to move it, scroll to rotate, Shift+scroll to resize. Add more from the Objects tab at the bottom.");
 
 	if (sceneLoaded) {
 		// lighting
@@ -915,15 +1368,16 @@ void Visualizer::drawPrompt() {
 	Prompt prompt = Prompt::None;
 	if (pythonJob.running()) prompt = Prompt::Working;
 	else if (!sceneLoaded) prompt = Prompt::Scene;
-	else if (!objectMesh) prompt = Prompt::Object;
-	else if (objectMesh && showPlacedTip) prompt = Prompt::Placed;
+	else if (scene.objects.empty()) prompt = Prompt::Object;
+	else if (showPlacedTip) prompt = Prompt::Placed;
 	if (prompt == Prompt::None) return;
 
 	const ImGuiViewport* viewport = ImGui::GetMainViewport();
 	const float em = ImGui::GetFontSize();
 	const float width = std::min(21.0f * em, viewport->WorkSize.x - sidebarWidth - 2.0f * em);
+	// centred in the space beside the sidebar and above the drawer
 	ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + sidebarWidth + 0.5f * (viewport->WorkSize.x - sidebarWidth),
-								   viewport->WorkPos.y + 0.5f * viewport->WorkSize.y),
+								   viewport->WorkPos.y + 0.5f * (viewport->WorkSize.y - drawerHeight)),
 							ImGuiCond_Always, ImVec2(0.5f, 0.5f));
 	ImGui::SetNextWindowSizeConstraints(ImVec2(width, 0.0f), ImVec2(width, FLT_MAX));
 	ImGui::PushStyleColor(ImGuiCol_WindowBg, recast::ui::paperLight());
@@ -932,7 +1386,7 @@ void Visualizer::drawPrompt() {
 	ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(1.4f * em, 1.2f * em));
 	ImGui::Begin("##prompt", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
 										  ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings |
-										  ImGuiWindowFlags_AlwaysAutoResize);
+										  ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoScrollbar);
 	ImGui::PopStyleVar(2);
 
 	auto title = [](const char* text) {
@@ -989,14 +1443,10 @@ void Visualizer::drawPrompt() {
 		break;
 	case Prompt::Object:
 		title("Add an object");
-		text("Choose a photo of the object to place. Set its shape and real height first. A new window will then pop "
-			 "up where you drag a box around the object.");
+		text("Choose a photo of the object to place. A new window will then pop up where you drag a box around the object.");
 		ImGui::Dummy(ImVec2(0.0f, 0.3f * em));
-		labelled("Shape");
-		ImGui::Combo("##prompt shape", &objectMode, OBJECT_SHAPES, IM_ARRAYSIZE(OBJECT_SHAPES));
-		labelled("Height (m)");
-		ImGui::InputFloat("##prompt height", &objectHeight, 0.0f, 0.0f, "%.2f");
 		if (recast::ui::accentButton("Choose object photo...", full)) chooseObjectPhoto();
+		if (!bank.empty()) hint("Or click one you made before in the Objects tab at the bottom, or drag it onto the photo.");
 		if (pythonFailed) {
 			ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.55f, 0.02f, 0.02f, 1.0f));
 			text("That object didn't work. Try another photo, or see what went wrong below.");
@@ -1090,8 +1540,16 @@ void Visualizer::finishPython() {
 
 	// Same file names get rewritten (photo.jpg, object.glb), so the loaded copies are dropped to force a reload
 	if (pendingPhotoReload) loadedPhotoPath.clear();
-	if (pendingObjectReload) loadedObjectPath.clear();
-	if (pendingObjectReload && succeeded) showPlacedTip = true;
+	if (pendingObjectReload) {
+		// object.glb may have been rewritten under the same name: load every object file again
+		for (auto& [path, mesh] : objectMeshes) {
+			if (mesh) destroyMesh(mesh);
+		}
+		objectMeshes.clear();
+		objectMeshOf.clear();
+		selectNewestObject = true;
+		if (succeeded) showPlacedTip = true;
+	}
 	scenePath = pendingScenePath;
 	pendingScenePath.clear();
 	loadScene();
@@ -1101,8 +1559,19 @@ void Visualizer::finishPython() {
 void Visualizer::chooseScenePhoto() {
 	std::string photo = pickPhoto("scene photo");
 	if (photo.empty()) return;
-	std::string name = folderName(photo);
-	std::filesystem::path result = std::filesystem::path(RECAST_DATA_DIR) / name / "scene.json";
+	// the folder is named after the photo's bytes too: the same photo opens the scene built (and edited) before
+	std::string name = folderName(photo) + "_" + contentHash(photo);
+	std::filesystem::path folder = std::filesystem::path(RECAST_DATA_DIR) / name;
+	std::filesystem::path result = folder / "scene.json";
+	std::error_code error;
+	if (useCache && std::filesystem::exists(result, error) && std::filesystem::exists(folder / "detect.json", error)) {
+		if (sceneLoaded && unsavedChanges) saveScene();
+		scenePath = nativePath(result);
+		loadedPhotoPath.clear();
+		openCachedScene = true;
+		pipelineStatus = "Opened the scene saved for this photo (untick reuse to build it again)";
+		return;
+	}
 	std::string dataRoot = nativePath(RECAST_DATA_DIR);
 	runPython("building scene " + name, "recast", { "scene", photo, "--name", name, "--data-root", dataRoot, "--overwrite" },
 			  nativePath(result), true, false);
@@ -1110,14 +1579,15 @@ void Visualizer::chooseScenePhoto() {
 	followUpArguments = { "detect", "--name", name, "--data-root", dataRoot };
 }
 
+// Made once into the bank (data/objects) and added to this room as one more object. It starts at a typical tabletop
+// size; the size slider and Shift+scroll fit it to the room
 void Visualizer::chooseObjectPhoto() {
 	std::string photo = pickPhoto("object photo");
 	if (photo.empty()) return;
-	char height[32];
-	std::snprintf(height, sizeof(height), "%.3f", std::max(objectHeight, 0.01f));
-	std::vector<std::string> arguments = { photo, "--mode", OBJECT_MODES[objectMode], "--height", height,
-										   "--out", nativePath(scene.directory) };
-	if (objectMode == GLASS_SHAPE) arguments.push_back("--glass");
+	std::vector<std::string> arguments = { photo, "--mode", "generated", "--height", "0.30",
+										   "--out", nativePath(scene.directory),
+										   "--bank", nativePath(std::filesystem::path(RECAST_DATA_DIR) / "objects") };
+	if (!useCache) arguments.push_back("--rebuild");
 	runPython("adding object", "recast.object", arguments, scenePath, false, true);
 }
 
@@ -1498,7 +1968,7 @@ void Visualizer::drawRoomOverlay() {
 }
 
 void Visualizer::drawRoomEditor() {
-	ImGui::TextDisabled("click a piece to select it, drag to move, drag its dots to resize");
+	hint("Click a piece to select it. Drag to move it, drag its dots to resize it.");
 	if (ImGui::BeginListBox("##room", ImVec2(-FLT_MIN, 6.5f * ImGui::GetTextLineHeightWithSpacing()))) {
 		for (size_t i = 0; i < scene.proxies.size(); i++) {
 			const recast::Proxy& proxy = scene.proxies[i];
@@ -1512,7 +1982,8 @@ void Visualizer::drawRoomEditor() {
 		}
 		ImGui::EndListBox();
 	}
-	if (ImGui::Button("add box")) {
+	const float third = splitWidth(3);
+	if (ImGui::Button("Add box", ImVec2(third, 0.0f))) {
 		recast::Proxy box;
 		box.type = "box";
 		box.min = { shadowCenter.x - 0.25f, 0.0f, shadowCenter.z - 0.25f };
@@ -1526,7 +1997,7 @@ void Visualizer::drawRoomEditor() {
 	ImGui::SameLine();
 	bool haveSelection = selectedProxy >= 0 && selectedProxy < static_cast<int>(scene.proxies.size());
 	ImGui::BeginDisabled(!haveSelection);
-	if (ImGui::Button("delete") && haveSelection) {
+	if (ImGui::Button("Delete", ImVec2(third, 0.0f)) && haveSelection) {
 		std::vector<recast::Proxy> kept;
 		for (size_t i = 0; i < scene.proxies.size(); i++) {
 			if (!sameGroup(selectedProxy, static_cast<int>(i))) kept.push_back(scene.proxies[i]);
@@ -1538,7 +2009,7 @@ void Visualizer::drawRoomEditor() {
 	}
 	ImGui::EndDisabled();
 	ImGui::SameLine();
-	if (ImGui::Button("reset room")) {
+	if (ImGui::Button("Reset room", ImVec2(third, 0.0f))) {
 		scene.proxies = detectedProxies;
 		selectedProxy = -1;
 		proxyMeshesDirty = true;

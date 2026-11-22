@@ -417,14 +417,15 @@ namespace {
 		return current;
 	}
 
-	Vec3 cameraRay(const recast::SceneCamera& camera, float u, float v) {
-		Vec3 local((u - camera.cx) / camera.fx, -(v - camera.cy) / camera.fy, -1.0f);
-		Vec3 direction;
-		for (int i = 0; i < 3; i++) {
-			direction[i] = camera.rotation[i][0] * local.x + camera.rotation[i][1] * local.y + camera.rotation[i][2] * local.z;
-		}
-		return direction.normalized();
+}
+
+Vec3 recast::cameraRay(const SceneCamera& camera, float u, float v) {
+	Vec3 local((u - camera.cx) / camera.fx, -(v - camera.cy) / camera.fy, -1.0f);
+	Vec3 direction;
+	for (int i = 0; i < 3; i++) {
+		direction[i] = camera.rotation[i][0] * local.x + camera.rotation[i][1] * local.y + camera.rotation[i][2] * local.z;
 	}
+	return direction.normalized();
 }
 
 Vec3 recast::LinearImage::at(int x, int y) const {
@@ -446,7 +447,8 @@ recast::LinearImage recast::loadLinearImage(const std::string& path) {
 	return image;
 }
 
-std::vector<recast::LightingSample> recast::collectLightingSamples(const SceneFile& scene, const LinearImage& photo, int stride) {
+std::vector<recast::LightingSample> recast::collectLightingSamples(const SceneFile& scene, const LinearImage& photo, int stride,
+																   std::vector<LightingSample>* clipped) {
 	const SceneCamera& camera = scene.camera;
 	float scaleX = static_cast<float>(photo.width) / static_cast<float>(scene.image_size[0]);
 	float scaleY = static_cast<float>(photo.height) / static_cast<float>(scene.image_size[1]);
@@ -460,11 +462,12 @@ std::vector<recast::LightingSample> recast::collectLightingSamples(const SceneFi
 	for (int y = stride / 2; y < photo.height; y += stride) {
 		for (int x = stride / 2; x < photo.width; x += stride) {
 			Vec3 color = photo.at(x, y);
-			if (lowDynamicRange && std::max({ color.x, color.y, color.z }) >= 0.99f) continue;
+			bool isClipped = lowDynamicRange && std::max({ color.x, color.y, color.z }) >= 0.99f;
+			if (isClipped && !clipped) continue;
 
 			RayHit hit = raycastProxies(scene.proxies, origin, cameraRay(camera, (x + 0.5f) / scaleX, (y + 0.5f) / scaleY));
 			if (!hit.valid()) continue;
-			samples.push_back({ color, hit.point, hit.normal, hit.proxyIndex });
+			(isClipped ? *clipped : samples).push_back({ color, hit.point, hit.normal, hit.proxyIndex });
 		}
 	}
 	return samples;
@@ -769,8 +772,49 @@ std::vector<recast::FitLight> recast::fitLightsFromScene(const SceneFile& scene)
 // when it explains the photo at least 2% better, each refined locally on at most ~6000 samples. Well under a second
 // where the full multi-light search takes 15 s (2 min in a debug build); most of what no light explains is colour
 // variation within the furniture
+namespace {
+	// A blown-out patch of floor in full sun is left out of the fit, but it still says something: the sun is at least
+	// strong enough to make it white. When the fitted sun falls short of that (its strength then comes only from the
+	// unclipped edges and shadows around the patch), it's raised to the median strength those pixels need, keeping its
+	// colour and never more than 8x
+	void liftToClipped(const recast::SceneFile& scene, const std::vector<recast::LightingSample>& clipped,
+					   const std::vector<recast::FitLight>& lights, recast::LightingFit& fit) {
+		if (clipped.empty() || fit.intensities.size() != lights.size()) return;
+		Occluders occluders(scene.proxies, &scene.lights);
+		size_t step = std::max<size_t>(1, clipped.size() / 300); // a median: a few hundred pixels are plenty
+		for (size_t l = 0; l < lights.size(); l++) {
+			if (!lights[l].directional) continue;
+			Vec3 strength = fit.intensities[l];
+			std::vector<double> needed;
+			for (size_t s = 0; s < clipped.size(); s += step) {
+				const recast::LightingSample& sample = clipped[s];
+				double term = lightTerm(occluders, sample, lights[l]);
+				if (term < 0.25) continue; // in the sun, and facing it: not the sky through a window, not a lamp's bulb
+				double others[3] = { fit.ambient.x, fit.ambient.y, fit.ambient.z };
+				for (size_t o = 0; o < lights.size(); o++) {
+					if (o == l) continue;
+					double t = lightTerm(occluders, sample, lights[o]);
+					for (int c = 0; c < 3; c++) others[c] += fit.intensities[o][c] * t;
+				}
+				const auto& albedo = scene.proxies[sample.proxy].material.albedo;
+				double need = 0.0;
+				for (int c = 0; c < 3; c++) {
+					if (sample.color[c] < 0.99f || strength[c] <= 1e-6f) continue;
+					need = std::max(need, (0.99 / std::max(albedo[c], 1e-3f) - others[c]) / (strength[c] * term));
+				}
+				if (need > 0.0) needed.push_back(need);
+			}
+			if (needed.size() < 8) continue;
+			std::nth_element(needed.begin(), needed.begin() + needed.size() / 2, needed.end());
+			float scale = static_cast<float>(std::clamp(needed[needed.size() / 2], 1.0, 8.0));
+			fit.intensities[l] = Vec3(strength.x * scale, strength.y * scale, strength.z * scale);
+		}
+	}
+}
+
 recast::LightingFit recast::fitMainLight(const SceneFile& scene, const std::vector<LightingSample>& samples,
-										 std::vector<FitLight>& lights, const std::vector<Vec3>& suns) {
+										 std::vector<FitLight>& lights, const std::vector<Vec3>& suns,
+										 const std::vector<LightingSample>& clipped) {
 	fixedTermCache.clear();
 	struct ClearAfter { ~ClearAfter() { fixedTermCache.clear(); } } clearAfter;
 	std::vector<FitLight> found = lights;
@@ -874,6 +918,7 @@ recast::LightingFit recast::fitMainLight(const SceneFile& scene, const std::vect
 		}
 		if (denominator > 0.0) fit.intensities[0][c] = static_cast<float>(std::max(0.0, numerator / denominator));
 	}
+	liftToClipped(scene, clipped, lights, fit);
 	return fit;
 }
 

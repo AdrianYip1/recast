@@ -23,6 +23,7 @@ namespace recast {
 	struct ScaleReference {
 		std::string kind = "camera_height";
 		foto::f32 metres = 0.0f;
+		foto::f32 guess = 0.0f; // the camera height first guessed (detect keeps its scale correction within 0.8-1.25x of it)
 	};
 
 	struct ObjectTransform {
@@ -81,7 +82,7 @@ namespace recast {
 		std::array<foto::u32, 2> image_size = { 0, 0 };
 		SceneCamera camera;
 		ScaleReference scale_reference;
-		SceneObject object;
+		std::vector<SceneObject> objects; // every object placed in the room (older files: one "object", read as the only one)
 		std::vector<Proxy> proxies;
 		std::vector<SceneLight> lights;
 		Lighting lighting;

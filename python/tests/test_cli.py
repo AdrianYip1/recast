@@ -42,7 +42,7 @@ def test_pipeline_end_to_end(tmp_path):
     assert (sdir / "object.glb").exists()
     for f in ("object_mask.jpg", "object_check.jpg"):
         assert Image.open(sdir / f).format == "JPEG"
-    placed = json.loads((sdir / "scene.json").read_text())["object"]
+    placed, = json.loads((sdir / "scene.json").read_text())["objects"]
     assert placed["path"] == "object.glb"
     assert placed["transform"]["position"][1] == 0.0
 
@@ -55,7 +55,7 @@ def test_pipeline_end_to_end(tmp_path):
     # the engine saves scene.json after the object is dragged: only its own keys, every proxy
     # field filled in, floats through f32. Python must keep working on that file.
     assert json.loads((sdir / "preprocess.json").read_text())["lensfun"] is False
-    engine_keys = {"version", "photo", "image_size", "camera", "scale_reference", "object",
+    engine_keys = {"version", "photo", "image_size", "camera", "scale_reference", "objects",
                    "proxies", "lights", "lighting"}
     saved = {k: v for k, v in json.loads((sdir / "scene.json").read_text()).items() if k in engine_keys}
     for p in saved["proxies"]:
@@ -63,7 +63,7 @@ def test_pipeline_end_to_end(tmp_path):
                                                 ("min", [0, 0, 0]), ("max", [0, 0, 0]))})
     (sdir / "scene.json").write_text(json.dumps(saved))
     main(["light", "--name", "t", "--data-root", str(root), "--python-gbuffer"])
-    assert Scene.load(sdir / "scene.json").object.path == "object.glb"
+    assert Scene.load(sdir / "scene.json").objects[0].path == "object.glb"
 
     # stage D: the engine's render.jpg is the photo itself, compared with itself
     save_jpg(sdir / "render.jpg", np.full((240, 320, 3), 0.3))

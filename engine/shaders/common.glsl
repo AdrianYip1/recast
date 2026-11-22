@@ -43,6 +43,7 @@ struct Material {
 	float ior;
 	uint maskId; // the cutout (owner image value) this room surface belongs to, 0 = none
 	float pad1;
+	vec4 absorption; // light lost per metre inside glass (rgb)
 };
 
 layout(std430, set = 0, binding = 1) readonly buffer Materials {

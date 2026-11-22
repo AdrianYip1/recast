@@ -44,6 +44,25 @@ def back_side_fill(cam: Camera, mesh: trimesh.Trimesh, axis_point: np.ndarray) -
     return projective_uv(cam, np.where(back[:, None], mirrored, v))
 
 
+def neutral_light(img_linear: np.ndarray, exclude: np.ndarray | None = None, limit: float = 1.33) -> np.ndarray:
+    """Per-channel gains (3,) that take out the colour of the light the photo was taken in (warm bulbs, blue shade),
+    so the object's texture is its own colour and the new room's light tints it instead.
+
+    The light's colour is estimated from the rest of the photo with shades of grey (p = 6, Finlayson & Trezzi 2004),
+    skipping the object, clipped and near-black pixels. Brightness is kept (the gains average to 1 in luminance) and
+    each gain stays within 1/limit..limit, so a room that really is one colour isn't bleached grey."""
+    px = img_linear.reshape(-1, 3)
+    keep = (px.max(axis=1) < 0.98) & (px.max(axis=1) > 0.005)
+    if exclude is not None:
+        keep &= ~exclude.reshape(-1)
+    if keep.sum() < 500:
+        return np.ones(3)
+    illuminant = np.mean(px[keep] ** 6, axis=0) ** (1.0 / 6.0)
+    gains = float(luminance(illuminant)) / np.maximum(illuminant, 1e-6)
+    gains = np.clip(gains, 1.0 / limit, limit)
+    return gains / float(luminance(gains))
+
+
 def delight(img: np.ndarray, mask: np.ndarray, sigma_frac: float = 0.08) -> np.ndarray:
     """Rough de-lighting: divide by heavily blurred luminance (inside the mask only)."""
     m = mask.astype(np.float32)
