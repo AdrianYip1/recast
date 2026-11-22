@@ -978,8 +978,6 @@ void Visualizer::drawPrompt() {
 			ImGui::TextColored(recast::ui::purple(), "%s", welcome);
 			ImGui::PopFont();
 		}
-		title("Start with a scene");
-		text("Choose a photo of the empty spot where your object should go. Show some floor so ReCast can measure the room.");
 		ImGui::Dummy(ImVec2(0.0f, 0.3f * em));
 		if (recast::ui::accentButton("Choose scene photo...", full)) chooseScenePhoto();
 		if (pythonFailed) {
