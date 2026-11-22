@@ -1,7 +1,9 @@
 #include "sceneFile.hpp"
 
+#include <chrono>
 #include <fstream>
 #include <stdexcept>
+#include <thread>
 
 #include <nlohmann/json.hpp>
 
@@ -65,5 +67,16 @@ void recast::saveSceneFile(const SceneFile& scene, const std::filesystem::path& 
 		file << nlohmann::json(scene).dump(2) << '\n';
 	}
 
-	std::filesystem::rename(temporary, path);
+	// Windows refuses to replace a file another program has open (a virus scanner or the search indexer reading the
+	// last save): try again for a moment, then write over it in place, which only needs it to be writable
+	std::error_code error;
+	for (int attempt = 0; attempt < 5; attempt++) {
+		std::filesystem::rename(temporary, path, error);
+		if (!error) return;
+		std::this_thread::sleep_for(std::chrono::milliseconds(30));
+	}
+	std::filesystem::copy_file(temporary, path, std::filesystem::copy_options::overwrite_existing, error);
+	std::error_code ignored;
+	std::filesystem::remove(temporary, ignored);
+	if (error) throw std::runtime_error("ERROR: sceneFile.cpp -> saveSceneFile(): can't write " + path.string() + ": " + error.message());
 }

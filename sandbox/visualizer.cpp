@@ -26,6 +26,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <ctime>
+#include <cstring>
 
 #ifndef RECAST_PYTHON_DIR
 #define RECAST_PYTHON_DIR "python"
@@ -119,6 +120,102 @@ namespace {
 		return !error;
 	}
 
+	// EXIF orientation of a JPEG: 1 upright, 3 upside down, 6 / 8 turned a quarter right / left (1 when there's none)
+	int exifOrientation(const std::filesystem::path& photo) {
+		std::ifstream file(photo, std::ios::binary);
+		std::vector<unsigned char> bytes(256 * 1024);
+		file.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+		size_t size = static_cast<size_t>(file.gcount());
+		if (size < 4 || bytes[0] != 0xFF || bytes[1] != 0xD8) return 1;
+		size_t at = 2;
+		while (at + 4 <= size && bytes[at] == 0xFF) {
+			unsigned marker = bytes[at + 1];
+			size_t length = (static_cast<size_t>(bytes[at + 2]) << 8) | bytes[at + 3];
+			if (marker == 0xDA || length < 2) break; // the image data: no EXIF after it
+			if (marker == 0xE1 && length >= 16 && at + 2 + length <= size && std::memcmp(&bytes[at + 4], "Exif\0\0", 6) == 0) {
+				const unsigned char* tiff = &bytes[at + 10];
+				size_t tiffSize = length - 8;
+				bool little = tiff[0] == 'I';
+				auto u16 = [&](size_t o) -> size_t {
+					if (o + 2 > tiffSize) return 0;
+					return little ? tiff[o] | (static_cast<size_t>(tiff[o + 1]) << 8) : (static_cast<size_t>(tiff[o]) << 8) | tiff[o + 1];
+				};
+				auto u32 = [&](size_t o) -> size_t { return little ? u16(o) | (u16(o + 2) << 16) : (u16(o) << 16) | u16(o + 2); };
+				size_t ifd = u32(4);
+				if (ifd < 8 || ifd >= tiffSize) return 1;
+				size_t count = u16(ifd);
+				for (size_t i = 0; i < count && ifd + 2 + 12 * (i + 1) <= tiffSize; i++) {
+					size_t entry = ifd + 2 + 12 * i;
+					if (u16(entry) == 0x0112) {
+						size_t value = u16(entry + 8);
+						return value == 3 || value == 6 || value == 8 ? static_cast<int>(value) : 1;
+					}
+				}
+				return 1;
+			}
+			at += 2 + length;
+		}
+		return 1;
+	}
+
+	// The photo turned upright the way Python's load_photo turns it (so a box drawn on it lands on the same pixels),
+	// shrunk to at most `longest` pixels on its long side, as a JPEG at `out`
+	recast::PhotoPreview makePhotoPreview(const std::filesystem::path& photo, const std::filesystem::path& out, int longest = 2048) {
+		recast::PhotoPreview preview;
+		int width = 0, height = 0, channels = 0;
+		unsigned char* pixels = stbi_load(photo.string().c_str(), &width, &height, &channels, 3);
+		if (!pixels) return preview;
+		int orientation = exifOrientation(photo);
+		int step = std::max(1, (std::max(width, height) + longest - 1) / longest);
+		int w = std::max(1, width / step), h = std::max(1, height / step);
+		bool turned = orientation == 6 || orientation == 8;
+		int uprightWidth = turned ? h : w, uprightHeight = turned ? w : h;
+		std::vector<unsigned char> upright(static_cast<size_t>(w) * h * 3);
+		for (int y = 0; y < h; y++) {
+			for (int x = 0; x < w; x++) {
+				unsigned sum[3] = {}, count = 0;
+				for (int sy = y * step; sy < (y + 1) * step && sy < height; sy += std::max(1, step / 2)) {
+					for (int sx = x * step; sx < (x + 1) * step && sx < width; sx += std::max(1, step / 2)) {
+						const unsigned char* p = pixels + (static_cast<size_t>(sy) * width + sx) * 3;
+						for (int c = 0; c < 3; c++) sum[c] += p[c];
+						count++;
+					}
+				}
+				int ux = x, uy = y;
+				if (orientation == 3) { ux = w - 1 - x; uy = h - 1 - y; }
+				else if (orientation == 6) { ux = h - 1 - y; uy = x; }     // a quarter turn clockwise
+				else if (orientation == 8) { ux = y; uy = w - 1 - x; }     // a quarter turn anticlockwise
+				unsigned char* q = &upright[(static_cast<size_t>(uy) * uprightWidth + ux) * 3];
+				for (int c = 0; c < 3; c++) q[c] = static_cast<unsigned char>(sum[c] / std::max(count, 1u));
+			}
+		}
+		stbi_image_free(pixels);
+		if (!stbi_write_jpg(out.string().c_str(), uprightWidth, uprightHeight, 3, upright.data(), 90)) return preview;
+		preview.file = out;
+		preview.width = turned ? height : width;
+		preview.height = turned ? width : height;
+		return preview;
+	}
+
+	// Opens a file in the system's viewer
+	void openWithSystem(const std::filesystem::path& path) {
+#ifdef _WIN32
+		std::system(("start \"\" \"" + nativePath(path) + "\"").c_str());
+#else
+		std::system(("xdg-open \"" + path.string() + "\" &").c_str());
+#endif
+	}
+
+	// "20261121_203512" at the end of an export's name, as "21 Nov 20:35"; the name itself otherwise
+	std::string exportTime(const std::string& stem) {
+		if (stem.size() < 15) return stem;
+		std::string stamp = stem.substr(stem.size() - 15);
+		if (stamp[8] != '_' || !std::all_of(stamp.begin(), stamp.begin() + 8, ::isdigit) || !std::all_of(stamp.begin() + 9, stamp.end(), ::isdigit)) return stem;
+		static const char* months[] = { "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
+		int month = std::clamp(std::stoi(stamp.substr(4, 2)), 1, 12);
+		return std::to_string(std::stoi(stamp.substr(6, 2))) + " " + months[month - 1] + " " + stamp.substr(9, 2) + ":" + stamp.substr(11, 2);
+	}
+
 	std::string pickPhoto(const char* title) {
 		std::string path = recast::openFileDialog(title, PHOTO_FILTER);
 		ImGui::GetIO().AddMouseButtonEvent(ImGuiMouseButton_Left, false); // the dialog swallowed the release
@@ -173,6 +270,11 @@ void Visualizer::onInit() {
 	unitBoxMesh = createMesh(unitBoxData.vertices, unitBoxData.indices);
 
 	startPythonWorker();
+	// no scene given: the last one worked on opens (the welcome card only asks for a photo when there's none yet)
+	if (scenePath.empty()) {
+		refreshScenes();
+		if (!scenes.empty()) scenePath = nativePath(scenes.front().sceneJson);
+	}
 	if (!scenePath.empty()) {
 		loadScene();
 		sceneWatcher = foto::FileWatcher(scenePath);
@@ -280,7 +382,7 @@ void Visualizer::loadScene() {
 		return light.type == "area" ? light.radiance == recast::Vec3f{ 0, 0, 0 } : light.intensity == recast::Vec3f{ 0, 0, 0 };
 	});
 	if (scene.lights.empty() || unfitted) detectLighting();
-	else lightingStatus = std::to_string(scene.lights.size()) + " light(s) from the saved scene";
+	else lightingStatus = "";
 
 	std::cout << "[recast] loaded " << scenePath << std::endl;
 }
@@ -349,7 +451,7 @@ void Visualizer::applySceneLighting() {
 void Visualizer::detectLighting() {
 	if (detectJob.valid() || loadedPhotoPath.empty()) return;
 
-	lightingStatus = "Detecting lighting...";
+	lightingStatus = "Finding the lights...";
 	detectStarted = std::chrono::steady_clock::now();
 	detectGaveUp = false;
 	recast::SceneFile sceneCopy = scene;
@@ -378,7 +480,7 @@ int Visualizer::lightingStride(int base) const {
 }
 
 void Visualizer::askForManualLights(const std::string& reason) {
-	lightingStatus = "No light source detected (" + reason + "). Add lights by hand under Show and edit lights.";
+	lightingStatus = "Couldn't find the lights. Add them under Edit lights.";
 	showLights = true;
 	openLightEditor = true;
 	std::cout << "[recast] no light source detected (" << reason << ")" << std::endl;
@@ -398,7 +500,7 @@ void Visualizer::finishLightingDetection() {
 	DetectJob job = detectJob.get();
 	if (detectGaveUp && !scene.lights.empty()) return; // too late: lights were placed by hand meanwhile
 	if (!job.error.empty()) {
-		lightingStatus = "Lighting detection failed: " + job.error;
+		lightingStatus = "Couldn't find the lights: " + job.error;
 		std::cerr << "[recast] " << lightingStatus << std::endl;
 		return;
 	}
@@ -416,9 +518,8 @@ void Visualizer::finishLightingDetection() {
 	unsavedChanges = true;
 
 	int seconds = static_cast<int>(std::chrono::duration<double>(std::chrono::steady_clock::now() - detectStarted).count());
-	lightingStatus = "Lit by " + std::to_string(windows) + " window(s) and " + std::to_string(others) + " other light(s), found in " +
-					 std::to_string(seconds) + " s";
-	std::cout << "[recast] " << lightingStatus << std::endl;
+	lightingStatus = "";
+	std::cout << "[recast] lit by " << windows << " window(s) and " << others << " other light(s), found in " << seconds << " s" << std::endl;
 	if (job.lights.empty()) askForManualLights("none found in the photo");
 }
 
@@ -443,13 +544,17 @@ void Visualizer::onUpdate(foto::f32 deltaTime) {
 		std::error_code error;
 		auto bankTime = std::filesystem::last_write_time(std::filesystem::path(RECAST_DATA_DIR) / "objects", error);
 		auto dataTime = std::filesystem::last_write_time(std::filesystem::path(RECAST_DATA_DIR), error);
+		auto exportsTime = std::filesystem::last_write_time(std::filesystem::path(RECAST_DATA_DIR) / "exports", error);
 		if (!drawerListed || bankTime != bankStamp) refreshBank();
 		if (!drawerListed || dataTime != dataStamp) refreshScenes();
+		if (!drawerListed || exportsTime != exportsStamp) refreshExports();
 		bankStamp = bankTime;
 		dataStamp = dataTime;
+		exportsStamp = exportsTime;
 		drawerListed = true;
 	}
 	loadThumbnails();
+	finishBoxPreview();
 	if (!sceneLoaded) {
 		pendingAdds.clear(); // no room to add objects to yet
 		return;
@@ -474,6 +579,20 @@ void Visualizer::onUpdate(foto::f32 deltaTime) {
 	setCameraMatch(cameraMatch.grain, cameraMatch.blur * pixelsPerPhotoPixel);
 	drawScene();
 	if (exportRequested) exportRender();
+
+	// saved by itself a second after an edit, never mid drag (a drag rewrites the scene every frame), and never while
+	// Python is rewriting scene.json (its result is loaded when it finishes)
+	if (!unsavedChanges) changedAt.reset();
+	else if (!changedAt) changedAt = std::chrono::steady_clock::now();
+	bool dragging = draggingObject || draggingLight || draggingProxy || getWindow().isMouseButtonDown(GLFW_MOUSE_BUTTON_LEFT);
+	if (changedAt && !dragging && !pythonJob.running() && std::chrono::steady_clock::now() - *changedAt > std::chrono::seconds(1)) {
+		saveScene();
+		if (unsavedChanges) changedAt = std::chrono::steady_clock::now(); // couldn't save: try again in a second
+	}
+}
+
+void Visualizer::onShutdown() {
+	if (sceneLoaded && unsavedChanges) saveScene();
 }
 
 Mat4 Visualizer::objectTransform(size_t index) const {
@@ -554,6 +673,11 @@ void Visualizer::loadThumbnails() {
 		if (std::filesystem::exists(entry.thumbnail, error)) load(entry.thumbnail, entry.image);
 		else if (!entry.photo.empty() && thumbnailTried.insert(entry.thumbnail.string()).second) missing.push_back({ entry.photo, entry.thumbnail });
 	}
+	for (ExportEntry& entry : exports) {
+		std::error_code error;
+		if (std::filesystem::exists(entry.thumbnail, error)) load(entry.thumbnail, entry.image);
+		else if (thumbnailTried.insert(entry.thumbnail.string()).second) missing.push_back({ entry.png, entry.thumbnail });
+	}
 	if (!missing.empty()) {
 		if (thumbnailJob.valid()) thumbnailJob.wait(); // one job at a time (rare: a new scene while the first batch runs)
 		thumbnailJob = std::async(std::launch::async, [missing]() {
@@ -600,12 +724,25 @@ void Visualizer::refreshScenes() {
 namespace {
 	// A bold heading with a line after it, for each part of the sidebar
 	void sectionHeading(const char* text) {
-		ImGui::Dummy(ImVec2(0.0f, 0.3f * ImGui::GetFontSize()));
+		ImGui::Dummy(ImVec2(0.0f, 0.4f * ImGui::GetFontSize()));
 		ImGui::PushFont(recast::ui::boldFont(), 0.0f);
-		ImGui::PushStyleColor(ImGuiCol_Text, recast::ui::purple());
-		ImGui::SeparatorText(text);
-		ImGui::PopStyleColor();
+		ImGui::TextColored(recast::ui::purple(), "%s", text);
 		ImGui::PopFont();
+	}
+
+	// A slider with its value written beside it, where the grab can't cover it. The slider keeps one width whatever
+	// the value, sized for the widest of its two ends
+	bool valueSlider(const char* id, float* value, float min, float max, const char* format, ImGuiSliderFlags flags = 0) {
+		char text[32], low[32], high[32];
+		std::snprintf(text, sizeof(text), format, *value);
+		std::snprintf(low, sizeof(low), format, min);
+		std::snprintf(high, sizeof(high), format, max);
+		float textWidth = std::max(ImGui::CalcTextSize(low).x, ImGui::CalcTextSize(high).x);
+		ImGui::SetNextItemWidth(std::max(1.0f, ImGui::GetContentRegionAvail().x - textWidth - ImGui::GetStyle().ItemSpacing.x));
+		bool changed = ImGui::SliderFloat(id, value, min, max, "", flags);
+		ImGui::SameLine();
+		ImGui::TextUnformatted(text);
+		return changed;
 	}
 
 	// A label on the left of the sidebar and the next control filling the rest of the row
@@ -633,6 +770,26 @@ namespace {
 	}
 }
 
+
+// Every exported image, newest first, named by when it was made
+void Visualizer::refreshExports() {
+	std::vector<std::pair<std::filesystem::file_time_type, ExportEntry>> found;
+	std::filesystem::path folder = std::filesystem::path(RECAST_DATA_DIR) / "exports";
+	std::error_code error;
+	for (const auto& file : std::filesystem::directory_iterator(folder, error)) {
+		if (file.path().extension() != ".png") continue;
+		std::string stem = file.path().stem().string();
+		ExportEntry entry{ .png = file.path(), .thumbnail = folder / "thumbnails" / (stem + ".jpg"), .name = exportTime(stem),
+						   .label = file.path().filename().string() };
+		auto loaded = thumbnails.find(entry.thumbnail.string());
+		if (loaded != thumbnails.end()) entry.image = loaded->second;
+		found.push_back({ std::filesystem::last_write_time(file.path(), error), entry });
+	}
+	if (!found.empty()) std::filesystem::create_directories(folder / "thumbnails", error);
+	std::sort(found.begin(), found.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+	exports.clear();
+	for (auto& [time, entry] : found) exports.push_back(std::move(entry));
+}
 
 // One drawer tile: the thumbnail (or the name's first letter), a badge in the corner, the name under it. dragType:
 // the tile can be dragged out with its index as that payload. True when clicked
@@ -683,7 +840,7 @@ void Visualizer::drawObjectDrawer() {
 	const ImGuiViewport* viewport = ImGui::GetMainViewport();
 	float bar = ImGui::GetFrameHeight() + 2.0f * style.WindowPadding.y;
 	// room for a scrollbar only when the tiles don't fit across
-	size_t count = drawerTab == 0 ? bank.size() : scenes.size();
+	size_t count = drawerTab == 0 ? bank.size() : drawerTab == 1 ? scenes.size() : exports.size();
 	float strip = static_cast<float>(count) * (TILE + 2.0f * style.FramePadding.x + style.ItemSpacing.x);
 	bool overflow = strip > viewport->WorkSize.x - sidebarWidth - 2.0f * style.WindowPadding.x;
 	float height = drawerOpen ? bar + TILE + 2.0f * style.FramePadding.y + ImGui::GetTextLineHeightWithSpacing() +
@@ -711,6 +868,13 @@ void Visualizer::drawObjectDrawer() {
 			drawerTab = 1;
 			ImGui::EndTabItem();
 		}
+		std::string exportsTab = "Exports (" + std::to_string(exports.size()) + ")###exports";
+		if (ImGui::BeginTabItem(exportsTab.c_str(), nullptr, selectExportsTab ? ImGuiTabItemFlags_SetSelected : ImGuiTabItemFlags_None)) {
+			if (drawerTab != 2) drawerOpen = true;
+			drawerTab = 2;
+			ImGui::EndTabItem();
+		}
+		selectExportsTab = false;
 		ImGui::EndTabBar();
 	}
 	ImGui::PopFont();
@@ -723,13 +887,20 @@ void Visualizer::drawObjectDrawer() {
 			for (const recast::SceneObject& object : scene.objects) {
 				inRoom[std::filesystem::path(scene.resolve(object.path)).lexically_normal().string()]++;
 			}
-			if (bank.empty()) hint("Objects you make from a photo show up here.");
+			if (bank.empty()) hint("No objects yet.");
 			for (size_t i = 0; i < bank.size(); i++) {
 				if (i > 0) ImGui::SameLine();
 				auto copies = inRoom.find(bank[i].glb.lexically_normal().string());
 				std::string badge = copies != inRoom.end() ? "x" + std::to_string(copies->second) : "";
-				std::string tooltip = bank[i].label + "\nClick to add, or drag onto the photo";
+				std::string tooltip = bank[i].label + "\nClick or drag in to add";
 				if (drawTile(i, bank[i].image, bank[i].name, tooltip, badge, "RECAST_BANK")) pendingAdds.push_back({ .glb = bank[i].glb });
+			}
+		}
+		else if (drawerTab == 2) {
+			if (exports.empty()) hint("No exports yet.");
+			for (size_t i = 0; i < exports.size(); i++) {
+				if (i > 0) ImGui::SameLine();
+				if (drawTile(i, exports[i].image, exports[i].name, exports[i].label + "\nClick to open", "", nullptr)) openWithSystem(exports[i].png);
 			}
 		}
 		else {
@@ -737,7 +908,7 @@ void Visualizer::drawObjectDrawer() {
 			for (size_t i = 0; i < scenes.size(); i++) {
 				if (i > 0) ImGui::SameLine();
 				bool isOpen = scenes[i].sceneJson.lexically_normal() == open;
-				if (drawTile(i, scenes[i].image, scenes[i].name, scenes[i].label + (isOpen ? "\nOpen now" : "\nClick to open"),
+				if (drawTile(i, scenes[i].image, scenes[i].name, scenes[i].label + (isOpen ? "\nOpen" : "\nClick to open"),
 							 isOpen ? "Open" : "", nullptr) && !isOpen && !pythonJob.running()) {
 					if (unsavedChanges) saveScene();
 					scenePath = nativePath(scenes[i].sceneJson);
@@ -837,13 +1008,13 @@ void Visualizer::drawObjectPanel() {
 	recast::ObjectTransform& transform = scene.objects[selectedObject].transform;
 	foto::Mesh* mesh = objectMeshOf[selectedObject];
 	labelled("Size");
-	if (ImGui::SliderFloat("##size", &transform.scale, 0.1f, 10.0f, "%.2fx", ImGuiSliderFlags_Logarithmic)) {
+	if (valueSlider("##size", &transform.scale, 0.1f, 10.0f, "%.2fx", ImGuiSliderFlags_Logarithmic)) {
 		transform.scale = std::max(transform.scale, 0.01f);
 		recast::resolveCollisions(scene.proxies, transform, mesh->getBoundsMin(), mesh->getBoundsMax());
 		unsavedChanges = true;
 	}
 	const float half = 0.5f * (ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x);
-	if (ImGui::Button("Reset object", ImVec2(half, 0.0f))) {
+	if (ImGui::Button("Reset", ImVec2(half, 0.0f))) {
 		transform = placedTransforms[selectedObject];
 		draggingObject = false;
 		unsavedChanges = true;
@@ -1016,7 +1187,7 @@ void Visualizer::addLight() {
 }
 
 void Visualizer::drawLightEditor() {
-	hint("Drag a light to move it. Scroll over a light to move it nearer or further.");
+	hint("Drag to move. Scroll to move closer or further.");
 	bool canAdd = scene.lights.size() < foto::MAX_LIGHTS;
 	int buttons = (canAdd ? 2 : 0) + (detectedLights.empty() ? 0 : 1);
 	if (buttons > 0) {
@@ -1040,7 +1211,7 @@ void Visualizer::drawLightEditor() {
 		}
 		if (!detectedLights.empty()) {
 			if (canAdd) ImGui::SameLine();
-			if (ImGui::Button("Reset lights", ImVec2(width, 0.0f))) {
+			if (ImGui::Button("Reset", ImVec2(width, 0.0f))) {
 				scene.lights = detectedLights;
 				scene.lighting.ambient = detectedAmbient;
 				selectedLight = -1;
@@ -1066,9 +1237,9 @@ void Visualizer::drawLightEditor() {
 		float height = enginemath::toDeg(std::asin(std::clamp(sky.y, -1.0f, 1.0f)));
 		float around = enginemath::toDeg(std::atan2(sky.dot(right), sky.dot(ahead)));
 		labelled("Direction");
-		bool changed = ImGui::SliderFloat("##sun direction", &around, -180.0f, 180.0f, "%.0f deg");
+		bool changed = valueSlider("##sun direction", &around, -180.0f, 180.0f, "%.0f\xC2\xB0");
 		labelled("Height");
-		changed |= ImGui::SliderFloat("##sun height", &height, 2.0f, 89.0f, "%.0f deg");
+		changed |= valueSlider("##sun height", &height, 2.0f, 89.0f, "%.0f\xC2\xB0");
 		if (changed) {
 			float h = enginemath::toRad(height), a = enginemath::toRad(around);
 			Vec3 toSun = (ahead * std::cos(a) + right * std::sin(a)) * std::cos(h) + Vec3(0.0f, std::sin(h), 0.0f);
@@ -1080,14 +1251,14 @@ void Visualizer::drawLightEditor() {
 	float strongest = std::max({ light.intensity[0], light.intensity[1], light.intensity[2] });
 	float brightness = strongest;
 	labelled("Brightness");
-	if (ImGui::SliderFloat("##brightness", &brightness, 0.0f, 50.0f, "%.2f", ImGuiSliderFlags_Logarithmic)) {
+	if (valueSlider("##brightness", &brightness, 0.0f, 50.0f, "%.1f", ImGuiSliderFlags_Logarithmic)) {
 		for (float& channel : light.intensity) channel = strongest > 1e-6f ? channel * brightness / strongest : brightness;
 		unsavedChanges = true;
 	}
 
 	// a sun shines from where the light is, towards the middle of the room; a point light goes back to that spot
 	const float half = splitWidth(2);
-	if (ImGui::Button(light.type == "point" ? "Make it a sun" : "Make it a point light", ImVec2(half, 0.0f))) {
+	if (ImGui::Button(light.type == "point" ? "Make it a sun" : "Make it a lamp", ImVec2(half, 0.0f))) {
 		if (light.type == "point") {
 			Vec3 from(light.position[0], light.position[1], light.position[2]);
 			Vec3 toCenter = shadowCenter - from;
@@ -1110,7 +1281,7 @@ void Visualizer::drawLightEditor() {
 		unsavedChanges = true;
 	}
 	ImGui::SameLine();
-	if (ImGui::Button("Remove light", ImVec2(half, 0.0f))) {
+	if (ImGui::Button("Remove", ImVec2(half, 0.0f))) {
 		scene.lights.erase(scene.lights.begin() + selectedLight);
 		selectedLight = -1;
 		unsavedChanges = true;
@@ -1188,28 +1359,31 @@ void Visualizer::exportRender() {
 	char stamp[32];
 	std::strftime(stamp, sizeof(stamp), "%Y%m%d_%H%M%S", std::localtime(&now));
 
-	std::filesystem::path folder = scene.directory / "renders";
-	std::filesystem::create_directories(folder);
-	std::string name = std::filesystem::path(scenePath).stem().string() + "_" + stamp;
+	// every export goes into one library, data/exports, named after its scene and when it was made
+	std::filesystem::path folder = std::filesystem::path(RECAST_DATA_DIR) / "exports";
+	std::filesystem::create_directories(folder / "thumbnails");
+	std::string sceneName = scene.directory.filename().string();
+	size_t cut = sceneName.rfind('_');
+	if (cut != std::string::npos && sceneName.size() - cut == 9) sceneName = sceneName.substr(0, cut); // the photo's hash
+	std::string name = sceneName + "_" + stamp;
 	std::string pngPath = (folder / (name + ".png")).string();
-	std::string hdrPath = (folder / (name + ".hdr")).string();
 
 	setCameraMatch(cameraMatch.grain, cameraMatch.blur);
 	auto started = std::chrono::steady_clock::now();
-	bool written = exportImage(pngPath, hdrPath, scene.image_size[0], scene.image_size[1], isPathTracing() ? 512 : 1);
+	// 128 samples and the denoiser look like the view once it settles, in a quarter of the time 512 took
+	bool written = exportImage(pngPath, "", scene.image_size[0], scene.image_size[1], isPathTracing() ? 128 : 1);
 	int seconds = static_cast<int>(std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count());
 
 	if (!written) {
-		lightingStatus = "Export failed: couldn't write " + pngPath;
+		lightingStatus = "Couldn't save the image.";
 		return;
 	}
-	lightingStatus = "Exported " + pngPath + " in " + std::to_string(seconds) + " s";
-	std::cout << "[recast] " << lightingStatus << std::endl;
-#ifdef _WIN32
-	std::system(("start \"\" \"" + pngPath + "\"").c_str());
-#else
-	std::system(("xdg-open \"" + pngPath + "\" &").c_str());
-#endif
+	lightingStatus = "";
+	std::cout << "[recast] exported " << pngPath << " in " << seconds << " s" << std::endl;
+	refreshExports();
+	selectExportsTab = true;
+	drawerOpen = true;
+	openWithSystem(pngPath);
 }
 
 void Visualizer::drawScene() {
@@ -1237,6 +1411,7 @@ void Visualizer::onImGui() {
 	// the start is only the welcome card: the drawer comes in with the first scene
 	if (sceneLoaded) drawObjectDrawer();
 	else drawerHeight = 0.0f;
+	drawBoxSelection();
 }
 
 // Everything the app does, in a sidebar that always fills the left of the window
@@ -1267,14 +1442,14 @@ void Visualizer::drawSidebar() {
 	}
 	ImGui::TextColored(recast::ui::purple(), "ReCast");
 	ImGui::PopFont();
-	hint("Put any object into any photo.");
+	hint("Move an object from one photo and place it in another, path traced to look real.");
 
 	// scene
 	sectionHeading("Scene");
 	ImGui::BeginDisabled(pythonJob.running());
 	if (ImGui::Button("Choose scene photo...", ImVec2(full, 0.0f))) chooseScenePhoto();
-	ImGui::Checkbox("Reuse saved scenes and objects", &useCache);
-	if (ImGui::IsItemHovered()) ImGui::SetTooltip("A photo used before opens its saved scene, or reuses its object from the Objects tab");
+	ImGui::Checkbox("Reuse saved work", &useCache);
+	if (ImGui::IsItemHovered()) ImGui::SetTooltip("Photos you've used before open as they were");
 	ImGui::EndDisabled();
 	if (pythonJob.running()) {
 		static const char* dots[] = { "", ".", "..", "..." };
@@ -1283,15 +1458,14 @@ void Visualizer::drawSidebar() {
 	else if (!pipelineStatus.empty()) {
 		ImGui::TextWrapped("%s", pipelineStatus.c_str());
 	}
-	if (pythonFailed) drawPythonLog();
 
 	// objects
 	sectionHeading("Objects");
 	ImGui::BeginDisabled(pythonJob.running());
-	if (ImGui::Button("Add object from a photo...", ImVec2(full, 0.0f))) chooseObjectPhoto();
+	if (ImGui::Button("Add object...", ImVec2(full, 0.0f))) chooseObjectPhoto();
 	ImGui::EndDisabled();
 	drawObjectPanel();
-	hint("Click an object to pick it. Drag to move it, scroll to rotate, Shift+scroll to resize. Add more from the Objects tab at the bottom.");
+	hint("Drag to move, scroll to rotate, Shift+scroll to resize.");
 
 	if (sceneLoaded) {
 		// lighting
@@ -1299,19 +1473,20 @@ void Visualizer::drawSidebar() {
 		if (!lightingStatus.empty()) ImGui::TextWrapped("%s", lightingStatus.c_str());
 		labelled("Exposure");
 		float exposure = getExposure();
-		if (ImGui::SliderFloat("##exposure", &exposure, -4.0f, 4.0f, "%.1f EV")) setExposure(exposure);
+		if (valueSlider("##exposure", &exposure, -4.0f, 4.0f, "%.1f EV")) setExposure(exposure);
 		ImGui::BeginDisabled(detectJob.valid());
-		if (ImGui::Button("Detect lighting again", ImVec2(full, 0.0f))) detectLighting();
+		if (ImGui::Button("Find lights again", ImVec2(full, 0.0f))) detectLighting();
 		ImGui::EndDisabled();
 		if (openLightEditor) {
 			showLights = true;
 			ImGui::SetScrollHereY();
 			openLightEditor = false;
 		}
-		ImGui::Checkbox("Show and edit lights", &showLights);
+		ImGui::Checkbox("Edit lights", &showLights);
+		// the markers draw over everything, so not while the object's box is being drawn
 		if (showLights) {
 			drawLightEditor();
-			drawLightOverlay();
+			if (boxPhoto.empty()) drawLightOverlay();
 		}
 
 		// room
@@ -1322,19 +1497,16 @@ void Visualizer::drawSidebar() {
 		}
 		if (editRoom) {
 			drawRoomEditor();
-			drawRoomOverlay();
+			if (boxPhoto.empty()) drawRoomOverlay();
 		}
 
 		// save and export
 		sectionHeading("Export");
-		const float half = 0.5f * (ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x);
-		if (ImGui::Button(unsavedChanges ? "Save scene *" : "Save scene", ImVec2(half, 0.0f))) saveScene();
-		ImGui::SameLine();
-		if (recast::ui::accentButton("Export image", ImVec2(half, 0.0f))) exportRequested = true;
+		if (recast::ui::accentButton("Export image", ImVec2(full, 0.0f))) exportRequested = true;
 
 		// view and debug
 		sectionHeading("View");
-		ImGui::Checkbox("Show original photo", &showOriginal);
+		ImGui::Checkbox("Original photo", &showOriginal);
 		if (supportsPathTracing()) {
 			ImGui::Checkbox("Path tracing", &pathTrace);
 			if (isPathTracing()) {
@@ -1344,21 +1516,11 @@ void Visualizer::drawSidebar() {
 			}
 		}
 		else {
-			hint("Path tracing needs a GPU with ray tracing.");
+			hint("This GPU can't path trace.");
 		}
-		ImGui::TextDisabled("%.0f fps, F12 saves a screenshot", ImGui::GetIO().Framerate);
 	}
 
 	ImGui::End();
-}
-
-// What Python printed, after a step failed
-void Visualizer::drawPythonLog() {
-	std::string log = pythonJob.output();
-	ImGui::BeginChild("python log", ImVec2(0.0f, 9.0f * ImGui::GetFontSize()), ImGuiChildFlags_Borders,
-					  ImGuiWindowFlags_HorizontalScrollbar);
-	ImGui::TextUnformatted(log.c_str(), log.c_str() + log.size());
-	ImGui::EndChild();
 }
 
 // A small card in the middle of the photo that asks for the next step: the scene photo at the start, the object photo
@@ -1370,7 +1532,7 @@ void Visualizer::drawPrompt() {
 	else if (!sceneLoaded) prompt = Prompt::Scene;
 	else if (scene.objects.empty()) prompt = Prompt::Object;
 	else if (showPlacedTip) prompt = Prompt::Placed;
-	if (prompt == Prompt::None) return;
+	if (prompt == Prompt::None || !boxPhoto.empty()) return;
 
 	const ImGuiViewport* viewport = ImGui::GetMainViewport();
 	const float em = ImGui::GetFontSize();
@@ -1404,19 +1566,17 @@ void Visualizer::drawPrompt() {
 	switch (prompt) {
 	case Prompt::Working: {
 		static const char* dots[] = { "", ".", "..", "..." };
-		if (pendingObjectReload) {
+		if (pendingObjectReload && !objectBoxedInApp) {
 			title("Select your object");
-			text("A new window should pop up with your object photo. If you don't see it, check behind this window or "
-				 "in the taskbar.");
+			text("Your photo opens in a new window (check behind this one).");
 			ImGui::Dummy(ImVec2(0.0f, 0.3f * em));
-			text("In that window, drag a box around the object, then press Enter.");
+			text("Drag a box around the object and press Enter.");
 			ImGui::Dummy(ImVec2(0.0f, 0.3f * em));
 		}
-		else {
-			title("One moment");
-		}
-		ImGui::TextColored(recast::ui::purple(), "%s%s", pythonLabel.c_str(), dots[static_cast<int>(ImGui::GetTime() * 3.0) % 4]);
-		ImGui::TextDisabled("This can take a minute the first time.");
+		std::string working = std::string(pendingObjectReload ? "Making your object" : "Building the scene") +
+							  dots[static_cast<int>(ImGui::GetTime() * 3.0) % 4];
+		if (!pendingObjectReload || objectBoxedInApp) title(working.c_str());
+		else ImGui::TextColored(recast::ui::purple(), "%s", working.c_str());
 		break;
 	}
 	case Prompt::Scene:
@@ -1436,27 +1596,27 @@ void Visualizer::drawPrompt() {
 		if (recast::ui::accentButton("Choose scene photo...", full)) chooseScenePhoto();
 		if (pythonFailed) {
 			ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.55f, 0.02f, 0.02f, 1.0f));
-			text("That photo didn't work. Try another one, or see what went wrong below.");
+			text("That photo didn't work. Try another one.");
 			ImGui::PopStyleColor();
-			drawPythonLog();
 		}
 		break;
 	case Prompt::Object:
 		title("Add an object");
-		text("Choose a photo of the object to place. A new window will then pop up where you drag a box around the object.");
+		text("Pick a photo with the object in it.");
 		ImGui::Dummy(ImVec2(0.0f, 0.3f * em));
 		if (recast::ui::accentButton("Choose object photo...", full)) chooseObjectPhoto();
-		if (!bank.empty()) hint("Or click one you made before in the Objects tab at the bottom, or drag it onto the photo.");
+		if (!bank.empty()) hint("Or use one from Objects below.");
+		ImGui::Dummy(ImVec2(0.0f, 0.3f * em));
+		if (ImGui::Button("Change scene photo...", full)) chooseScenePhoto();
 		if (pythonFailed) {
 			ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.55f, 0.02f, 0.02f, 1.0f));
-			text("That object didn't work. Try another photo, or see what went wrong below.");
+			text("That didn't work. Try another photo.");
 			ImGui::PopStyleColor();
-			drawPythonLog();
 		}
 		break;
 	case Prompt::Placed:
-		title("Your object is in!");
-		text("Drag it to move it. Scroll to rotate it, Shift+scroll to resize it. When it looks right, export the image from the sidebar.");
+		title("Object added");
+		text("Drag to move, scroll to rotate, Shift+scroll to resize.");
 		ImGui::Dummy(ImVec2(0.0f, 0.3f * em));
 		if (recast::ui::accentButton("Got it", full)) showPlacedTip = false;
 		break;
@@ -1515,7 +1675,8 @@ void Visualizer::finishPython() {
 
 	bool succeeded = pythonJob.exitCode() == 0;
 	pythonFailed = !succeeded;
-	pipelineStatus = pythonLabel + (succeeded ? " done" : " failed");
+	pipelineStatus = succeeded ? "" : "That didn't work. Try again.";
+	if (!succeeded) std::cerr << "[recast] " << pythonLabel << " failed:\n" << pythonJob.output() << std::endl;
 
 	// the next step runs before loading, so lighting is detected once, with the whole room
 	if (succeeded && !followUpArguments.empty()) {
@@ -1569,26 +1730,198 @@ void Visualizer::chooseScenePhoto() {
 		scenePath = nativePath(result);
 		loadedPhotoPath.clear();
 		openCachedScene = true;
-		pipelineStatus = "Opened the scene saved for this photo (untick reuse to build it again)";
+		pipelineStatus = "";
 		return;
 	}
 	std::string dataRoot = nativePath(RECAST_DATA_DIR);
-	runPython("building scene " + name, "recast", { "scene", photo, "--name", name, "--data-root", dataRoot, "--overwrite" },
+	runPython("Building the scene", "recast", { "scene", photo, "--name", name, "--data-root", dataRoot, "--overwrite" },
 			  nativePath(result), true, false);
-	followUpLabel = "finding walls and furniture";
+	followUpLabel = "Finding the furniture";
 	followUpArguments = { "detect", "--name", name, "--data-root", dataRoot };
 }
 
-// Made once into the bank (data/objects) and added to this room as one more object. It starts at a typical tabletop
-// size; the size slider and Shift+scroll fit it to the room
+// The photo opens in the app to have its box drawn; the object is made once that's done
 void Visualizer::chooseObjectPhoto() {
 	std::string photo = pickPhoto("object photo");
-	if (photo.empty()) return;
+	if (!photo.empty()) openBox(photo);
+}
+
+void Visualizer::openBox(const std::string& photo) {
+	closeBox();
+	boxPhoto = photo;
+	// the box last used on this photo, from its bank entry: drawing the same one again reuses the object made from it
+	boxPrefill = { 0, 0, 0, 0 };
+	std::error_code error;
+	std::filesystem::path chosen = std::filesystem::path(photo).lexically_normal();
+	std::filesystem::file_time_type newest;
+	for (const auto& folder : std::filesystem::directory_iterator(std::filesystem::path(RECAST_DATA_DIR) / "objects", error)) {
+		std::filesystem::path metaPath = folder.path() / "object_meta.json";
+		try {
+			std::ifstream file(metaPath);
+			nlohmann::json meta = nlohmann::json::parse(file);
+			if (std::filesystem::path(meta.value("photo", std::string())).lexically_normal() != chosen) continue;
+			if (!meta.contains("rect") || !meta["rect"].is_array() || meta["rect"].size() != 4) continue;
+			auto time = std::filesystem::last_write_time(metaPath, error);
+			if (boxPrefill[2] > 0 && time < newest) continue;
+			for (int i = 0; i < 4; i++) boxPrefill[i] = meta["rect"][i].get<int>();
+			newest = time;
+		}
+		catch (const std::exception&) {
+		}
+	}
+	std::filesystem::path preview = std::filesystem::temp_directory_path() / ("recast_box_" + std::to_string(recast::currentProcessId()) + ".jpg");
+	boxJob = std::async(std::launch::async, [photo, preview]() { return makePhotoPreview(photo, preview); });
+}
+
+// Made once into the bank (data/objects) and added to this room as one more object. It starts at a typical tabletop
+// size; the size slider and Shift+scroll fit it to the room. Without a box, Python opens its own window for one
+void Visualizer::startObject(const std::string& photo, const std::array<int, 4>* rect) {
 	std::vector<std::string> arguments = { photo, "--mode", "generated", "--height", "0.30",
 										   "--out", nativePath(scene.directory),
 										   "--bank", nativePath(std::filesystem::path(RECAST_DATA_DIR) / "objects") };
+	if (rect) {
+		arguments.push_back("--rect");
+		for (int v : *rect) arguments.push_back(std::to_string(v));
+		arguments.push_back("--no-ui");
+	}
 	if (!useCache) arguments.push_back("--rebuild");
-	runPython("adding object", "recast.object", arguments, scenePath, false, true);
+	objectBoxedInApp = rect != nullptr;
+	runPython("Making the object", "recast.object", arguments, scenePath, false, true);
+}
+
+// The preview is ready: shown for the box, or Python's window takes over when the app couldn't read the photo
+void Visualizer::finishBoxPreview() {
+	for (foto::u64 image : uiImagesToFree) unloadUiImage(image);
+	uiImagesToFree.clear();
+	if (!boxJob.valid() || boxJob.wait_for(std::chrono::seconds(0)) != std::future_status::ready) return;
+	recast::PhotoPreview preview = boxJob.get();
+	if (boxPhoto.empty()) return; // cancelled while it loaded
+	if (!preview.file.empty()) boxImage = loadUiImage(preview.file.string());
+	std::error_code error;
+	if (!preview.file.empty()) std::filesystem::remove(preview.file, error);
+	if (!boxImage) {
+		std::string photo = boxPhoto;
+		boxPhoto.clear();
+		startObject(photo, nullptr);
+		return;
+	}
+	boxPhotoSize = ImVec2(static_cast<float>(preview.width), static_cast<float>(preview.height));
+	boxDrawn = boxPrefill[2] > 0 && boxPrefill[3] > 0;
+	if (boxDrawn) {
+		boxStart = ImVec2(boxPrefill[0] / boxPhotoSize.x, boxPrefill[1] / boxPhotoSize.y);
+		boxEnd = ImVec2((boxPrefill[0] + boxPrefill[2]) / boxPhotoSize.x, (boxPrefill[1] + boxPrefill[3]) / boxPhotoSize.y);
+	}
+}
+
+void Visualizer::closeBox() {
+	if (boxImage) uiImagesToFree.push_back(boxImage);
+	boxImage = 0;
+	boxPhoto.clear();
+	boxDrawn = false;
+	boxDragging = false;
+}
+
+// The box in the full photo's pixels, the way Python reads --rect
+void Visualizer::confirmBox() {
+	float x0 = std::min(boxStart.x, boxEnd.x), x1 = std::max(boxStart.x, boxEnd.x);
+	float y0 = std::min(boxStart.y, boxEnd.y), y1 = std::max(boxStart.y, boxEnd.y);
+	std::array<int, 4> rect = { static_cast<int>(std::lround(x0 * boxPhotoSize.x)), static_cast<int>(std::lround(y0 * boxPhotoSize.y)),
+								std::max(1, static_cast<int>(std::lround((x1 - x0) * boxPhotoSize.x))),
+								std::max(1, static_cast<int>(std::lround((y1 - y0) * boxPhotoSize.y))) };
+	std::string photo = boxPhoto;
+	closeBox();
+	startObject(photo, &rect);
+}
+
+// A card in the middle of the window, everything behind it dimmed, with the object photo in it: drag a box around the
+// object, then add it
+void Visualizer::drawBoxSelection() {
+	if (boxPhoto.empty()) return;
+	const char* id = "##object box";
+	if (!ImGui::IsPopupOpen(id)) ImGui::OpenPopup(id);
+	const ImGuiViewport* viewport = ImGui::GetMainViewport();
+	const float em = ImGui::GetFontSize();
+	const float margin = 2.0f * em;
+	ImVec2 area(viewport->WorkSize.x - 2.0f * margin, viewport->WorkSize.y - 2.0f * margin);
+	ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + 0.5f * viewport->WorkSize.x, viewport->WorkPos.y + 0.5f * viewport->WorkSize.y),
+							ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+	ImGui::SetNextWindowSizeConstraints(ImVec2(std::min(21.0f * em, area.x), 0.0f), area);
+	ImGui::PushStyleColor(ImGuiCol_PopupBg, recast::ui::paperLight());
+	ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+	ImGui::PushStyleVar(ImGuiStyleVar_PopupBorderSize, 0.0f);
+	ImGui::PushStyleVar(ImGuiStyleVar_PopupRounding, ImGui::GetStyle().WindowRounding);
+	ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(1.4f * em, 1.2f * em));
+	bool open = ImGui::BeginPopupModal(id, nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+														ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings |
+														ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoScrollbar);
+	ImGui::PopStyleVar(4);
+	ImGui::PopStyleColor();
+	if (!open) return;
+
+	ImGui::PushFont(recast::ui::boldFont(), ImGui::GetStyle().FontSizeBase * 1.5f);
+	ImGui::TextColored(recast::ui::purple(), "Box the object");
+	ImGui::PopFont();
+	if (!boxImage) {
+		static const char* dots[] = { "", ".", "..", "..." };
+		ImGui::TextColored(recast::ui::purple(), "Opening%s", dots[static_cast<int>(ImGui::GetTime() * 3.0) % 4]);
+	}
+	else {
+		ImGui::TextUnformatted("Drag a box around it.");
+		// as large as fits inside the margins, leaving room for the text and buttons, in the middle of the card
+		float scale = std::min((area.x - 2.8f * em) / boxPhotoSize.x, (area.y - 9.0f * em) / boxPhotoSize.y);
+		ImVec2 size(std::max(boxPhotoSize.x * scale, 1.0f), std::max(boxPhotoSize.y * scale, 1.0f));
+		float spare = ImGui::GetContentRegionAvail().x - size.x;
+		if (spare > 0.0f) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + 0.5f * spare);
+		ImVec2 origin = ImGui::GetCursorScreenPos();
+		ImGui::Image(ImTextureRef(static_cast<ImTextureID>(boxImage)), size);
+		ImGui::SetCursorScreenPos(origin);
+		ImGui::InvisibleButton("##box area", size);
+		auto toPhoto = [&](ImVec2 p) {
+			return ImVec2(std::clamp((p.x - origin.x) / size.x, 0.0f, 1.0f), std::clamp((p.y - origin.y) / size.y, 0.0f, 1.0f));
+		};
+		ImVec2 mouse = ImGui::GetIO().MousePos;
+		if (ImGui::IsItemActivated()) {
+			boxStart = boxEnd = toPhoto(mouse);
+			boxDrawn = false;
+			boxDragging = true;
+		}
+		if (boxDragging) {
+			boxEnd = toPhoto(mouse);
+			boxDrawn = std::abs(boxEnd.x - boxStart.x) * size.x > 0.5f * em && std::abs(boxEnd.y - boxStart.y) * size.y > 0.5f * em;
+			if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) boxDragging = false;
+		}
+		if (ImGui::IsItemHovered()) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
+		if (boxDrawn || boxDragging) {
+			// everything outside the box dimmed, the box outlined in the logo's purple
+			ImDrawList* draw = ImGui::GetWindowDrawList();
+			ImVec2 a(origin.x + std::min(boxStart.x, boxEnd.x) * size.x, origin.y + std::min(boxStart.y, boxEnd.y) * size.y);
+			ImVec2 b(origin.x + std::max(boxStart.x, boxEnd.x) * size.x, origin.y + std::max(boxStart.y, boxEnd.y) * size.y);
+			ImVec2 end(origin.x + size.x, origin.y + size.y);
+			const ImU32 dim = IM_COL32(20, 16, 20, 120);
+			draw->AddRectFilled(origin, ImVec2(end.x, a.y), dim);
+			draw->AddRectFilled(ImVec2(origin.x, b.y), end, dim);
+			draw->AddRectFilled(ImVec2(origin.x, a.y), ImVec2(a.x, b.y), dim);
+			draw->AddRectFilled(ImVec2(b.x, a.y), ImVec2(end.x, b.y), dim);
+			draw->AddRect(a, b, IM_COL32_WHITE, 0.0f, 0, 0.3f * em);
+			draw->AddRect(a, b, ImGui::GetColorU32(recast::ui::purple()), 0.0f, 0, 0.15f * em);
+		}
+	}
+
+	ImGui::Dummy(ImVec2(0.0f, 0.3f * em));
+	const float half = splitWidth(2);
+	if (ImGui::Button("Cancel", ImVec2(half, 2.2f * em)) || ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+		closeBox();
+		ImGui::CloseCurrentPopup();
+	}
+	ImGui::SameLine();
+	ImGui::BeginDisabled(!boxDrawn || boxDragging);
+	if (recast::ui::accentButton("Add object", ImVec2(half, 2.2f * em)) ||
+		(boxDrawn && !boxDragging && ImGui::IsKeyPressed(ImGuiKey_Enter))) {
+		confirmBox();
+		ImGui::CloseCurrentPopup();
+	}
+	ImGui::EndDisabled();
+	ImGui::EndPopup();
 }
 
 // Boxes share one unit cube placed by a matrix, so dragging and resizing never rebuild a mesh.
@@ -1968,48 +2301,8 @@ void Visualizer::drawRoomOverlay() {
 }
 
 void Visualizer::drawRoomEditor() {
-	hint("Click a piece to select it. Drag to move it, drag its dots to resize it.");
-	if (ImGui::BeginListBox("##room", ImVec2(-FLT_MIN, 6.5f * ImGui::GetTextLineHeightWithSpacing()))) {
-		for (size_t i = 0; i < scene.proxies.size(); i++) {
-			const recast::Proxy& proxy = scene.proxies[i];
-			if (proxy.type != "box" && proxy.type != "hull" && !isWall(proxy)) continue;
-			bool firstOfGroup = true;
-			for (size_t j = 0; j < i; j++) firstOfGroup &= !sameGroup(static_cast<int>(i), static_cast<int>(j));
-			if (!firstOfGroup) continue;
-			std::string label = proxyName(i) + "##" + std::to_string(i);
-			if (ImGui::Selectable(label.c_str(), sameGroup(static_cast<int>(i), selectedProxy))) selectedProxy = static_cast<int>(i);
-			if (ImGui::IsItemHovered()) hoveredProxy = static_cast<int>(i);
-		}
-		ImGui::EndListBox();
-	}
-	const float third = splitWidth(3);
-	if (ImGui::Button("Add box", ImVec2(third, 0.0f))) {
-		recast::Proxy box;
-		box.type = "box";
-		box.min = { shadowCenter.x - 0.25f, 0.0f, shadowCenter.z - 0.25f };
-		box.max = { shadowCenter.x + 0.25f, 0.5f, shadowCenter.z + 0.25f };
-		for (const recast::Proxy& proxy : scene.proxies) box.id = std::max(box.id, proxy.id + 1);
-		scene.proxies.push_back(box);
-		selectedProxy = static_cast<int>(scene.proxies.size()) - 1;
-		proxyMeshesDirty = true; // rebuilt before the next frame's draws: this frame's are already queued
-		unsavedChanges = true;
-	}
-	ImGui::SameLine();
-	bool haveSelection = selectedProxy >= 0 && selectedProxy < static_cast<int>(scene.proxies.size());
-	ImGui::BeginDisabled(!haveSelection);
-	if (ImGui::Button("Delete", ImVec2(third, 0.0f)) && haveSelection) {
-		std::vector<recast::Proxy> kept;
-		for (size_t i = 0; i < scene.proxies.size(); i++) {
-			if (!sameGroup(selectedProxy, static_cast<int>(i))) kept.push_back(scene.proxies[i]);
-		}
-		scene.proxies = kept;
-		selectedProxy = -1;
-		proxyMeshesDirty = true;
-		unsavedChanges = true;
-	}
-	ImGui::EndDisabled();
-	ImGui::SameLine();
-	if (ImGui::Button("Reset room", ImVec2(third, 0.0f))) {
+	hint("Drag a piece to move it, or its dots to resize it.");
+	if (ImGui::Button("Reset room", ImVec2(-FLT_MIN, 0.0f))) {
 		scene.proxies = detectedProxies;
 		selectedProxy = -1;
 		proxyMeshesDirty = true;

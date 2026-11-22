@@ -17,6 +17,14 @@
 #include "scene/raycast.hpp"
 #include "pipeline/pythonJob.hpp"
 
+namespace recast {
+	// An object photo turned upright and shrunk for drawing its box in the app
+	struct PhotoPreview {
+		std::filesystem::path file; // a JPEG, empty if the photo couldn't be read
+		int width = 0, height = 0;  // the full photo once upright, in pixels
+	};
+}
+
 class Visualizer : public foto::Application {
 public:
 	Visualizer(const foto::ApplicationConfig& config, std::string scenePath);
@@ -25,12 +33,14 @@ protected:
 	void onInit() override;
 	void onUpdate(foto::f32 deltaTime) override;
 	void onImGui() override;
+	void onShutdown() override;
 
 private:
 	std::string scenePath;
 	recast::SceneFile scene;
 	bool sceneLoaded = false;
 	bool unsavedChanges = false;
+	std::optional<std::chrono::steady_clock::time_point> changedAt; // when the scene first differed from scene.json
 	foto::FileWatcher sceneWatcher;
 
 	foto::Pipeline* backgroundPipeline = nullptr;
@@ -71,10 +81,19 @@ private:
 		std::string name, label;
 	};
 	std::vector<SceneEntry> scenes;
-	int drawerTab = 0; // 0 objects, 1 scenes
+	// Exported images (data/exports/*.png), the drawer's third tab: a click opens one
+	struct ExportEntry {
+		std::filesystem::path png;
+		std::filesystem::path thumbnail; // exports/thumbnails/<name>.jpg, made by the engine the first time
+		foto::u64 image = 0;
+		std::string name, label;
+	};
+	std::vector<ExportEntry> exports;
+	bool selectExportsTab = false; // after an export: the drawer shows it
+	int drawerTab = 0; // 0 objects, 1 scenes, 2 exports
 	bool drawerListed = false; // bank and scenes listed at startup, on every scene load, and when their folders change
 	std::chrono::steady_clock::time_point drawerChecked;
-	std::filesystem::file_time_type bankStamp, dataStamp;
+	std::filesystem::file_time_type bankStamp, dataStamp, exportsStamp;
 	std::future<void> thumbnailJob; // scene thumbnails being made in the background
 	std::set<std::string> thumbnailTried; // each made once: a photo that can't be read isn't retried every frame
 	std::map<std::string, foto::u64> thumbnails; // loaded once per file (ImGui has room for 64)
@@ -136,8 +155,26 @@ private:
 	void drawPrompt();
 	float sidebarWidth = 0.0f;
 	float drawerHeight = 0.0f; // last frame's, so the prompt card can sit above it
-	void drawPythonLog();
 	bool showPlacedTip = false;          // how to move a newly added object
+
+	// The object's box is drawn in the app over a preview of its photo, then sent to Python as --rect (full photo pixels).
+	// A photo the app can't read (camera RAW) falls back to Python's own box window
+	std::string boxPhoto;                // the photo being boxed, empty when no box is being drawn
+	std::future<recast::PhotoPreview> boxJob;
+	foto::u64 boxImage = 0;
+	ImVec2 boxPhotoSize;                 // the full photo, upright
+	ImVec2 boxStart, boxEnd;             // the box in 0-1 of the photo
+	bool boxDrawn = false;
+	bool boxDragging = false;
+	std::array<int, 4> boxPrefill = { 0, 0, 0, 0 }; // the box last used on this photo (x, y, w, h), w = 0 for none
+	bool objectBoxedInApp = false;
+	std::vector<foto::u64> uiImagesToFree; // freed on the next update, never while the UI that drew them is in flight
+	void openBox(const std::string& photo);
+	void startObject(const std::string& photo, const std::array<int, 4>* rect);
+	void finishBoxPreview();
+	void drawBoxSelection();
+	void confirmBox();
+	void closeBox();
 
 	std::vector<recast::SceneLight> detectedLights; // what "reset lights" goes back to
 	std::vector<recast::FitLight> photoEmitters;    // windows and lamps detect found, whose strength the fit solves
@@ -203,6 +240,7 @@ private:
 	void addFromBank(const PendingAdd& add);
 	void loadThumbnails();
 	void refreshScenes();
+	void refreshExports();
 	void drawObjectDrawer();
 	bool drawTile(size_t index, foto::u64 image, const std::string& name, const std::string& tooltip, const std::string& badge,
 				  const char* dragType);
