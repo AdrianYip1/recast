@@ -1,6 +1,18 @@
+<p align="center">
+  <img src="docs/images/logo.png" alt="ReCast logo" width="140">
+</p>
+
+<h1 align="center">ReCast</h1>
+
 Adding an object to an existing photo relies on retouching through software like Photoshop or using GenAI. Editing software requires prerequisite skills and is time consuming while using GenAI often removes details in the photos, produces inaccurate lighting and shadows, and leaves users unable to fine tune how they want their final results to look manually. 
 
 ReCast rebuilds the scene photo as a 3D space, recovers its lighting, and extracts the object from a secondary photo and places it into the scene photo. A real time **Vulkan** path tracer calculates the lighting of the newly added object given the 3D scene’s illumination and renders its shadows and reflections onto the original photo, which can then be relit freely.
+
+<p align="center">
+  <img src="docs/images/light-photo.jpg" alt="The original scene photo of benches by a sunlit window" width="45%">
+  <img src="docs/images/light-composite.jpg" alt="The same photo exported from ReCast with a light up sign, a wet floor sign, and a box inserted" width="45%">
+</p>
+<p align="center"><em>The original photo (left) and the ReCast export (right)</em></p>
 
 ## Part I: Rebuilding the Scene
 
@@ -10,11 +22,19 @@ We use two locally-ran pretrained models: **OneFormer (ADE20K panoptic)** labels
 
 Those proxies were AABB initially, which left artifacts and box-like margins around round chairs and cylindrical tables and caused objects to be positioned inaccurately when moved around the scene. We fixed this using a convex hull around its 3D points, keeping only the voxels that fall inside the furniture's cutout and behind the visible surface.
 
+<p align="center">
+  <img src="docs/images/scene-proxies.jpg" alt="The scene photo with each detected object labelled, and the 3D proxies built from them" width="90%">
+</p>
+
 ## Part II: The Object
 
 The object is rebuilt from our other image into a **glTF mesh**. The user drags an AABB around this image inside ReCast, and **SAM (ViT B)** uses that box to cut the object out with a soft alpha to keeps its fine edges. 
 
 This cutout goes to **TripoSR**, which predicts a triplane and a density field from the image. **Marching cubes** convert this field into a usable glTF mesh, where **xatlas** unwraps it, and texture is baked from the photo wherever the surface faced the camera. Lighting of this object is removed removed so the Vulkan engine can relight it: an order 1 spherical harmonics fit (Ramamoorthi and Hanrahan) divides out the shading and the colour of that light. Finally the mesh is stood upright, scaled to metres, and exported to glTF. Every object is stored in a cache, speeding up performance of the renderer.
+
+<p align="center">
+  <img src="docs/images/hw-object-photo.jpg" alt="An object photo of large light up H and W letters" width="35%">
+</p>
 
 ## Part III: Lighting and Path Tracing
 
@@ -24,6 +44,12 @@ The object is then path traced in a compute shader using hardware ray queries (V
 
 Not every GPU is able to run this to the same capacity. Integrated graphics couldn't bind the thousand textures the engine expected, and some GPUs have no ray tracing at all, so the engine falls back to fewer textures and to a raster renderer with shadow maps.
 
+<p align="center">
+  <img src="docs/images/benches-dragon-table.jpg" alt="A glass dragon and a bottle inserted beside the benches" width="30%">
+  <img src="docs/images/benches-dragon-bench.jpg" alt="The glass dragon moved onto a bench" width="30%">
+  <img src="docs/images/benches-sign.jpg" alt="A wet floor sign, a box, and a bottle inserted by the benches" width="30%">
+</p>
+
 ## Part IV: Results, Motivations & Future Plans
 
 Asking a gen AI model to add an object means it regenerates the whole image. Finer details like text, textures, and faces drift or blur, the lighting and shadows often just look plausible rather than being physically correct, and when something is off, there is no definite way to fix just that part. The only option is to change the prompt and hope the next result is closer. Photoshop gives full control, however, it asks a lot of a beginner; cutting the object out, matching the perspective, and painting shadows and reflections by hand takes skill, practice, and hours of work.
@@ -31,6 +57,10 @@ Asking a gen AI model to add an object means it regenerates the whole image. Fin
 ReCast aims to be both a precise tool for this situation while being simple to use. The original scene is never regenerated, only the pixels the object actually affects change, so every detail of the scene stays exactly as it was taken. Adding an object only takes a few clicks: choose the scene photo, object photo, drag a box around the object, and drag it into place. The path tracer works out its lighting, shadows, and reflections from the scene itself.
 
 Everything can still be adjusted by hand (resizing, rotations, translations) with a user-friendly interface. The original scene photo can be shown at any time to compare, and the finished photo is exported at full resolution with no interface on it.
+
+<p align="center">
+  <img src="docs/images/morning-composite.jpg" alt="A seating area by a window with a glass dragon and a bottle inserted" width="60%">
+</p>
 
 Looking ahead, we envision Recast as a plugin for professional photo editors like Photoshop, where it would bridge the gap between novices and experts and give beginners the confidence to discover the unknown.
 ## Built with
